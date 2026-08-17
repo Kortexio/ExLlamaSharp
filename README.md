@@ -11,7 +11,7 @@ Inspired by:
 - **ExLlamaV3** — fast EXL3 inference on NVIDIA
 - **Open WebUI** — browser-based administration
 
-**Current release: 1.1.1** — Setup.exe bundles the ExLlamaV3 CUDA `.pyd`, worker deps, Python installer and VC++. PyTorch CUDA is downloaded during install. Admin → Models shows a VRAM fit badge (Fits / Tight / Too large).
+**Current release: 1.1.1** (stable). **Beta: 1.2.0-beta** — continuous batching via the ExLlamaV3 worker (GitHub pre-release; not `latest`). Setup.exe bundles the ExLlamaV3 CUDA `.pyd`, worker deps, Python installer and VC++. PyTorch CUDA is downloaded during install. Admin → Models shows a VRAM fit badge (Fits / Tight / Too large).
 
 Default after install: **http://127.0.0.1:14563**
 
