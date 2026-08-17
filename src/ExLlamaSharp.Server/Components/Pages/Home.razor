@@ -1,0 +1,252 @@
+@page "/"
+@rendermode InteractiveServer
+@implements IDisposable
+@inject EngineHostService Engine
+@inject SettingsService Settings
+@inject GpuInfoService GpuInfo
+@inject AppDbContext Db
+@inject OnboardingState Onboarding
+@inject NavigationManager Nav
+@using Microsoft.EntityFrameworkCore
+
+<PageTitle>Dashboard — ExLlamaSharp</PageTitle>
+
+<div class="page-header d-flex justify-content-between align-items-start flex-wrap gap-2">
+    <div>
+        <h1>Dashboard</h1>
+        <p>Server overview for your business.</p>
+    </div>
+    <button class="btn btn-outline-secondary btn-sm" @onclick="ToggleAdvanced">
+        @(ShowAdvanced ? "Hide advanced metrics" : "Show advanced metrics")
+    </button>
+</div>
+
+<div class="stat-grid mb-3">
+    <div class="card stat-card">
+        <div class="card-body">
+            <div class="stat-label">Status</div>
+            <div class="stat-value">@_statusEmoji</div>
+            <div class="small text-muted">@_statusText</div>
+        </div>
+    </div>
+    <div class="card stat-card">
+        <div class="card-body">
+            <div class="stat-label">Requests today</div>
+            <div class="stat-value">@_requestsToday</div>
+        </div>
+    </div>
+    <div class="card stat-card">
+        <div class="card-body">
+            <div class="stat-label">Model</div>
+            <div class="stat-value" style="font-size:1.15rem">@_modelLabel</div>
+        </div>
+    </div>
+    <div class="card stat-card">
+        <div class="card-body">
+            <div class="stat-label">GPU</div>
+            <div class="stat-value">@_gpuPct.ToString("0")%</div>
+            <div class="progress-thin mt-2"><span style="width:@_gpuPct.ToString("0")%"></span></div>
+            <div class="small text-muted mt-1">@_gpuName</div>
+        </div>
+    </div>
+</div>
+
+@if (ShowAdvanced)
+{
+    <div class="stat-grid mb-3">
+        <div class="card stat-card">
+            <div class="card-body">
+                <div class="stat-label">Tokens / sec</div>
+                <div class="stat-value">@_tps.ToString("0.0")</div>
+            </div>
+        </div>
+        <div class="card stat-card">
+            <div class="card-body">
+                <div class="stat-label">Jobs waiting</div>
+                <div class="stat-value">@_jobsWaiting</div>
+            </div>
+        </div>
+        <div class="card stat-card">
+            <div class="card-body">
+                <div class="stat-label">Jobs running</div>
+                <div class="stat-value">@_jobsRunning</div>
+            </div>
+        </div>
+        <div class="card stat-card">
+            <div class="card-body">
+                <div class="stat-label">VRAM</div>
+                <div class="stat-value" style="font-size:1.1rem">@_vramLabel</div>
+            </div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-body">
+            <h5 class="card-title">Live metrics (SignalR)</h5>
+            <p class="text-muted small mb-0">
+                Connect to <code>/hubs/dashboard</code> — broadcasts should be throttled (≈1–2s) via <code>DashboardHub</code>.
+            </p>
+        </div>
+    </div>
+}
+
+@if (!Onboarding.TourCompleted)
+{
+    <div class="alert-soft mt-3">
+        First time here? <a href="/setup">Run the setup wizard</a>.
+    </div>
+}
+
+@code {
+    private bool ShowAdvanced;
+    private string _statusEmoji = "🟡";
+    private string _statusText = "Checking…";
+    private int _requestsToday;
+    private string _modelLabel = "—";
+    private double _gpuPct;
+    private string _gpuName = "—";
+    private double _tps;
+    private int _jobsWaiting;
+    private int _jobsRunning;
+    private string _vramLabel = "—";
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!Onboarding.TourCompleted && await IsFirstRunAsync())
+        {
+            Nav.NavigateTo("/setup");
+            return;
+        }
+
+        if (!Onboarding.TourCompleted)
+        {
+            Onboarding.TourCompleted = true;
+            Onboarding.Save();
+        }
+
+        ShowAdvanced = Onboarding.AdvancedMode;
+        try
+        {
+            var s = await Settings.GetAsync();
+            ShowAdvanced = ShowAdvanced || s.ShowAdvancedMetrics;
+        }
+        catch { }
+
+        await RefreshAsync();
+        _refreshCts = new CancellationTokenSource();
+        _ = RefreshLoopAsync(_refreshCts.Token);
+    }
+
+    private CancellationTokenSource? _refreshCts;
+
+    private async Task RefreshLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                await RefreshAsync();
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    public void Dispose()
+    {
+        _refreshCts?.Cancel();
+        _refreshCts?.Dispose();
+    }
+
+    private async Task<bool> IsFirstRunAsync()
+    {
+        try
+        {
+            // Check if admin user exists
+            var hasAdmin = await Db.Users.AnyAsync(u => u.Role == "admin");
+            if (!hasAdmin)
+                return true;
+
+            // Check if models path is configured
+            var settings = await Settings.GetAsync();
+            if (string.IsNullOrWhiteSpace(settings.ModelsPath))
+                return true;
+
+            return false;
+        }
+        catch
+        {
+            // If DB not ready, assume first run
+            return true;
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        try
+        {
+            if (Engine.IsLoaded && Engine.IsRunning)
+            {
+                _statusEmoji = "🟢";
+                _statusText = Engine.Engine.IsMock ? "Running (mock engine)" : "Running";
+            }
+            else if (Engine.IsLoaded)
+            {
+                _statusEmoji = "🟡";
+                _statusText = "Model loaded, not running";
+            }
+            else
+            {
+                _statusEmoji = "🔴";
+                _statusText = "No model loaded";
+            }
+
+            _modelLabel = Engine.LoadedModelPath is { } p
+                ? Path.GetFileName(p.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+                : "None";
+
+            if (Engine.IsLoaded)
+            {
+                try
+                {
+                    var m = Engine.Engine.GetMetrics();
+                    _tps = m.TokensPerSecond;
+                    _jobsWaiting = (int)m.NumJobsWaiting;
+                    _jobsRunning = (int)m.NumJobsRunning;
+                }
+                catch { }
+            }
+        }
+        catch
+        {
+            _statusEmoji = "🟡";
+            _statusText = "Engine unavailable";
+        }
+
+        try
+        {
+            var start = DateTime.UtcNow.Date;
+            _requestsToday = await Db.AuditLogs.CountAsync(a => a.Timestamp >= start);
+        }
+        catch
+        {
+            _requestsToday = 0;
+        }
+
+        var gpu = await GpuInfo.GetPrimaryAsync();
+        if (gpu is not null)
+        {
+            _gpuPct = gpu.UtilizationPct;
+            _gpuName = gpu.Name;
+            _vramLabel = $"{gpu.MemoryUsedMb:0}/{gpu.MemoryTotalMb:0} MB";
+        }
+    }
+
+    private void ToggleAdvanced()
+    {
+        ShowAdvanced = !ShowAdvanced;
+        Onboarding.AdvancedMode = ShowAdvanced;
+    }
+}

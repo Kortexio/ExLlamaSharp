@@ -1,0 +1,98 @@
+@page "/dashboard/metrics"
+@rendermode InteractiveServer
+@inject EngineHostService Engine
+@inject AppDbContext Db
+@using Microsoft.EntityFrameworkCore
+
+<PageTitle>Metrics — ExLlamaSharp</PageTitle>
+
+<div class="page-header">
+    <h1>Metrics</h1>
+    <p>Throughput, latency, and A/B experiments.</p>
+</div>
+
+<div class="tabs">
+    <button class="tab-btn @(Tab == "charts" ? "active" : "")" @onclick='() => Tab = "charts"'>Charts</button>
+    <button class="tab-btn @(Tab == "ab" ? "active" : "")" @onclick='() => Tab = "ab"'>A/B</button>
+</div>
+
+@if (Tab == "charts")
+{
+    <div class="stat-grid mb-3">
+        <div class="card"><div class="card-body"><div class="stat-label">Tokens/sec</div><div class="stat-value">@_tps.ToString("0.0")</div></div></div>
+        <div class="card"><div class="card-body"><div class="stat-label">Waiting</div><div class="stat-value">@_wait</div></div></div>
+        <div class="card"><div class="card-body"><div class="stat-label">Running</div><div class="stat-value">@_run</div></div></div>
+    </div>
+    <div class="card mb-3">
+        <div class="card-body">
+            <h5 class="card-title">Tokens / second (placeholder)</h5>
+            <div class="chart-placeholder">Chart: TPS over time</div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-body">
+            <h5 class="card-title">Latency (placeholder)</h5>
+            <div class="chart-placeholder">Chart: p50 / p95 latency</div>
+        </div>
+    </div>
+}
+else
+{
+    <div class="card">
+        <div class="card-body p-0">
+            <table class="table-clean">
+                <thead>
+                    <tr><th>Name</th><th>Model A</th><th>Model B</th><th>Split</th><th>Active</th></tr>
+                </thead>
+                <tbody>
+                    @if (_tests.Count == 0)
+                    {
+                        <tr><td colspan="5" class="text-muted">No A/B tests configured.</td></tr>
+                    }
+                    @foreach (var t in _tests)
+                    {
+                        <tr>
+                            <td>@t.Name</td>
+                            <td><code>@t.ModelAId.ToString()[..8]</code></td>
+                            <td><code>@t.ModelBId.ToString()[..8]</code></td>
+                            <td>@((t.SplitRatio * 100).ToString("0"))% A</td>
+                            <td>@(t.Active ? "yes" : "no")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+}
+
+@code {
+    private string Tab = "charts";
+    private double _tps;
+    private int _wait;
+    private int _run;
+    private List<AbTest> _tests = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            if (Engine.IsLoaded)
+            {
+                var m = Engine.Engine.GetMetrics();
+                _tps = m.TokensPerSecond;
+                _wait = (int)m.NumJobsWaiting;
+                _run = (int)m.NumJobsRunning;
+            }
+        }
+        catch { }
+
+        try
+        {
+            _tests = await Db.AbTests.AsNoTracking().OrderByDescending(t => t.Id).Take(50).ToListAsync();
+        }
+        catch
+        {
+            _tests = [];
+        }
+    }
+}

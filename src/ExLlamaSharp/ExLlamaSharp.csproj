@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <TieredCompilation>true</TieredCompilation>
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <RootNamespace>ExLlamaSharp</RootNamespace>
+    <Description>Managed bindings and inference wrappers for ExLlamaSharp (exllamasharp.dll).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="runtimes\win-x64\native\exllamasharp.dll"
+          Condition="Exists('runtimes\win-x64\native\exllamasharp.dll')"
+          CopyToOutputDirectory="PreserveNewest"
+          Link="exllamasharp.dll" />
+  </ItemGroup>
+
+</Project>

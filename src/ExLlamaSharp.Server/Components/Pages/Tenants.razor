@@ -1,0 +1,134 @@
+@page "/admin/tenants"
+@rendermode InteractiveServer
+@inject AppDbContext Db
+@using Microsoft.EntityFrameworkCore
+
+<PageTitle>Tenants — ExLlamaSharp</PageTitle>
+
+<div class="page-header d-flex justify-content-between align-items-start flex-wrap gap-2">
+    <div>
+        <h1>Tenants</h1>
+        <p>Multi-tenant administration.</p>
+    </div>
+    <button class="btn btn-primary" @onclick="() => _showCreate = true">New tenant</button>
+</div>
+
+@if (_showCreate)
+{
+    <div class="card mb-3">
+        <div class="card-body">
+            <div class="form-grid">
+                <div>
+                    <label class="form-label">Id</label>
+                    <input class="form-control" @bind="_newId" placeholder="acme" />
+                </div>
+                <div>
+                    <label class="form-label">Name</label>
+                    <input class="form-control" @bind="_newName" />
+                </div>
+                <div>
+                    <label class="form-label">Subdomain</label>
+                    <input class="form-control" @bind="_newSub" />
+                </div>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-primary" @onclick="CreateAsync">Create</button>
+                    <button class="btn btn-outline-secondary" @onclick="() => _showCreate = false">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+<div class="card">
+    <div class="card-body p-0">
+        <table class="table-clean">
+            <thead>
+                <tr><th>Id</th><th>Name</th><th>Subdomain</th><th>Active</th><th>Created</th></tr>
+            </thead>
+            <tbody>
+                @if (_tenants.Count == 0)
+                {
+                    <tr><td colspan="5" class="text-muted">No tenants.</td></tr>
+                }
+                @foreach (var t in _tenants)
+                {
+                    <tr>
+                        <td><code>@t.Id</code></td>
+                        <td>@t.Name</td>
+                        <td>@(t.Subdomain ?? "—")</td>
+                        <td>
+                            @if (t.Active)
+                            {
+                                <span class="badge-status badge-ok">active</span>
+                            }
+                            else
+                            {
+                                <span class="badge-status badge-muted">inactive</span>
+                            }
+                        </td>
+                        <td>@t.CreatedAt.ToLocalTime().ToString("d")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(_error))
+{
+    <div class="alert-soft mt-3 text-danger">@_error</div>
+}
+
+@code {
+    private List<Tenant> _tenants = [];
+    private bool _showCreate;
+    private string _newId = "";
+    private string _newName = "";
+    private string _newSub = "";
+    private string? _error;
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        try
+        {
+            _tenants = await Db.Tenants.AsNoTracking().OrderBy(t => t.Name).ToListAsync();
+        }
+        catch
+        {
+            _tenants =
+            [
+                new Tenant { Id = "default", Name = "Default", Active = true, CreatedAt = DateTime.UtcNow },
+            ];
+        }
+    }
+
+    private async Task CreateAsync()
+    {
+        _error = null;
+        if (string.IsNullOrWhiteSpace(_newId) || string.IsNullOrWhiteSpace(_newName))
+        {
+            _error = "Id and name required.";
+            return;
+        }
+
+        try
+        {
+            Db.Tenants.Add(new Tenant
+            {
+                Id = _newId.Trim().ToLowerInvariant(),
+                Name = _newName.Trim(),
+                Subdomain = string.IsNullOrWhiteSpace(_newSub) ? null : _newSub.Trim(),
+                Active = true,
+            });
+            await Db.SaveChangesAsync();
+            _showCreate = false;
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+    }
+}

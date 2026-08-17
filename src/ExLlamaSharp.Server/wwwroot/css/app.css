@@ -1,0 +1,419 @@
+/* ExLlamaSharp → Kortexio bridge (legacy class aliases). Theme tokens live in kortexio-theme.css. */
+
+:root {
+  --bg: var(--kx-bg);
+  --surface: var(--kx-surface);
+  --accent: var(--kx-accent);
+  --accent-dark: var(--kx-accent-hover);
+  --success: #16a34a;
+  --warning: var(--kx-warning);
+  --danger: var(--kx-danger);
+  --muted: var(--kx-muted);
+  --border: var(--kx-border);
+  --radius: var(--kx-radius);
+  --shadow: var(--kx-shadow-md);
+}
+
+/* Shell aliases (prefer kx-* in layout; keep for any leftover markup) */
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+  background: var(--kx-bg);
+}
+
+.app-shell .sidebar,
+.sidebar {
+  width: var(--kx-sidebar-w);
+  flex-shrink: 0;
+  background: var(--kx-surface);
+  border-right: 1px solid var(--kx-border);
+  color: var(--kx-text);
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 1040;
+}
+
+.nav-menu {
+  padding: 1rem 0.75rem;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.nav-section {
+  margin: 0.9rem 0 0.35rem;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--kx-muted);
+  padding: 0 0.65rem;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.55rem 0.65rem;
+  border-radius: var(--kx-radius-sm);
+  color: var(--kx-text) !important;
+  text-decoration: none !important;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.nav-item:hover {
+  background: var(--kx-surface-2);
+  color: var(--kx-text) !important;
+}
+
+.nav-item.active {
+  background: var(--kx-accent-soft);
+  color: var(--kx-accent-hover) !important;
+  font-weight: 600;
+}
+
+.sidebar-footer {
+  margin: 0.75rem;
+  padding: 0.75rem 0.85rem;
+}
+
+.main-area,
+.kx-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1.5rem;
+  background: rgba(255, 255, 255, 0.85);
+  border-bottom: 1px solid var(--kx-border);
+  backdrop-filter: blur(8px);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.topbar-spacer {
+  flex: 1;
+}
+
+.content {
+  padding: 1.75rem 2rem 2.5rem;
+  flex: 1;
+  max-width: 1200px;
+}
+
+/* Page header → kx-page-title fonts */
+.page-header {
+  margin-bottom: 1.5rem;
+}
+
+.page-header h1 {
+  font-family: var(--kx-display);
+  font-size: 1.65rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0 0 0.25rem;
+  color: var(--kx-text);
+}
+
+.page-header p {
+  margin: 0;
+  color: var(--kx-muted);
+  font-size: 0.95rem;
+}
+
+/* Cards already styled in kortexio; light extras */
+.card-body {
+  padding: 1.1rem 1.25rem;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+}
+
+.stat-card .stat-value {
+  font-size: 1.75rem;
+  font-weight: 700;
+  line-height: 1.2;
+  font-family: var(--kx-display);
+}
+
+.stat-card .stat-label {
+  color: var(--kx-muted);
+  font-size: 0.85rem;
+}
+
+.badge-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.badge-ok { background: #dcfce7; color: #166534; }
+.badge-warn { background: #ffedd5; color: #9a3412; }
+.badge-err { background: #fee2e2; color: #991b1b; }
+.badge-info { background: var(--kx-accent-soft); color: var(--kx-accent-hover); }
+.badge-muted { background: var(--kx-surface-2); color: var(--kx-muted); }
+.badge-success { background: #16a34a; color: #fff; }
+
+.mode-badge {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  background: var(--kx-accent-soft);
+  color: var(--kx-accent-hover);
+  font-weight: 600;
+}
+
+.btn-help {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--kx-border);
+  background: var(--kx-surface);
+  font-weight: 700;
+  color: var(--kx-text);
+  cursor: pointer;
+}
+
+.btn-help:hover {
+  background: var(--kx-surface-2);
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  border-bottom: 1px solid var(--kx-border);
+  margin-bottom: 1rem;
+  padding-bottom: 0.35rem;
+}
+
+.tab-btn {
+  border: 0;
+  background: transparent;
+  padding: 0.45rem 0.85rem;
+  border-radius: var(--kx-radius-sm);
+  color: var(--kx-muted);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tab-btn.active {
+  background: var(--kx-accent-soft);
+  color: var(--kx-accent-hover);
+}
+
+.table-clean {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.table-clean th,
+.table-clean td {
+  padding: 0.65rem 0.75rem;
+  border-bottom: 1px solid var(--kx-border);
+  text-align: left;
+  font-size: 0.92rem;
+}
+
+.table-clean th {
+  color: var(--kx-muted);
+  font-weight: 600;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.chat-layout {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  height: calc(100vh - 140px);
+  min-height: 420px;
+}
+
+.chat-messages {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+}
+
+.bubble {
+  max-width: min(720px, 92%);
+  padding: 0.75rem 1rem;
+  border-radius: 14px;
+  white-space: pre-wrap;
+  line-height: 1.45;
+}
+
+.bubble.user {
+  align-self: flex-end;
+  background: var(--kx-accent);
+  color: #fff;
+}
+
+.bubble.assistant {
+  align-self: flex-start;
+  background: var(--kx-surface);
+  border: 1px solid var(--kx-border);
+}
+
+.bubble.system {
+  align-self: center;
+  background: #fef9c3;
+  color: #854d0e;
+  font-size: 0.85rem;
+}
+
+.chat-input {
+  display: flex;
+  gap: 0.75rem;
+  padding: 1rem;
+  border-top: 1px solid var(--kx-border);
+}
+
+.wizard-steps {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.25rem;
+}
+
+.wizard-step {
+  flex: 1;
+  min-width: 110px;
+  text-align: center;
+  padding: 0.5rem;
+  border-radius: var(--kx-radius-sm);
+  background: var(--kx-surface-2);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--kx-muted);
+}
+
+.wizard-step.active {
+  background: var(--kx-accent);
+  color: #fff;
+}
+
+.wizard-step.done {
+  background: #bbf7d0;
+  color: #166534;
+}
+
+.chart-placeholder {
+  height: 180px;
+  border-radius: var(--kx-radius-sm);
+  background:
+    linear-gradient(180deg, rgba(13, 148, 136, 0.18), transparent),
+    repeating-linear-gradient(90deg, transparent, transparent 24px, rgba(148, 163, 184, 0.25) 24px, rgba(148, 163, 184, 0.25) 25px);
+  border: 1px dashed var(--kx-border);
+  display: grid;
+  place-items: center;
+  color: var(--kx-muted);
+  font-weight: 600;
+}
+
+.member-grid,
+.key-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 1rem;
+}
+
+.help-panel {
+  position: fixed;
+  top: 72px;
+  right: 1.25rem;
+  width: min(360px, calc(100vw - 2rem));
+  z-index: 50;
+}
+
+.modal-backdrop.show {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.35);
+  z-index: 40;
+}
+
+.code-block {
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: var(--kx-radius-sm);
+  padding: 1rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.progress-thin {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--kx-surface-2);
+  overflow: hidden;
+}
+
+.progress-thin > span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #2dd4bf, var(--kx-accent));
+}
+
+.form-grid {
+  display: grid;
+  gap: 0.85rem;
+  max-width: 560px;
+}
+
+.alert-soft {
+  border-radius: var(--kx-radius-sm);
+  padding: 0.85rem 1rem;
+  background: var(--kx-surface);
+  border: 1px solid var(--kx-border);
+}
+
+.log-console {
+  margin: 0;
+  padding: 1rem 1.1rem;
+  min-height: 320px;
+  max-height: min(60vh, 560px);
+  overflow: auto;
+  font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: #e2e8f0;
+  background: #0f172a;
+  border: none;
+  border-radius: 0 0 var(--kx-radius) var(--kx-radius);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Sidebar footer mode toggle on light shell */
+.kx-sidebar-footer {
+  margin: 0.75rem;
+  padding: 0.75rem 0.85rem;
+  border-top: 1px solid var(--kx-border);
+}
+
+.kx-sidebar-footer .btn {
+  width: 100%;
+}

@@ -1,0 +1,137 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+.vs/
+
+# Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+
+# Visual Studio cache/options
+.vscode/
+.idea/
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# C++ / Native
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.exp
+*.lib
+*.pdb
+*.ilk
+*.exe
+*.out
+*.app
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# CUDA
+*.cubin
+*.ptx
+*.fatbin
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Models and data
+models/
+*.safetensors
+*.bin
+*.gguf
+*.pth
+*.pt
+
+# Logs and databases
+*.log
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.old
+
+# Native build trees
+native/exllamasharp/build/
+
+# Keep third_party/exllamav3 local; never treat it as something to publish upstream.
+# (Push to turboderp-org/exllamav3 is blocked via packaging/block-exllamav3-push.ps1)
+
+# publish/
+publish/
+*.msix
+*.pfx
+
+# Large CUDA wheels (download via packaging\Download-OfflineWheels.ps1)
+packaging/offline-wheels/
+
+# Local Python / CUDA trees — never commit
+.venv-exl3/
+.wix/
+third_party/libtorch/
+third_party/exllamav3/
+exllamav3-master.zip
+windowsdesktop-runtime*.exe
+
+# Native CMake out-of-tree builds
+native/exllamasharp/build-cuda/
+native/exllamasharp/build-stub/
+

@@ -1,0 +1,71 @@
+@page "/about"
+@rendermode InteractiveServer
+@inject AboutService AboutSvc
+
+<PageTitle>About — ExLlamaSharp</PageTitle>
+
+<div class="page-header">
+    <h1>About</h1>
+    <p>Build and runtime information.</p>
+</div>
+
+@if (_info is null)
+{
+    <div class="alert-soft">Unable to load about info.</div>
+}
+else
+{
+    <div class="stat-grid mb-3">
+        <div class="card"><div class="card-body"><div class="stat-label">Version</div><div class="stat-value" style="font-size:1.2rem">@_info.Version</div></div></div>
+        <div class="card"><div class="card-body"><div class="stat-label">Build</div><div>@(_info.BuildDate?.ToLocalTime().ToString("g") ?? "—")</div></div></div>
+        <div class="card"><div class="card-body"><div class="stat-label">.NET</div><div>@_info.Runtime.Dotnet</div></div></div>
+        <div class="card"><div class="card-body"><div class="stat-label">OS</div><div class="small">@_info.Runtime.Os</div></div></div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-body">
+            <h5 class="card-title">Engine</h5>
+            <ul class="mb-0">
+                <li>Mock: @_info.Engine.IsMock</li>
+                <li>Loaded: @_info.Engine.IsLoaded</li>
+                <li>Running: @_info.Engine.IsRunning</li>
+                <li>Model: @(_info.Engine.LoadedModelPath ?? "—")</li>
+                <li>TPS: @(_info.Engine.TokensPerSecond?.ToString("0.0") ?? "—")</li>
+            </ul>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-body">
+            <h5 class="card-title">GPU</h5>
+            @if (_info.Gpu.Available)
+            {
+                <ul class="mb-0">
+                    <li>@_info.Gpu.Name</li>
+                    <li>VRAM: @(_info.Gpu.VramTotalMb?.ToString("0") ?? "?") MB</li>
+                    <li>Compute: @(_info.Gpu.ComputeCapability ?? "—")</li>
+                </ul>
+            }
+            else
+            {
+                <p class="text-muted mb-0">No NVIDIA GPU detected via nvidia-smi.</p>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    private AboutInfo? _info;
+
+    protected override void OnInitialized()
+    {
+        try
+        {
+            _info = AboutSvc.GetAbout();
+        }
+        catch
+        {
+            _info = null;
+        }
+    }
+}

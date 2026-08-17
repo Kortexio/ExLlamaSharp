@@ -1,0 +1,178 @@
+@page "/jobs"
+@rendermode InteractiveServer
+@implements IDisposable
+@inject ModelJobsService JobQueue
+
+<PageTitle>Jobs — ExLlamaSharp</PageTitle>
+
+<div class="page-header d-flex justify-content-between align-items-start">
+    <div>
+        <h1>Jobs</h1>
+        <p>Pull, quantize, and import work queue. Download size and parameter count update every 2 seconds.</p>
+    </div>
+    <button class="btn btn-outline-secondary btn-sm" @onclick="ReloadAsync">Refresh</button>
+</div>
+
+<div class="stat-grid mb-3">
+    <div class="card stat-card"><div class="card-body"><div class="stat-label">Active</div><div class="stat-value">@_active.Count</div></div></div>
+    <div class="card stat-card"><div class="card-body"><div class="stat-label">Waiting</div><div class="stat-value">@_waiting.Count</div></div></div>
+    <div class="card stat-card"><div class="card-body"><div class="stat-label">Recent</div><div class="stat-value">@_recent.Count</div></div></div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-body">
+        <h5 class="card-title">Active</h5>
+        @RenderTable(_active, showCancel: true)
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-body">
+        <h5 class="card-title">Waiting</h5>
+        @RenderTable(_waiting, showCancel: true)
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <h5 class="card-title">Recent</h5>
+        @RenderTable(_recent, showCancel: false)
+    </div>
+</div>
+
+@code {
+    private List<ModelJob> _active = [];
+    private List<ModelJob> _waiting = [];
+    private List<ModelJob> _recent = [];
+    private CancellationTokenSource? _pollCts;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ReloadAsync();
+        _pollCts = new CancellationTokenSource();
+        _ = PollAsync(_pollCts.Token);
+    }
+
+    private async Task PollAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                await ReloadAsync();
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        try
+        {
+            var all = await JobQueue.ListAsync();
+            _active = all.Where(j => j.Status is "running" or "downloading").ToList();
+            _waiting = all.Where(j => j.Status is "pending").ToList();
+            _recent = all.Where(j => j.Status is "completed" or "failed" or "cancelled").Take(30).ToList();
+        }
+        catch
+        {
+            _active = [];
+            _waiting = [];
+            _recent = [];
+        }
+    }
+
+    private async Task CancelAsync(Guid id)
+    {
+        await JobQueue.CancelAsync(id);
+        await ReloadAsync();
+    }
+
+    public void Dispose()
+    {
+        _pollCts?.Cancel();
+        _pollCts?.Dispose();
+    }
+
+    private string ParameterLabel(ModelJob job)
+    {
+        if (JobQueue.TryGetPullMeta(job.JobId, out var meta) && !string.IsNullOrWhiteSpace(meta?.ParameterLabel))
+        {
+            return meta!.ParameterLabel!;
+        }
+
+        return HuggingFaceCatalogService.InferParameterLabel(job.Error) ?? "—";
+    }
+
+    private string SizeLabel(ModelJob job)
+    {
+        if (JobQueue.TryGetPullMeta(job.JobId, out var meta) && meta is not null)
+        {
+            if (meta.BytesTotal > 0)
+            {
+                return job.Status is "completed"
+                    ? HuggingFaceCatalogService.FormatBytes(meta.BytesTotal)
+                    : $"{HuggingFaceCatalogService.FormatBytes(meta.BytesDownloaded)} / {HuggingFaceCatalogService.FormatBytes(meta.BytesTotal)}";
+            }
+
+            if (meta.BytesDownloaded > 0)
+            {
+                return HuggingFaceCatalogService.FormatBytes(meta.BytesDownloaded);
+            }
+        }
+
+        return "—";
+    }
+
+    private RenderFragment RenderTable(List<ModelJob> jobs, bool showCancel) => __builder =>
+    {
+        <table class="table-clean">
+            <thead>
+                <tr>
+                    <th>Type</th>
+                    <th>Status</th>
+                    <th>Params</th>
+                    <th>Size</th>
+                    <th>Progress</th>
+                    <th>Detail</th>
+                    <th>Updated</th>
+                    @if (showCancel)
+                    {
+                        <th></th>
+                    }
+                </tr>
+            </thead>
+            <tbody>
+                @if (jobs.Count == 0)
+                {
+                    <tr><td colspan="@(showCancel ? 8 : 7)" class="text-muted">None</td></tr>
+                }
+                @foreach (var j in jobs)
+                {
+                    <tr>
+                        <td>@j.Type</td>
+                        <td><span class="badge-status badge-info">@j.Status</span></td>
+                        <td>@ParameterLabel(j)</td>
+                        <td>@SizeLabel(j)</td>
+                        <td>
+                            <div class="progress-thin"><span style="width:@(j.ProgressPct.ToString("0"))%"></span></div>
+                            <span class="small text-muted">@j.ProgressPct.ToString("0")%</span>
+                        </td>
+                        <td class="small">@(string.IsNullOrWhiteSpace(j.Error) ? "—" : j.Error)</td>
+                        <td>@j.UpdatedAt.ToLocalTime().ToString("g")</td>
+                        @if (showCancel)
+                        {
+                            <td>
+                                <button class="btn btn-sm btn-outline-secondary" @onclick="() => CancelAsync(j.JobId)">Cancel</button>
+                            </td>
+                        }
+                    </tr>
+                }
+            </tbody>
+        </table>
+    };
+}

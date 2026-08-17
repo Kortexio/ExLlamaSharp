@@ -1,0 +1,58 @@
+@page "/team"
+@rendermode InteractiveServer
+@inject AppDbContext Db
+@using Microsoft.EntityFrameworkCore
+
+<PageTitle>Team — ExLlamaSharp</PageTitle>
+
+<div class="page-header">
+    <h1>Team</h1>
+    <p>People who can manage this server.</p>
+</div>
+
+<div class="member-grid">
+    @if (_users.Count == 0)
+    {
+        <div class="card"><div class="card-body text-muted">No users yet. Create an admin in <a href="/setup">Setup</a>.</div></div>
+    }
+    @foreach (var u in _users)
+    {
+        <div class="card">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <h5 class="card-title mb-1">@u.Username</h5>
+                        <span class="badge-status badge-info">@u.Role</span>
+                    </div>
+                    <span class="badge-status badge-muted">@u.TenantId</span>
+                </div>
+                <div class="text-muted small mt-3">
+                    Joined @u.CreatedAt.ToLocalTime().ToString("d")
+                    @if (u.LastActive is DateTime la)
+                    {
+                        <span>· Last active @la.ToLocalTime().ToString("g")</span>
+                    }
+                </div>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    private List<User> _users = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _users = await Db.Users.AsNoTracking().OrderBy(u => u.Username).ToListAsync();
+        }
+        catch
+        {
+            _users =
+            [
+                new User { Username = "admin", Role = "admin", TenantId = "default", CreatedAt = DateTime.UtcNow },
+            ];
+        }
+    }
+}

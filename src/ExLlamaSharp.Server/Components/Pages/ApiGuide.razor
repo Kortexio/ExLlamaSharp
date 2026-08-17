@@ -1,0 +1,83 @@
+﻿@page "/api"
+@rendermode InteractiveServer
+@inject SettingsService Settings
+
+<PageTitle>API Guide — ExLlamaSharp</PageTitle>
+
+<div class="page-header">
+    <h1>API guide</h1>
+    <p>Copy-paste curl examples for the OpenAI-compatible API.</p>
+</div>
+
+<div class="card mb-3">
+    <div class="card-body">
+        <h5 class="card-title">Base URL</h5>
+        <p class="mb-2"><code>@_base</code></p>
+    </div>
+</div>
+
+@foreach (var ex in _examples)
+{
+    var body = ex.Body.Replace("{BASE}", _base);
+    <div class="card mb-3">
+        <div class="card-body">
+            <h5 class="card-title">@ex.Title</h5>
+            <pre class="code-block">@body</pre>
+            <button class="btn btn-sm btn-outline-primary" @onclick="() => Select(body)">Show for copy</button>
+        </div>
+    </div>
+}
+
+@if (!string.IsNullOrEmpty(_selected))
+{
+    <div class="alert-soft">
+        <strong>Selected snippet:</strong>
+        <pre class="code-block mt-2 mb-0">@_selected</pre>
+    </div>
+}
+
+@code {
+    private string _base = "http://127.0.0.1:14563";
+    private string? _selected;
+
+    private readonly (string Title, string Body)[] _examples =
+    [
+        ("List models", """
+curl "{BASE}/v1/models" \
+  -H "Authorization: Bearer YOUR_API_KEY"
+"""),
+        ("Chat completion", """
+curl "{BASE}/v1/chat/completions" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"model\":\"default\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]}"
+"""),
+        ("Streaming chat", """
+curl -N "{BASE}/v1/chat/completions" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"model\":\"default\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]}"
+"""),
+        ("Embeddings", """
+curl "{BASE}/v1/embeddings" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"model\":\"default\",\"input\":\"hello world\"}"
+"""),
+        ("Health", """
+curl "{BASE}/health"
+"""),
+    ];
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var s = await Settings.GetAsync();
+            _base = $"http://{s.BindAddress}:{s.Port}";
+        }
+        catch { }
+    }
+
+    private void Select(string body) => _selected = body;
+}

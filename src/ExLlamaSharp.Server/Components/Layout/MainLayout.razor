@@ -1,0 +1,127 @@
+@inherits LayoutComponentBase
+@inject OnboardingState Onboarding
+@inject NavigationManager Nav
+@inject IJSRuntime Js
+
+<div class="kx-shell @(AdvancedMode ? "mode-advanced" : "mode-simple")">
+    <aside class="kx-sidebar" aria-label="Primary">
+        <a class="kx-brand" href="/" @onclick="CloseOverlayAsync">
+            <span class="kx-brand-mark">ExLlama<span>Sharp</span></span>
+            <span class="kx-brand-sub">Admin Console</span>
+        </a>
+
+        <NavMenu AdvancedMode="AdvancedMode" OnNavigate="CloseOverlayAsync" />
+
+        <div class="kx-sidebar-footer">
+            <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="ToggleMode">
+                @(AdvancedMode ? "Simple mode" : "Advanced mode")
+            </button>
+        </div>
+    </aside>
+
+    <div class="kx-overlay" @onclick="CloseOverlayAsync"></div>
+
+    <div class="kx-main">
+        <header class="kx-topbar">
+            <button type="button" class="kx-topbar-toggle" title="Toggle navigation" @onclick="ToggleSidebarAsync">
+                ☰
+            </button>
+            <div class="kx-topbar-spacer"></div>
+            <div class="mode-badge">@(AdvancedMode ? "Advanced" : "Simple")</div>
+            <button type="button" class="btn-help" title="Help" @onclick="ShowHelp">?</button>
+            @if (_signedIn)
+            {
+                <span class="kx-topbar-btn" title="Signed in">admin</span>
+            }
+            else
+            {
+                <a class="kx-topbar-btn" href="/login">Login</a>
+            }
+        </header>
+
+        <main class="kx-content">
+            @Body
+        </main>
+    </div>
+</div>
+
+@if (_helpOpen)
+{
+    <div class="modal-backdrop show" @onclick="() => _helpOpen = false"></div>
+    <div class="help-panel card shadow">
+        <div class="card-body">
+            <h5 class="card-title">Quick help</h5>
+            <ul class="mb-3">
+                <li><a href="/setup">Setup wizard</a> — first-run configuration</li>
+                <li><a href="/diagnostics">Diagnostics</a> — health checks</li>
+                <li><a href="/api">API guide</a> — curl examples</li>
+                <li><a href="/about">About</a> — version &amp; GPU</li>
+            </ul>
+            <p class="text-muted small mb-2">
+                Toggle <strong>Simple / Advanced</strong> to show or hide power-user metrics and settings.
+            </p>
+            <button class="btn btn-primary btn-sm" @onclick="() => _helpOpen = false">Got it</button>
+        </div>
+    </div>
+}
+
+@code {
+    private bool AdvancedMode { get; set; }
+    private bool _helpOpen;
+    private bool _signedIn;
+
+    protected override void OnInitialized()
+    {
+        AdvancedMode = Onboarding.AdvancedMode;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+
+        try
+        {
+            _signedIn = await Js.InvokeAsync<bool>("exLlamaSharpAdmin.hasApiKeyCookie");
+            if (_signedIn)
+            {
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (JSException)
+        {
+        }
+    }
+
+    private void ToggleMode()
+    {
+        AdvancedMode = !AdvancedMode;
+        Onboarding.AdvancedMode = AdvancedMode;
+    }
+
+    private void ShowHelp() => _helpOpen = true;
+
+    private async Task ToggleSidebarAsync()
+    {
+        try
+        {
+            await Js.InvokeVoidAsync("exLlamaSharpAdmin.toggleSidebar");
+        }
+        catch (JSException)
+        {
+        }
+    }
+
+    private async Task CloseOverlayAsync()
+    {
+        try
+        {
+            await Js.InvokeVoidAsync("exLlamaSharpAdmin.closeSidebarOverlay");
+        }
+        catch (JSException)
+        {
+        }
+    }
+}

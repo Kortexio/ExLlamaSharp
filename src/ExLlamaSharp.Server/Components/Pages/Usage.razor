@@ -1,0 +1,72 @@
+@page "/usage"
+@rendermode InteractiveServer
+@inject AppDbContext Db
+@using Microsoft.EntityFrameworkCore
+
+<PageTitle>Usage — ExLlamaSharp</PageTitle>
+
+<div class="page-header">
+    <h1>Usage</h1>
+    <p>Business view of API consumption.</p>
+</div>
+
+<div class="stat-grid mb-3">
+    <div class="card stat-card"><div class="card-body"><div class="stat-label">Requests (7d)</div><div class="stat-value">@_req7</div></div></div>
+    <div class="card stat-card"><div class="card-body"><div class="stat-label">Prompt tokens</div><div class="stat-value">@_prompt</div></div></div>
+    <div class="card stat-card"><div class="card-body"><div class="stat-label">Completion tokens</div><div class="stat-value">@_completion</div></div></div>
+    <div class="card stat-card"><div class="card-body"><div class="stat-label">Est. cost</div><div class="stat-value">@_cost.ToString("C")</div></div></div>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <h5 class="card-title">Recent activity</h5>
+        <table class="table-clean">
+            <thead>
+                <tr><th>When</th><th>Endpoint</th><th>Tokens</th><th>Status</th><th>ms</th></tr>
+            </thead>
+            <tbody>
+                @if (_recent.Count == 0)
+                {
+                    <tr><td colspan="5" class="text-muted">No audit rows yet.</td></tr>
+                }
+                @foreach (var a in _recent)
+                {
+                    <tr>
+                        <td>@a.Timestamp.ToLocalTime().ToString("g")</td>
+                        <td><code>@a.Endpoint</code></td>
+                        <td>@(a.PromptTokens + a.CompletionTokens)</td>
+                        <td>@a.StatusCode</td>
+                        <td>@a.DurationMs</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@code {
+    private int _req7;
+    private int _prompt;
+    private int _completion;
+    private decimal _cost;
+    private List<AuditLog> _recent = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var since = DateTime.UtcNow.AddDays(-7);
+            var q = Db.AuditLogs.AsNoTracking().Where(a => a.Timestamp >= since);
+            _req7 = await q.CountAsync();
+            _prompt = await q.SumAsync(a => (int?)a.PromptTokens) ?? 0;
+            _completion = await q.SumAsync(a => (int?)a.CompletionTokens) ?? 0;
+            _cost = await q.SumAsync(a => (decimal?)a.EstimatedCost) ?? 0;
+            _recent = await Db.AuditLogs.AsNoTracking().OrderByDescending(a => a.Timestamp).Take(25).ToListAsync();
+        }
+        catch
+        {
+            _req7 = 0;
+            _recent = [];
+        }
+    }
+}

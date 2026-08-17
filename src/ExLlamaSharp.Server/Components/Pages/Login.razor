@@ -1,0 +1,76 @@
+@page "/login"
+@layout Layout.MainLayout
+@rendermode InteractiveServer
+@inject AppDbContext Db
+@inject NavigationManager Nav
+@inject IJSRuntime Js
+@inject IConfiguration Config
+@using Microsoft.EntityFrameworkCore
+@using ExLlamaSharp.Server.Auth
+@using Microsoft.Extensions.Configuration
+
+<PageTitle>Login — ExLlamaSharp</PageTitle>
+
+<div class="page-header">
+    <h1>Login</h1>
+    <p>Sign in to the admin console.</p>
+</div>
+
+<div class="card" style="max-width:420px">
+    <div class="card-body">
+        <div class="form-grid">
+            <div>
+                <label class="form-label">Username</label>
+                <input class="form-control" @bind="_user" autocomplete="username" />
+            </div>
+            <div>
+                <label class="form-label">Password</label>
+                <input type="password" class="form-control" @bind="_pass" autocomplete="current-password" />
+            </div>
+            @if (!string.IsNullOrEmpty(_error))
+            {
+                <div class="text-danger small">@_error</div>
+            }
+            <button class="btn btn-primary" @onclick="LoginAsync">Sign in</button>
+        </div>
+        <p class="text-muted small mt-3 mb-0">Seed credentials: admin / changeme (salted SHA-256 via PasswordHasher; legacy hex still accepted).</p>
+    </div>
+</div>
+
+@code {
+    private string _user = "admin";
+    private string _pass = "";
+    private string? _error;
+
+    private async Task LoginAsync()
+    {
+        _error = null;
+        try
+        {
+            var candidates = await Db.Users.AsNoTracking()
+                .Where(u => u.Username == _user)
+                .ToListAsync();
+            var found = candidates.FirstOrDefault(u => PasswordHasher.Verify(_pass, u.PasswordHash));
+            if (found is null)
+            {
+                _error = "Invalid username or password.";
+                return;
+            }
+
+            var key = Config["ExLlamaSharp:AdminApiKey"] ?? "sk-exllamasharp-dev";
+            try
+            {
+                await Js.InvokeVoidAsync("exLlamaSharpAdmin.setApiKeyCookie", key);
+            }
+            catch (JSException)
+            {
+            }
+
+            Nav.NavigateTo("/");
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+    }
+}

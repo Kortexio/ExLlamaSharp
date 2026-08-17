@@ -1,0 +1,285 @@
+﻿@page "/setup"
+@rendermode InteractiveServer
+@inject GpuInfoService GpuInfo
+@inject SettingsService Settings
+@inject OnboardingState Onboarding
+@inject AppDbContext Db
+@inject NavigationManager Nav
+@using Microsoft.EntityFrameworkCore
+
+<PageTitle>Setup — ExLlamaSharp</PageTitle>
+
+<div class="page-header">
+    <h1>Setup wizard</h1>
+    <p>Get your inference server ready in five steps.</p>
+</div>
+
+<div class="wizard-steps">
+    @for (var i = 1; i <= 5; i++)
+    {
+        var step = i;
+        <div class="wizard-step @(Step == step ? "active" : Step > step ? "done" : "")">
+            @step. @StepLabel(step)
+        </div>
+    }
+</div>
+
+<div class="card">
+    <div class="card-body">
+        @if (Step == 1)
+        {
+            <h5 class="card-title">Welcome</h5>
+            <p>ExLlamaSharp Admin helps small teams run local LLM inference with a simple console.</p>
+            @if (_gpu is null)
+            {
+                <p class="text-muted">Detecting GPU…</p>
+            }
+            else
+            {
+                <div class="alert-soft mb-3">
+                    <div><strong>@_gpu.Name</strong> @(_gpu.IsMock ? "(mock)" : "")</div>
+                    <div class="text-muted small">
+                        Util @_gpu.UtilizationPct.ToString("0")% ·
+                        VRAM @_gpu.MemoryUsedMb.ToString("0") / @_gpu.MemoryTotalMb.ToString("0") MB ·
+                        @_gpu.TemperatureC.ToString("0")°C
+                    </div>
+                </div>
+            }
+            <button class="btn btn-primary" @onclick="Next">Continue</button>
+        }
+        else if (Step == 2)
+        {
+            <h5 class="card-title">Create admin account</h5>
+            <div class="form-grid">
+                <div>
+                    <label class="form-label">Username</label>
+                    <input class="form-control" @bind="_adminUser" />
+                </div>
+                <div>
+                    <label class="form-label">Password</label>
+                    <input type="password" class="form-control" @bind="_adminPass" />
+                </div>
+                @if (!string.IsNullOrEmpty(_error))
+                {
+                    <div class="text-danger small">@_error</div>
+                }
+                <div class="d-flex gap-2">
+                    <button class="btn btn-outline-secondary" @onclick="Back">Back</button>
+                    <button class="btn btn-primary" @onclick="SaveAdmin">Continue</button>
+                </div>
+            </div>
+        }
+        else if (Step == 3)
+        {
+            <h5 class="card-title">Models path</h5>
+            <div class="form-grid">
+                <div>
+                    <label class="form-label">Folder for downloaded / imported models</label>
+                    <input class="form-control" @bind="_modelsPath" placeholder="C:\Models\exllama" />
+                </div>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-outline-secondary" @onclick="Back">Back</button>
+                    <button class="btn btn-primary" @onclick="SaveModelsPath">Continue</button>
+                </div>
+            </div>
+        }
+        else if (Step == 4)
+        {
+            <h5 class="card-title">Network</h5>
+            <div class="form-grid">
+                <div>
+                    <label class="form-label">Bind address</label>
+                    <input class="form-control" @bind="_bind" />
+                </div>
+                <div>
+                    <label class="form-label">Port</label>
+                    <input type="number" class="form-control" @bind="_port" />
+                </div>
+                <div>
+                    <label class="form-label">CORS</label>
+                    <input class="form-control" @bind="_cors" />
+                </div>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-outline-secondary" @onclick="Back">Back</button>
+                    <button class="btn btn-primary" @onclick="SaveNetwork">Continue</button>
+                </div>
+            </div>
+        }
+        else
+        {
+            <h5 class="card-title">Download initial model</h5>
+            <p class="text-muted">Pick a starter model from the library, or skip and import later.</p>
+            <div class="form-grid mb-3">
+                <div>
+                    <label class="form-label">Model repo (Hugging Face style)</label>
+                    <input class="form-control" @bind="_starterRepo" placeholder="turboderp/Llama-3.2-1B-Instruct-exl3" />
+                </div>
+            </div>
+            @if (!string.IsNullOrEmpty(_status))
+            {
+                <div class="alert-soft mb-3">@_status</div>
+            }
+            <div class="d-flex gap-2 flex-wrap">
+                <button class="btn btn-outline-secondary" @onclick="Back">Back</button>
+                <button class="btn btn-outline-primary" @onclick="SkipFinish">Skip for now</button>
+                <button class="btn btn-primary" @onclick="QueueDownload">Queue download &amp; finish</button>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    private int Step = 1;
+    private GpuSnapshot? _gpu;
+    private string _adminUser = "admin";
+    private string _adminPass = "";
+    private string _modelsPath = "";
+    private string _bind = "127.0.0.1";
+    private int _port = 14563;
+    private string _cors = "*";
+    private string _starterRepo = "turboderp/Llama-3.2-1B-Instruct-exl3";
+    private string? _error;
+    private string? _status;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Step = Math.Clamp(Onboarding.SetupStep is 0 ? 1 : Onboarding.SetupStep, 1, 5);
+        _gpu = await GpuInfo.GetPrimaryAsync();
+        try
+        {
+            var s = await Settings.GetAsync();
+            _modelsPath = string.IsNullOrWhiteSpace(s.ModelsPath)
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "ExLlamaSharp", "models")
+                : s.ModelsPath;
+            _bind = s.BindAddress;
+            _port = s.Port;
+            _cors = s.Cors;
+        }
+        catch
+        {
+            _modelsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "ExLlamaSharp", "models");
+        }
+    }
+
+    private static string StepLabel(int s) => s switch
+    {
+        1 => "Welcome",
+        2 => "Admin",
+        3 => "Models",
+        4 => "Network",
+        _ => "Download",
+    };
+
+    private void Next()
+    {
+        Step = Math.Min(5, Step + 1);
+        Onboarding.SetupStep = Step;
+    }
+
+    private void Back()
+    {
+        Step = Math.Max(1, Step - 1);
+        Onboarding.SetupStep = Step;
+    }
+
+    private async Task SaveAdmin()
+    {
+        _error = null;
+        if (string.IsNullOrWhiteSpace(_adminUser) || string.IsNullOrWhiteSpace(_adminPass))
+        {
+            _error = "Username and password are required.";
+            return;
+        }
+
+        try
+        {
+            var existing = await Db.Users.FirstOrDefaultAsync(u => u.Username == _adminUser);
+            if (existing is null)
+            {
+                Db.Users.Add(new User
+                {
+                    Username = _adminUser.Trim(),
+                    PasswordHash = ExLlamaSharp.Server.Auth.PasswordHasher.Hash(_adminPass),
+                    Role = "admin",
+                    TenantId = "default",
+                });
+            }
+            else
+            {
+                existing.PasswordHash = ExLlamaSharp.Server.Auth.PasswordHasher.Hash(_adminPass);
+                existing.Role = "admin";
+            }
+
+            await Db.SaveChangesAsync();
+            Next();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Could not save admin (DB may not be ready): {ex.Message}";
+            // Allow progressing with stub for compile/demo
+            Next();
+        }
+    }
+
+    private async Task SaveModelsPath()
+    {
+        try
+        {
+            Directory.CreateDirectory(_modelsPath);
+            await Settings.UpdateAsync(s => s.ModelsPath = _modelsPath);
+        }
+        catch
+        {
+            // proceed with UI even if settings row missing
+        }
+
+        Next();
+    }
+
+    private async Task SaveNetwork()
+    {
+        try
+        {
+            await Settings.UpdateAsync(s =>
+            {
+                s.BindAddress = _bind;
+                s.Port = _port;
+                s.Cors = _cors;
+            });
+        }
+        catch { }
+
+        Next();
+    }
+
+    private async Task QueueDownload()
+    {
+        _status = $"Queued pull for {_starterRepo} (job stub). Finish setup to open the dashboard.";
+        try
+        {
+            Db.ModelJobs.Add(new ModelJob
+            {
+                Type = "pull",
+                Status = "pending",
+                ProgressPct = 0,
+            });
+            await Db.SaveChangesAsync();
+        }
+        catch
+        {
+            // ignore
+        }
+
+        Finish();
+    }
+
+    private void SkipFinish() => Finish();
+
+    private void Finish()
+    {
+        Onboarding.TourCompleted = true;
+        Onboarding.SetupStep = 5;
+        Onboarding.Save();
+        Nav.NavigateTo("/");
+    }
+}

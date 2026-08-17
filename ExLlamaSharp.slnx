@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ExLlamaSharp.Cli/ExLlamaSharp.Cli.csproj" />
+    <Project Path="src/ExLlamaSharp.Server/ExLlamaSharp.Server.csproj" />
+    <Project Path="src/ExLlamaSharp.Tray/ExLlamaSharp.Tray.csproj" />
+    <Project Path="src/ExLlamaSharp/ExLlamaSharp.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ExLlamaSharp.Tests/ExLlamaSharp.Tests.csproj" />
+    <Project Path="tests/ExLlamaSharp.Server.Tests/ExLlamaSharp.Server.Tests.csproj" />
+  </Folder>
+</Solution>

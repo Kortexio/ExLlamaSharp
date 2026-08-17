@@ -1,0 +1,232 @@
+@page "/settings"
+@rendermode InteractiveServer
+@inject SettingsService SettingsSvc
+
+<PageTitle>Settings — ExLlamaSharp</PageTitle>
+
+<div class="page-header">
+    <h1>Settings</h1>
+    <p>Server configuration. Changes persist to the settings row.</p>
+</div>
+
+<div class="tabs">
+    @foreach (var t in _tabs)
+    {
+        <button class="tab-btn @(Tab == t ? "active" : "")" @onclick="() => Tab = t">@t</button>
+    }
+</div>
+
+@if (_s is null)
+{
+    <div class="alert-soft">@_loadError ?? "Loading…"</div>
+}
+else
+{
+    <div class="card">
+        <div class="card-body">
+            @if (Tab == "Network")
+            {
+                <div class="form-grid">
+                    <div><label class="form-label">Bind address</label><input class="form-control" @bind="_s.BindAddress" /></div>
+                    <div><label class="form-label">Port</label><input type="number" class="form-control" @bind="_s.Port" /></div>
+                    <div><label class="form-label">CORS</label><input class="form-control" @bind="_s.Cors" /></div>
+                    <div><label class="form-label">TLS cert path</label><input class="form-control" @bind="_s.TlsCertPath" /></div>
+                </div>
+            }
+            else if (Tab == "Performance")
+            {
+                <div class="form-grid">
+                    <div><label class="form-label">Max sequences</label><input type="number" class="form-control" @bind="_s.MaxNumSeqs" /></div>
+                    <div><label class="form-label">Max chunk size</label><input type="number" class="form-control" @bind="_s.MaxChunkSize" /></div>
+                    <div><label class="form-label">Max batched tokens</label><input type="number" class="form-control" @bind="_s.MaxBatchedTokens" /></div>
+                    <div><label class="form-label">GPU memory util</label><input type="number" step="0.01" class="form-control" @bind="_s.GpuMemoryUtilization" /></div>
+                    <div><label class="form-label">Request timeout (s)</label><input type="number" class="form-control" @bind="_s.RequestTimeoutSeconds" /></div>
+                </div>
+            }
+            else if (Tab == "Multi-GPU")
+            {
+                <div class="form-grid">
+                    <div><label class="form-label">CUDA_VISIBLE_DEVICES</label><input class="form-control" @bind="_s.CudaVisibleDevices" /></div>
+                    <div>
+                        <label class="form-label">Parallelism mode</label>
+                        <select class="form-select" @bind="_s.ParallelismMode">
+                            <option value="none">none</option>
+                            <option value="tensor">tensor</option>
+                            <option value="pipeline">pipeline</option>
+                            <option value="model">model</option>
+                        </select>
+                    </div>
+                </div>
+            }
+            else if (Tab == "Speculative")
+            {
+                <div class="form-grid">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" @bind="_s.SpeculativeEnabled" id="spec" />
+                        <label class="form-check-label" for="spec">Enable speculative decoding</label>
+                    </div>
+                    <div><label class="form-label">Draft K</label><input type="number" class="form-control" @bind="_s.DraftK" /></div>
+                </div>
+            }
+            else if (Tab == "Startup")
+            {
+                <div class="form-grid">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" @bind="_s.LoadModelOnStartup" id="lms" />
+                        <label class="form-check-label" for="lms">Load last model on startup</label>
+                    </div>
+                    <div><label class="form-label">Models path</label><input class="form-control" @bind="_s.ModelsPath" /></div>
+                </div>
+            }
+            else if (Tab == "Hugging Face")
+            {
+                <div class="form-grid">
+                    <div>
+                        <label class="form-label">HF token (optional)</label>
+                        <input class="form-control" type="password" @bind="_hfToken" placeholder="hf_..." autocomplete="off" />
+                        <div class="form-text">Needed for gated models and higher search rate limits. Also reads env HF_TOKEN.</div>
+                    </div>
+                </div>
+            }
+            else if (Tab == "Backup")
+            {
+                <div class="form-grid">
+                    <div>
+                        <label class="form-label">Auto backup</label>
+                        <select class="form-select" @bind="_s.AutoBackupSchedule">
+                            <option value="disabled">disabled</option>
+                            <option value="daily">daily</option>
+                            <option value="weekly">weekly</option>
+                        </select>
+                    </div>
+                </div>
+            }
+            else if (Tab == "Webhooks")
+            {
+                <div class="form-grid">
+                    <div><label class="form-label">Webhook URL</label><input class="form-control" @bind="_s.WebhookUrl" /></div>
+                    <div><label class="form-label">Webhook secret</label><input class="form-control" @bind="_s.WebhookSecret" /></div>
+                </div>
+            }
+            else if (Tab == "Moderation")
+            {
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" @bind="_s.ContentModerationEnabled" id="mod" />
+                    <label class="form-check-label" for="mod">Enable content moderation</label>
+                </div>
+            }
+            else
+            {
+                <div class="form-grid">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" @bind="_s.MultiTenancyEnabled" id="mt" />
+                        <label class="form-check-label" for="mt">Multi-tenancy</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" @bind="_s.ShowAdvancedMetrics" id="adv" />
+                        <label class="form-check-label" for="adv">Show advanced metrics by default</label>
+                    </div>
+                </div>
+            }
+
+            <div class="mt-3 d-flex gap-2 align-items-center">
+                <button class="btn btn-primary" @onclick="SaveAsync" disabled="@_saving">Save</button>
+                @if (!string.IsNullOrEmpty(_msg))
+                {
+                    <span class="text-muted small">@_msg</span>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private readonly string[] _tabs =
+    [
+        "Network", "Performance", "Multi-GPU", "Speculative", "Startup", "Hugging Face", "Backup", "Webhooks", "Moderation", "Advanced",
+    ];
+
+    private string Tab = "Network";
+    private AppSettings? _s;
+    private string? _loadError;
+    private string? _msg;
+    private bool _saving;
+    private string _hfToken = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _s = await SettingsSvc.GetAsync();
+            var tokenFile = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                "ExLlamaSharp", "hf-token.txt");
+            if (File.Exists(tokenFile))
+            {
+                _hfToken = File.ReadAllText(tokenFile).Trim();
+            }
+        }
+        catch (Exception ex)
+        {
+            _s = new AppSettings();
+            _loadError = $"Using defaults ({ex.Message})";
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_s is null) return;
+        _saving = true;
+        _msg = null;
+        try
+        {
+            var snap = _s;
+            await SettingsSvc.UpdateAsync(dest =>
+            {
+                dest.BindAddress = snap.BindAddress;
+                dest.Port = snap.Port;
+                dest.Cors = snap.Cors;
+                dest.TlsCertPath = snap.TlsCertPath;
+                dest.MaxNumSeqs = snap.MaxNumSeqs;
+                dest.MaxChunkSize = snap.MaxChunkSize;
+                dest.MaxBatchedTokens = snap.MaxBatchedTokens;
+                dest.GpuMemoryUtilization = snap.GpuMemoryUtilization;
+                dest.RequestTimeoutSeconds = snap.RequestTimeoutSeconds;
+                dest.LoadModelOnStartup = snap.LoadModelOnStartup;
+                dest.AutoBackupSchedule = snap.AutoBackupSchedule;
+                dest.WebhookUrl = snap.WebhookUrl;
+                dest.WebhookSecret = snap.WebhookSecret;
+                dest.ContentModerationEnabled = snap.ContentModerationEnabled;
+                dest.MultiTenancyEnabled = snap.MultiTenancyEnabled;
+                dest.ShowAdvancedMetrics = snap.ShowAdvancedMetrics;
+                dest.CudaVisibleDevices = snap.CudaVisibleDevices;
+                dest.ParallelismMode = snap.ParallelismMode;
+                dest.SpeculativeEnabled = snap.SpeculativeEnabled;
+                dest.DraftK = snap.DraftK;
+                dest.ModelsPath = snap.ModelsPath;
+            });
+            var tokenFile = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                "ExLlamaSharp", "hf-token.txt");
+            Directory.CreateDirectory(Path.GetDirectoryName(tokenFile)!);
+            if (string.IsNullOrWhiteSpace(_hfToken))
+            {
+                if (File.Exists(tokenFile)) File.Delete(tokenFile);
+            }
+            else
+            {
+                File.WriteAllText(tokenFile, _hfToken.Trim());
+            }
+            _msg = "Saved.";
+            _s = await SettingsSvc.GetAsync();
+        }
+        catch (Exception ex)
+        {
+            _msg = ex.Message;
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+}

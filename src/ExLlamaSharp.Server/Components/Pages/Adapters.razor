@@ -1,0 +1,53 @@
+@page "/adapters"
+@rendermode InteractiveServer
+@inject AppDbContext Db
+@using Microsoft.EntityFrameworkCore
+
+<PageTitle>Adapters — ExLlamaSharp</PageTitle>
+
+<div class="page-header">
+    <h1>LoRA adapters</h1>
+    <p>Registered adapters for fine-tuned inference.</p>
+</div>
+
+<div class="card">
+    <div class="card-body p-0">
+        <table class="table-clean">
+            <thead>
+                <tr><th>Name</th><th>Path</th><th>Rank</th><th>Alpha</th><th>Created</th></tr>
+            </thead>
+            <tbody>
+                @if (_items.Count == 0)
+                {
+                    <tr><td colspan="5" class="text-muted">No adapters yet.</td></tr>
+                }
+                @foreach (var a in _items)
+                {
+                    <tr>
+                        <td>@a.Name</td>
+                        <td><code>@a.Path</code></td>
+                        <td>@a.Rank</td>
+                        <td>@a.Alpha</td>
+                        <td>@a.CreatedAt.ToLocalTime().ToString("g")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@code {
+    private List<LoraAdapter> _items = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _items = await Db.LoraAdapters.AsNoTracking().OrderByDescending(x => x.CreatedAt).Take(100).ToListAsync();
+        }
+        catch
+        {
+            _items = [];
+        }
+    }
+}

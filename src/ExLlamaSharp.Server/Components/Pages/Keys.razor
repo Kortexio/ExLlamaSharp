@@ -1,0 +1,164 @@
+@page "/keys"
+@rendermode InteractiveServer
+@inject AppDbContext Db
+@using Microsoft.EntityFrameworkCore
+@using System.Security.Cryptography
+@using ExLlamaSharp.Server.Auth
+@inject KeyCacheService KeyCache
+
+<PageTitle>API Keys — ExLlamaSharp</PageTitle>
+
+<div class="page-header d-flex justify-content-between align-items-start flex-wrap gap-2">
+    <div>
+        <h1>API keys</h1>
+        <p>Create and revoke keys for clients.</p>
+    </div>
+    <button class="btn btn-primary" @onclick="() => _showCreate = true">New key</button>
+</div>
+
+@if (_showCreate)
+{
+    <div class="card mb-3">
+        <div class="card-body">
+            <h5 class="card-title">Create key</h5>
+            <div class="form-grid">
+                <div>
+                    <label class="form-label">Name</label>
+                    <input class="form-control" @bind="_newName" />
+                </div>
+                <div>
+                    <label class="form-label">Scopes</label>
+                    <input class="form-control" @bind="_newScopes" />
+                </div>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-primary" @onclick="CreateAsync">Create</button>
+                    <button class="btn btn-outline-secondary" @onclick="() => _showCreate = false">Cancel</button>
+                </div>
+            </div>
+            @if (!string.IsNullOrEmpty(_createdPlain))
+            {
+                <div class="alert-soft mt-3">
+                    Copy now — shown once:<br />
+                    <code>@_createdPlain</code>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+<div class="card">
+    <div class="card-body p-0">
+        <table class="table-clean">
+            <thead>
+                <tr><th>Name</th><th>Prefix</th><th>Scopes</th><th>RPM</th><th>Status</th><th></th></tr>
+            </thead>
+            <tbody>
+                @if (_keys.Count == 0)
+                {
+                    <tr><td colspan="6" class="text-muted">No keys yet.</td></tr>
+                }
+                @foreach (var k in _keys)
+                {
+                    <tr>
+                        <td>@k.Name</td>
+                        <td><code>@k.KeyPrefix…</code></td>
+                        <td>@k.Scopes</td>
+                        <td>@k.Rpm</td>
+                        <td>
+                            @if (k.Revoked)
+                            {
+                                <span class="badge-status badge-err">revoked</span>
+                            }
+                            else
+                            {
+                                <span class="badge-status badge-ok">active</span>
+                            }
+                        </td>
+                        <td>
+                            @if (!k.Revoked)
+                            {
+                                <button class="btn btn-sm btn-outline-danger" @onclick="() => RevokeAsync(k)">Revoke</button>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(_error))
+{
+    <div class="alert-soft mt-3 text-danger">@_error</div>
+}
+
+@code {
+    private List<ApiKey> _keys = [];
+    private bool _showCreate;
+    private string _newName = "App key";
+    private string _newScopes = "chat,completions";
+    private string? _createdPlain;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        try
+        {
+            _keys = await Db.ApiKeys.AsNoTracking().OrderByDescending(k => k.Name).ToListAsync();
+        }
+        catch
+        {
+            _keys = [];
+        }
+    }
+
+    private async Task CreateAsync()
+    {
+        _error = null;
+        _createdPlain = null;
+        try
+        {
+            var bytes = RandomNumberGenerator.GetBytes(24);
+            var plain = "sk-" + Convert.ToHexString(bytes).ToLowerInvariant();
+            var hash = ApiKeyHasher.Hash(plain);
+            var entity = new ApiKey
+            {
+                Name = string.IsNullOrWhiteSpace(_newName) ? "Key" : _newName.Trim(),
+                KeyHash = hash,
+                KeyPrefix = plain[..Math.Min(8, plain.Length)],
+                Scopes = _newScopes,
+                TenantId = "default",
+                Rpm = 60,
+                Tpm = 100_000,
+                Priority = 5,
+            };
+            Db.ApiKeys.Add(entity);
+            await Db.SaveChangesAsync();
+            KeyCache.Invalidate(hash);
+            _createdPlain = plain;
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private async Task RevokeAsync(ApiKey key)
+    {
+        try
+        {
+            var tracked = await Db.ApiKeys.FirstAsync(k => k.Id == key.Id);
+            tracked.Revoked = true;
+            await Db.SaveChangesAsync();
+            KeyCache.Invalidate(tracked.KeyHash);
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+    }
+}

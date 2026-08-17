@@ -1,0 +1,142 @@
+﻿# ExLlamaSharp API Reference
+
+Overview of the HTTP surface. Interactive OpenAPI/Swagger is available in Development (`/swagger`). The Blazor UI also includes an API guide page.
+
+Base URL default: `http://localhost:14563`
+
+Authentication for protected routes: `Authorization: Bearer <api_key>`.
+
+JSON for OpenAI routes uses **snake_case** field names where applicable.
+
+---
+
+## OpenAI-compatible (`/v1`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/chat/completions` | Chat completions (streaming SSE when `stream: true`) |
+| `POST` | `/v1/completions` | Text completions |
+| `GET` | `/v1/models` | List models known to the server |
+| `GET` | `/v1/models/{id}` | Model detail |
+| `POST` | `/v1/embeddings` | Embeddings |
+| `POST` | `/v1/tokenize` | Encode text → token ids |
+| `POST` | `/v1/detokenize` | Decode token ids → text |
+| `GET` | `/v1/metrics` | Engine metrics (JSON) |
+
+Unimplemented `/v1/**` paths return **501** with an OpenAI-shaped error object (`not_implemented_error`).
+
+### Chat completions (sketch)
+
+```http
+POST /v1/chat/completions
+Authorization: Bearer sk-...
+Content-Type: application/json
+
+{
+  "model": "office-assistant",
+  "messages": [
+    { "role": "system", "content": "You are helpful." },
+    { "role": "user", "content": "Hello" }
+  ],
+  "temperature": 0.7,
+  "max_tokens": 512,
+  "stream": false
+}
+```
+
+Streaming responses use `text/event-stream` chunks compatible with OpenAI clients.
+
+---
+
+## Ops (no API key)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Component health report |
+| `GET` | `/ready` | Readiness (`ready`, `model_loaded`, `engine_running`) |
+| `GET` | `/metrics` | Prometheus exposition format |
+
+---
+
+## Admin (`/api/v1`)
+
+Requires API key (except `GET /api/v1/about`, which is public for version/GPU discovery).
+
+### Settings
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/settings` | Current settings |
+| `POST` | `/api/v1/settings` | Replace settings |
+| `PATCH` | `/api/v1/settings` | Partial update |
+
+### Models & jobs
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/models/library` | Curated / cached library entries |
+| `POST` | `/api/v1/models/library` | Add library entry |
+| `POST` | `/api/v1/models/load` | Load model into engine |
+| `POST` | `/api/v1/models/unload` | Unload |
+| `POST` | `/api/v1/models/pull` | Start pull job |
+| `POST` | `/api/v1/models/quantize` | Start quantize job |
+| `POST` | `/api/v1/models/import` | Import from path |
+| `POST` | `/api/v1/models/alias` | Set alias |
+| `GET`/`PUT` | `/api/v1/models/{id}/modelfile` | Modelfile metadata |
+| `GET` | `/api/v1/models/jobs/{job_id}` | Job status |
+| `GET` | `/api/v1/jobs` | List jobs |
+| `POST` | `/api/v1/jobs/{id}/cancel` | Cancel job |
+
+### Keys & users
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET`/`POST` | `/api/v1/keys` | List / create API keys |
+| `DELETE` | `/api/v1/keys/{id}` | Revoke key |
+| `GET`/`POST` | `/api/v1/users` | List / create users |
+| `PATCH`/`DELETE` | `/api/v1/users/{id}` | Update / delete user |
+
+### Moderation, backup, ops
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET`/`POST` | `/api/v1/moderation/rules` | List / create rules |
+| `DELETE` | `/api/v1/moderation/rules/{id}` | Delete rule |
+| `GET` | `/api/v1/about` | Version, runtime, engine, GPU |
+| `GET` | `/api/v1/logs/stream` | Log stream (SSE-style) |
+| `POST` | `/api/v1/backup` | Export backup ZIP |
+| `POST` | `/api/v1/backup/restore` | Restore from ZIP |
+| `POST` | `/api/v1/restart` | Request process restart |
+
+### Stubs (shape reserved)
+
+| Area | Paths |
+|------|--------|
+| A/B tests | `/api/v1/ab`, `/api/v1/ab/{id}`, `/api/v1/ab/vote` |
+| Tenants | `/api/v1/tenants`, `/api/v1/tenants/{id}` |
+| LoRA adapters | `/api/v1/adapters`, `/api/v1/adapters/{id}` |
+
+These return JSON placeholders until fully wired to `AbTestRouter` / tenant services / `LoraAdapterService`.
+
+---
+
+## Errors
+
+OpenAI routes return:
+
+```json
+{
+  "error": {
+    "message": "...",
+    "type": "...",
+    "code": "..."
+  }
+}
+```
+
+Common HTTP codes: `400` validation, `401` auth, `404` missing, `429` rate limit, `501` not implemented, `503` unhealthy/not ready.
+
+## Related
+
+- [admin-guide.md](admin-guide.md) — keys, webhooks, multi-GPU
+- UI: `/diagnostics`, in-app API guide

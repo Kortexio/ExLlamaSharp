@@ -1,0 +1,275 @@
+@page "/models"
+@rendermode InteractiveServer
+@inject AppDbContext Db
+@inject EngineHostService Engine
+@inject ModelInventoryService Inventory
+@inject HuggingFaceCatalogService HuggingFace
+@inject ModelJobsService Jobs
+@using Microsoft.EntityFrameworkCore
+
+<PageTitle>Models — ExLlamaSharp</PageTitle>
+
+<div class="page-header">
+    <h1>Models</h1>
+    <p>Library, installed models, and import.</p>
+</div>
+
+<div class="tabs">
+    <button class="tab-btn @(Tab == "library" ? "active" : "")" @onclick='() => Tab = "library"'>Library</button>
+    <button class="tab-btn @(Tab == "mine" ? "active" : "")" @onclick='() => Tab = "mine"'>My Models</button>
+    <button class="tab-btn @(Tab == "import" ? "active" : "")" @onclick='() => Tab = "import"'>Import</button>
+</div>
+
+@if (Tab == "library")
+{
+    <div class="card mb-3">
+        <div class="card-body">
+            <div class="d-flex flex-wrap gap-2 align-items-end">
+                <div class="flex-grow-1">
+                    <label class="form-label">Search Hugging Face</label>
+                    <input class="form-control" @bind="_hfQuery" @bind:event="oninput" placeholder="exl3, llama, qwen…" @onkeydown="OnSearchKey" />
+                </div>
+                <button class="btn btn-primary" disabled="@_searching" @onclick="SearchHuggingFaceAsync">
+                    @(_searching ? "Searching…" : "Search")
+                </button>
+            </div>
+            <p class="form-text mb-0 mt-2">
+                Prefer repos with <code>exl3</code> in the name. Gated models need a token in Settings → Hugging Face.
+            </p>
+        </div>
+    </div>
+    @if (!string.IsNullOrEmpty(_msg))
+    {
+        <div class="alert-soft mb-3">@_msg</div>
+    }
+    <div class="card">
+        <div class="card-body p-0">
+            <table class="table-clean">
+                <thead>
+                    <tr><th>Name</th><th>Repo</th><th>Params</th><th>Size</th><th>Downloads</th><th></th></tr>
+                </thead>
+                <tbody>
+                    @if (_hfHits.Count == 0 && !_searching)
+                    {
+                        <tr><td colspan="6" class="text-muted">No Hugging Face results. Try “exl3” or check your network / HF token.</td></tr>
+                    }
+                    @foreach (var m in _hfHits)
+                    {
+                        <tr>
+                            <td>@m.DisplayName</td>
+                            <td><code>@m.RepoId</code></td>
+                            <td>@(m.ParameterLabel ?? "—")</td>
+                            <td>@(m.SizeBytes is null ? "…" : m.SizeBytes > 0 ? HuggingFaceCatalogService.FormatBytes(m.SizeBytes.Value) : "—")</td>
+                            <td><button class="btn btn-sm btn-outline-primary" disabled="@_pulling" @onclick="() => PullAsync(m.RepoId, m.DisplayName)">Download</button></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+}
+else if (Tab == "mine")
+{
+    @if (Engine.IsLoaded && Engine.LoadedModelPath is { } loadedPath)
+    {
+        <div class="alert-soft mb-3">
+            Loaded now: <code>@Path.GetFileName(loadedPath.TrimEnd(Path.DirectorySeparatorChar))</code>
+        </div>
+    }
+    <div class="card">
+        <div class="card-body p-0">
+            <table class="table-clean">
+                <thead>
+                    <tr><th>Alias</th><th>Path</th><th>Size</th><th>Quant</th><th></th></tr>
+                </thead>
+                <tbody>
+                    @if (_mine.Count == 0)
+                    {
+                        <tr><td colspan="5" class="text-muted">No local models. Import or pull one.</td></tr>
+                    }
+                    @foreach (var m in _mine)
+                    {
+                        <tr>
+                            <td>@(m.Alias ?? m.Id.ToString("N")[..8])</td>
+                            <td><code>@m.Path</code></td>
+                            <td>@m.SizeGb.ToString("0.0") GB</td>
+                            <td>@(m.QuantMode ?? "—")</td>
+                            <td>
+                                <button class="btn btn-sm btn-primary" @onclick="() => LoadModel(m)">Load</button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+    @if (!string.IsNullOrEmpty(_msg))
+    {
+        <div class="alert-soft mt-3">@_msg</div>
+    }
+}
+else
+{
+    <div class="card">
+        <div class="card-body">
+            <h5 class="card-title">Import local folder</h5>
+            <div class="form-grid">
+                <div>
+                    <label class="form-label">Model path</label>
+                    <input class="form-control" @bind="_importPath" placeholder="D:\models\my-exl2" />
+                </div>
+                <div>
+                    <label class="form-label">Alias</label>
+                    <input class="form-control" @bind="_importAlias" />
+                </div>
+                <button class="btn btn-primary" @onclick="ImportAsync">Import</button>
+            </div>
+            @if (!string.IsNullOrEmpty(_msg))
+            {
+                <div class="alert-soft mt-3">@_msg</div>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    private string Tab = "library";
+    private List<HuggingFaceModelHit> _hfHits = [];
+    private List<ModelRecord> _mine = [];
+    private string _importPath = "";
+    private string _importAlias = "";
+    private string _hfQuery = "exl3";
+    private string? _msg;
+    private bool _searching;
+    private bool _pulling;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ReloadAsync();
+        await SearchHuggingFaceAsync();
+    }
+
+    private async Task OnSearchKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await SearchHuggingFaceAsync();
+        }
+    }
+
+    private async Task SearchHuggingFaceAsync()
+    {
+        _searching = true;
+        _msg = null;
+        try
+        {
+            _hfHits = (await HuggingFace.SearchAsync(_hfQuery)).ToList();
+            if (_hfHits.Count == 0)
+            {
+                _msg = "Hugging Face returned no models for that search.";
+            }
+            else
+            {
+                _ = EnrichLibraryAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            _hfHits = [];
+            _msg = ex.Message;
+        }
+        finally
+        {
+            _searching = false;
+        }
+    }
+
+    private async Task EnrichLibraryAsync()
+    {
+        var snapshot = _hfHits;
+        try
+        {
+            await HuggingFace.EnrichHitsAsync(snapshot);
+            await InvokeAsync(StateHasChanged);
+        }
+        catch
+        {
+            // size is optional; params from the repo name already show
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        try
+        {
+            await Inventory.SyncFromDiskAsync();
+            _mine = await Db.Models.AsNoTracking().OrderByDescending(x => x.CreatedAt).Take(50).ToListAsync();
+        }
+        catch
+        {
+            _mine = [];
+        }
+    }
+
+    private async Task PullAsync(string repoId, string displayName)
+    {
+        _pulling = true;
+        _msg = $"Downloading {displayName} from Hugging Face… this can take several minutes.";
+        try
+        {
+            var job = await Jobs.EnqueuePullAsync(repoId);
+            _msg = $"Download started ({displayName}). Job {job.JobId:N} — watch Jobs, then My Models.";
+            Tab = "mine";
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _msg = ex.Message;
+        }
+        finally
+        {
+            _pulling = false;
+        }
+    }
+
+    private async Task LoadModel(ModelRecord model)
+    {
+        try
+        {
+            await Engine.LoadAsync(model.Path, model.Id);
+            _msg = $"Loaded {model.Alias ?? model.Path}.";
+        }
+        catch (Exception ex)
+        {
+            _msg = $"Load failed: {ex.Message}";
+        }
+    }
+
+    private async Task ImportAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_importPath))
+        {
+            _msg = "Path required.";
+            return;
+        }
+
+        try
+        {
+            var rec = new ModelRecord
+            {
+                Path = _importPath.Trim(),
+                Alias = string.IsNullOrWhiteSpace(_importAlias) ? Path.GetFileName(_importPath.Trim()) : _importAlias.Trim(),
+                TenantId = "default",
+            };
+            Db.Models.Add(rec);
+            await Db.SaveChangesAsync();
+            _msg = "Imported.";
+            await ReloadAsync();
+            Tab = "mine";
+        }
+        catch (Exception ex)
+        {
+            _msg = ex.Message;
+        }
+    }
+}

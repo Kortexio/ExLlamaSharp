@@ -1,0 +1,227 @@
+@page "/logs"
+@rendermode InteractiveServer
+@inject LiveLogBuffer LogBuffer
+@inject AppDbContext Db
+@implements IAsyncDisposable
+@using Microsoft.EntityFrameworkCore
+@using System.Threading.Channels
+
+<PageTitle>Live Logs — ExLlamaSharp</PageTitle>
+
+<div class="page-header d-flex flex-wrap gap-2 align-items-center justify-content-between">
+    <div>
+        <h1>Server logs</h1>
+        <p class="mb-0">Live view of what the server is doing right now (requests, engine, errors).</p>
+    </div>
+    <div class="d-flex gap-2 flex-wrap">
+        <button class="btn @( _live ? "btn-danger" : "btn-primary" )" @onclick="ToggleLive">
+            @( _live ? "Stop live tail" : "Start live tail" )
+        </button>
+        <button class="btn btn-outline" @onclick="ClearView">Clear</button>
+        <button class="btn btn-outline" @onclick="RefreshAudit">Refresh audit DB</button>
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-body d-flex flex-wrap gap-3 align-items-end">
+        <div>
+            <label class="form-label">Min level</label>
+            <select class="form-select" @bind="_minLevel">
+                <option>Debug</option>
+                <option>Information</option>
+                <option>Warning</option>
+                <option>Error</option>
+            </select>
+        </div>
+        <div class="flex-grow-1">
+            <label class="form-label">Filter text</label>
+            <input class="form-control" @bind="_filter" @bind:event="oninput" placeholder="endpoint, model, error..." />
+        </div>
+        <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="autoscroll" @bind="_autoScroll" />
+            <label class="form-check-label" for="autoscroll">Auto-scroll</label>
+        </div>
+        <div>
+            <span class="badge @(_live ? "badge-success" : "badge-muted")">@(_live ? "LIVE" : "PAUSED")</span>
+            <span class="text-muted small ms-2">@_lines.Count lines</span>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between">
+        <strong>Live stream</strong>
+        <span class="text-muted small">Also available: <code>GET /api/v1/logs/stream</code> (SSE)</span>
+    </div>
+    <div class="card-body p-0">
+        <pre id="log-console" class="log-console" @ref="_consoleRef">@string.Join('\n', VisibleLines())</pre>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><strong>Audit trail (database)</strong></div>
+    <div class="card-body p-0">
+        <table class="table-clean">
+            <thead>
+                <tr><th>Time</th><th>Endpoint</th><th>Status</th><th>Tokens</th><th>Error</th></tr>
+            </thead>
+            <tbody>
+                @if (_audit.Count == 0)
+                {
+                    <tr><td colspan="5" class="text-muted">No audit rows yet — call /v1 to generate traffic.</td></tr>
+                }
+                @foreach (var r in _audit)
+                {
+                    <tr>
+                        <td>@r.Timestamp.ToLocalTime().ToString("HH:mm:ss")</td>
+                        <td><code>@r.Endpoint</code></td>
+                        <td>@r.StatusCode</td>
+                        <td>@(r.PromptTokens + r.CompletionTokens)</td>
+                        <td class="text-danger small">@(r.Error ?? "")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@code {
+    private readonly List<string> _lines = [];
+    private List<AuditLog> _audit = [];
+    private bool _live;
+    private bool _autoScroll = true;
+    private string _minLevel = "Information";
+    private string _filter = "";
+    private CancellationTokenSource? _cts;
+    private ElementReference _consoleRef;
+    private const int MaxLines = 1500;
+
+    protected override async Task OnInitializedAsync()
+    {
+        foreach (var e in LogBuffer.Snapshot(200))
+        {
+            if (PassFilter(e))
+            {
+                _lines.Add(Format(e));
+            }
+        }
+
+        await RefreshAudit();
+        await StartLiveAsync();
+    }
+
+    private IEnumerable<string> VisibleLines() => _lines.TakeLast(800);
+
+    private async Task ToggleLive()
+    {
+        if (_live)
+        {
+            await StopLiveAsync();
+        }
+        else
+        {
+            await StartLiveAsync();
+        }
+    }
+
+    private async Task StartLiveAsync()
+    {
+        await StopLiveAsync();
+        _cts = new CancellationTokenSource();
+        _live = true;
+        var reader = LogBuffer.Subscribe(_cts.Token);
+        _ = PumpAsync(reader, _cts.Token);
+    }
+
+    private Task StopLiveAsync()
+    {
+        _live = false;
+        _cts?.Cancel();
+        _cts?.Dispose();
+        _cts = null;
+        return Task.CompletedTask;
+    }
+
+    private async Task PumpAsync(ChannelReader<LiveLogEntry> reader, CancellationToken ct)
+    {
+        try
+        {
+            await foreach (var entry in reader.ReadAllAsync(ct))
+            {
+                if (!PassFilter(entry))
+                {
+                    continue;
+                }
+
+                _lines.Add(Format(entry));
+                while (_lines.Count > MaxLines)
+                {
+                    _lines.RemoveAt(0);
+                }
+
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private bool PassFilter(LiveLogEntry e)
+    {
+        if (!LevelOk(e.Level, _minLevel))
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(_filter))
+        {
+            return true;
+        }
+
+        return e.Message.Contains(_filter, StringComparison.OrdinalIgnoreCase)
+            || e.Category.Contains(_filter, StringComparison.OrdinalIgnoreCase)
+            || (e.Exception?.Contains(_filter, StringComparison.OrdinalIgnoreCase) ?? false);
+    }
+
+    private static bool LevelOk(string level, string min)
+    {
+        static int Rank(string l) => l.ToLowerInvariant() switch
+        {
+            "trace" or "debug" => 0,
+            "information" or "info" => 1,
+            "warning" or "warn" => 2,
+            "error" or "critical" => 3,
+            _ => 1,
+        };
+        return Rank(level) >= Rank(min);
+    }
+
+    private static string Format(LiveLogEntry e)
+    {
+        var line = $"{e.Timestamp.ToLocalTime():HH:mm:ss.fff} [{e.Level,-11}] {e.Category}: {e.Message}";
+        if (!string.IsNullOrEmpty(e.Exception))
+        {
+            line += "\n  " + e.Exception.Replace("\n", "\n  ");
+        }
+
+        return line;
+    }
+
+    private void ClearView() => _lines.Clear();
+
+    private async Task RefreshAudit()
+    {
+        try
+        {
+            _audit = await Db.AuditLogs.AsNoTracking()
+                .OrderByDescending(a => a.Timestamp)
+                .Take(50)
+                .ToListAsync();
+        }
+        catch
+        {
+            _audit = [];
+        }
+    }
+
+    public async ValueTask DisposeAsync() => await StopLiveAsync();
+}

@@ -1,0 +1,39 @@
+<nav class="kx-nav">
+    <div class="kx-nav-section">
+        <div class="kx-nav-label">Workspace</div>
+        <NavLink class="kx-nav-link" href="/" Match="NavLinkMatch.All" @onclick="NotifyNavigate">Dashboard</NavLink>
+        <NavLink class="kx-nav-link" href="/chat" @onclick="NotifyNavigate">Chat</NavLink>
+        <NavLink class="kx-nav-link" href="/models" @onclick="NotifyNavigate">Models</NavLink>
+        <NavLink class="kx-nav-link" href="/jobs" @onclick="NotifyNavigate">Jobs</NavLink>
+        <NavLink class="kx-nav-link" href="/keys" @onclick="NotifyNavigate">API Keys</NavLink>
+        <NavLink class="kx-nav-link" href="/usage" @onclick="NotifyNavigate">Usage</NavLink>
+        <NavLink class="kx-nav-link" href="/team" @onclick="NotifyNavigate">Team</NavLink>
+    </div>
+
+    @if (AdvancedMode)
+    {
+        <div class="kx-nav-section">
+            <div class="kx-nav-label">Advanced</div>
+            <NavLink class="kx-nav-link" href="/adapters" @onclick="NotifyNavigate">Adapters</NavLink>
+            <NavLink class="kx-nav-link" href="/dashboard/metrics" @onclick="NotifyNavigate">Metrics</NavLink>
+            <NavLink class="kx-nav-link" href="/logs" @onclick="NotifyNavigate">Logs</NavLink>
+            <NavLink class="kx-nav-link" href="/diagnostics" @onclick="NotifyNavigate">Diagnostics</NavLink>
+            <NavLink class="kx-nav-link" href="/admin/tenants" @onclick="NotifyNavigate">Tenants</NavLink>
+        </div>
+    }
+
+    <div class="kx-nav-section">
+        <div class="kx-nav-label">System</div>
+        <NavLink class="kx-nav-link" href="/settings" @onclick="NotifyNavigate">Settings</NavLink>
+        <NavLink class="kx-nav-link" href="/setup" @onclick="NotifyNavigate">Setup</NavLink>
+        <NavLink class="kx-nav-link" href="/api" @onclick="NotifyNavigate">API Guide</NavLink>
+        <NavLink class="kx-nav-link" href="/about" @onclick="NotifyNavigate">About</NavLink>
+    </div>
+</nav>
+
+@code {
+    [Parameter] public bool AdvancedMode { get; set; }
+    [Parameter] public EventCallback OnNavigate { get; set; }
+
+    private Task NotifyNavigate() => OnNavigate.HasDelegate ? OnNavigate.InvokeAsync() : Task.CompletedTask;
+}
