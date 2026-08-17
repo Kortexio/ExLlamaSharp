@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
@@ -127,11 +127,27 @@ function Resolve-RedistDir {
     return $null
 }
 
+function Invoke-VenvPip {
+    param(
+        [Parameter(Mandatory = $true)][string]$PythonExe,
+        [Parameter(Mandatory = $true)][string[]]$PipArgs
+    )
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $PythonExe -m pip @PipArgs
+        return $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $prev
+    }
+}
+
 function Install-ExLlamaV3CudaWheel([string]$PythonExe) {
     Write-Log "ExLlamaV3 CUDA extension (prebuilt wheel, not PyPI source)" "STEP"
     if (Test-Exl3ExtOk $PythonExe) {
         Write-Log "exllamav3_ext already present" "OK"
-        & $PythonExe -m pip install --upgrade huggingface_hub ninja 2>$null | Out-Null
+        & $PythonExe -m pip install --upgrade huggingface_hub ninja | Out-Null
         return
     }
 
@@ -169,12 +185,12 @@ function Install-ExLlamaV3CudaWheel([string]$PythonExe) {
         }
     }
 
-    & $PythonExe -m pip uninstall -y exllamav3 2>$null | Out-Null
-    & $PythonExe -m pip install --force-reinstall --no-deps $wheelFile
-    if ($LASTEXITCODE -ne 0) {
+    $null = Invoke-VenvPip -PythonExe $PythonExe -PipArgs @("uninstall", "-y", "exllamav3")
+    $code = Invoke-VenvPip -PythonExe $PythonExe -PipArgs @("install", "--force-reinstall", "--no-deps", $wheelFile)
+    if ($code -ne 0) {
         throw "pip install of ExLlamaV3 CUDA wheel failed"
     }
-    & $PythonExe -m pip install --upgrade huggingface_hub ninja "triton-windows" 2>$null | Out-Null
+    $null = Invoke-VenvPip -PythonExe $PythonExe -PipArgs @("install", "--upgrade", "huggingface_hub", "ninja", "triton-windows")
 
     if (-not (Test-Exl3ExtOk $PythonExe)) {
         throw "exllamav3_ext.pyd missing after wheel install. The PyPI source package is not enough for inference."
@@ -336,7 +352,7 @@ if (-not $SkipPyTorch) {
     } else {
         if ($offline) {
             Write-Log "Upgrading pip from bundled wheels"
-            & $pythonExe -m pip install --no-index --find-links $offline pip wheel setuptools 2>$null
+            $null = Invoke-VenvPip -PythonExe $pythonExe -PipArgs @("install", "--no-index", "--find-links", $offline, "pip", "wheel", "setuptools")
         } else {
             & $pythonExe -m pip install --upgrade pip --quiet
         }
@@ -351,11 +367,13 @@ if (-not $SkipPyTorch) {
 
     if ($offline) {
         Write-Log "Installing worker Python deps from bundled wheels"
-        & $pythonExe -m pip install --no-index --find-links $offline `
-            tokenizers numpy safetensors rich typing_extensions pyyaml pillow pydantic ninja huggingface_hub 2>$null
-        & $pythonExe -m pip install --no-index --find-links $offline "triton-windows" 2>$null
+        $null = Invoke-VenvPip -PythonExe $pythonExe -PipArgs @(
+            "install", "--no-index", "--find-links", $offline,
+            "tokenizers", "numpy", "safetensors", "rich", "typing_extensions", "pyyaml", "pillow", "pydantic", "ninja", "huggingface_hub"
+        )
+        $null = Invoke-VenvPip -PythonExe $pythonExe -PipArgs @("install", "--no-index", "--find-links", $offline, "triton-windows")
     } else {
-        & $pythonExe -m pip install --upgrade huggingface_hub ninja "triton-windows" 2>$null | Out-Null
+        $null = Invoke-VenvPip -PythonExe $pythonExe -PipArgs @("install", "--upgrade", "huggingface_hub", "ninja", "triton-windows")
     }
 
     try {

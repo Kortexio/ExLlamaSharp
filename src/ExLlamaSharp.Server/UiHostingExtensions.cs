@@ -27,6 +27,7 @@ public static class UiHostingExtensions
 
         services.AddSingleton<OnboardingState>();
         services.AddSingleton<GpuInfoService>();
+        services.AddSingleton<VramFitService>();
         services.AddScoped<ModelInventoryService>();
         services.AddSingleton<HuggingFaceCatalogService>();
         services.AddHttpClient("huggingface", client =>

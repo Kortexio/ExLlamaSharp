@@ -4,7 +4,11 @@
 @inject ModelInventoryService Inventory
 @inject HuggingFaceCatalogService HuggingFace
 @inject ModelJobsService Jobs
+@inject GpuInfoService GpuInfo
+@inject SettingsService Settings
+@inject VramFitService VramFit
 @using Microsoft.EntityFrameworkCore
+@using ExLlamaSharp.Server.Services.Ui
 
 <PageTitle>Models — ExLlamaSharp</PageTitle>
 
@@ -12,6 +16,8 @@
     <h1>Models</h1>
     <p>Library, installed models, and import.</p>
 </div>
+
+<p class="form-text mb-3">@_gpuCaption</p>
 
 <div class="tabs">
     <button class="tab-btn @(Tab == "library" ? "active" : "")" @onclick='() => Tab = "library"'>Library</button>
@@ -45,21 +51,22 @@
         <div class="card-body p-0">
             <table class="table-clean">
                 <thead>
-                    <tr><th>Name</th><th>Repo</th><th>Params</th><th>Size</th><th>Downloads</th><th></th></tr>
+                    <tr><th>Name</th><th>Repo</th><th>Params</th><th>Size</th><th>VRAM</th><th></th></tr>
                 </thead>
                 <tbody>
                     @if (_hfHits.Count == 0 && !_searching)
                     {
-                        <tr><td colspan="7" class="text-muted">No Hugging Face results. Try “exl3” or check your network / HF token.</td></tr>
+                        <tr><td colspan="6" class="text-muted">No Hugging Face results. Try “exl3” or check your network / HF token.</td></tr>
                     }
                     @foreach (var m in _hfHits)
                     {
+                        var fit = VramFit.Evaluate(m.SizeBytes, _gpu, _gpuUtil);
                         <tr>
                             <td>@m.DisplayName</td>
                             <td><code>@m.RepoId</code></td>
                             <td>@(m.ParameterLabel ?? "—")</td>
                             <td>@(m.SizeBytes is null ? "…" : m.SizeBytes > 0 ? HuggingFaceCatalogService.FormatBytes(m.SizeBytes.Value) : "—")</td>
-                            <td>@(m.Downloads > 0 ? m.Downloads.ToString("N0") : "—")</td>
+                            <td><span class="badge-status @fit.BadgeClass" title="@fit.Detail">@fit.Label</span></td>
                             <td><button class="btn btn-sm btn-outline-primary" disabled="@_pulling" @onclick="() => PullAsync(m.RepoId, m.DisplayName)">Download</button></td>
                         </tr>
                     }
@@ -80,20 +87,22 @@ else if (Tab == "mine")
         <div class="card-body p-0">
             <table class="table-clean">
                 <thead>
-                    <tr><th>Alias</th><th>Path</th><th>Size</th><th>Quant</th><th></th></tr>
+                    <tr><th>Alias</th><th>Path</th><th>Size</th><th>Quant</th><th>VRAM</th><th></th></tr>
                 </thead>
                 <tbody>
                     @if (_mine.Count == 0)
                     {
-                        <tr><td colspan="5" class="text-muted">No local models. Import or pull one.</td></tr>
+                        <tr><td colspan="6" class="text-muted">No local models. Import or pull one.</td></tr>
                     }
                     @foreach (var m in _mine)
                     {
+                        var fit = VramFit.EvaluateGb(m.SizeGb, _gpu, _gpuUtil);
                         <tr>
                             <td>@(m.Alias ?? m.Id.ToString("N")[..8])</td>
                             <td><code>@m.Path</code></td>
                             <td>@m.SizeGb.ToString("0.0") GB</td>
                             <td>@(m.QuantMode ?? "—")</td>
+                            <td><span class="badge-status @fit.BadgeClass" title="@fit.Detail">@fit.Label</span></td>
                             <td>
                                 <button class="btn btn-sm btn-primary" @onclick="() => LoadModel(m)">Load</button>
                             </td>
@@ -142,11 +151,39 @@ else
     private string? _msg;
     private bool _searching;
     private bool _pulling;
+    private GpuSnapshot? _gpu;
+    private double _gpuUtil = VramFitService.DefaultGpuUtilization;
+    private string _gpuCaption = "Reading GPU VRAM…";
 
     protected override async Task OnInitializedAsync()
     {
+        await LoadGpuAsync();
         await ReloadAsync();
         await SearchHuggingFaceAsync();
+    }
+
+    private async Task LoadGpuAsync()
+    {
+        try
+        {
+            var settings = await Settings.GetAsync();
+            _gpuUtil = settings.GpuMemoryUtilization;
+        }
+        catch
+        {
+            _gpuUtil = VramFitService.DefaultGpuUtilization;
+        }
+
+        try
+        {
+            _gpu = await GpuInfo.GetPrimaryAsync();
+        }
+        catch
+        {
+            _gpu = null;
+        }
+
+        _gpuCaption = VramFitService.FormatGpuCaption(_gpu, _gpuUtil);
     }
 
     private async Task OnSearchKey(KeyboardEventArgs e)

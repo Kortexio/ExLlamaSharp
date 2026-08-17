@@ -11,7 +11,7 @@ Inspired by:
 - **ExLlamaV3** — fast EXL3 inference on NVIDIA
 - **Open WebUI** — browser-based administration
 
-**Current release: 1.2.0** — Setup.exe bundles the ExLlamaV3 CUDA `.pyd`, worker deps, Python installer and VC++. PyTorch CUDA is downloaded during install.
+**Current release: 1.1.1** — Setup.exe bundles the ExLlamaV3 CUDA `.pyd`, worker deps, Python installer and VC++. PyTorch CUDA is downloaded during install. Admin → Models shows a VRAM fit badge (Fits / Tight / Too large).
 
 Default after install: **http://127.0.0.1:14563**
 
@@ -33,6 +33,48 @@ irm https://raw.githubusercontent.com/vitorcastro78/ExLlamaSharp/main/packaging/
 ```
 
 Double-click the Setup.exe → allow UAC → PyTorch CUDA downloads into the venv, ExLlamaV3 extension installs from the package → open **http://127.0.0.1:14563**.
+
+---
+
+## Supported models
+
+ExLlamaSharp runs **EXL3** models only (the [ExLlamaV3](https://github.com/turboderp-org/exllamav3) quantized format) on an **NVIDIA GPU**.
+
+A model is a **folder** that looks like a Hugging Face snapshot:
+
+| Required | Typical files |
+|----------|----------------|
+| Config | `config.json` (usually mentions `exl3` / `quant_method`) |
+| Weights | one or more `*.safetensors` |
+| Tokenizer | `tokenizer.json` (and friends: `tokenizer_config.json`, `special_tokens_map.json`) |
+
+How to get one:
+
+1. Admin UI → **Models → Library** (default search `exl3`) → **Download**
+2. Or import a local folder that already has those files
+3. **My Models → Load**
+
+Hugging Face repos often keep the actual weights on a **bitrate branch** such as `4.00bpw` / `4.0bpw`, not on `main`. The server resolves that revision automatically and will not treat a README-only clone as a successful download.
+
+**Examples that work:**
+
+- `turboderp/MiniCPM5-1B-exl3`
+- `turboderp/Llama-3.2-1B-Instruct-exl3` (revision `4.0bpw`) — small demo / first-run smoke test
+
+Search Hugging Face for `exl3` (many IDs end in `-exl3`). Admin → **Models** shows a **Fits / Tight / Too large** badge against this machine’s GPU VRAM (estimate from weight size; it does not auto-select a model).
+
+**Not supported** (will not load for real inference):
+
+| Format | Examples |
+|--------|----------|
+| GGUF / llama.cpp | Ollama blobs, LM Studio GGUF, `*.gguf` |
+| Unquantized Hugging Face | FP16 / BF16 / FP32 `.safetensors` without EXL3 |
+| Other quant formats | EXL2, AWQ, GPTQ, bitsandbytes, INT8/FP8 packs that are not EXL3 |
+| Convert-in-place | **Models → Quantize** is simulated only — there is no EXL3 quantizer in this product yet |
+
+LoRA adapters can be registered in the UI as **metadata**; they are not applied at generation time.
+
+Chat uses the tokenizer’s Hugging Face chat template when present (Llama 3 / ChatML fallbacks otherwise).
 
 ---
 
