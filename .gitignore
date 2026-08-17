@@ -80,8 +80,8 @@ wheels/
 *.egg
 MANIFEST
 
-# Models and data
-models/
+# Model weight directories (do not ignore C# Models/ namespaces)
+/models/
 *.safetensors
 *.bin
 *.gguf
