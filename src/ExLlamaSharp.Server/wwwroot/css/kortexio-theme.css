@@ -1,4 +1,4 @@
-/* Kortexio Admin theme — Mem0-inspired SaaS shell over Bootstrap utilities */
+/* Kortexio Admin theme ? Mem0-inspired SaaS shell over Bootstrap utilities */
 @import url("https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap");
 
 :root {
@@ -32,7 +32,7 @@ html, body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* —— Shell —— */
+/* ?? Shell ?? */
 .kx-shell {
   display: flex;
   min-height: 100vh;
@@ -297,6 +297,7 @@ html, body {
 
 .kx-overlay {
   display: none;
+  pointer-events: none;
   position: fixed;
   inset: 0;
   z-index: 1035;
@@ -305,6 +306,7 @@ html, body {
 
 body.kx-sidebar-open .kx-overlay {
   display: block;
+  pointer-events: auto;
 }
 
 @media (max-width: 991.98px) {
@@ -331,7 +333,7 @@ body.kx-sidebar-open .kx-overlay {
   }
 }
 
-/* —— Page primitives —— */
+/* ?? Page primitives ?? */
 .kx-page-header {
   display: flex;
   flex-wrap: wrap;
@@ -699,7 +701,7 @@ body.kx-sidebar-open .kx-overlay {
   background: var(--kx-surface);
 }
 
-/* —— Bootstrap overrides (inherited pages) —— */
+/* ?? Bootstrap overrides (inherited pages) ?? */
 .btn {
   font-family: var(--kx-font);
   border-radius: var(--kx-radius-sm) !important;
@@ -979,7 +981,7 @@ pre {
   background: transparent !important;
 }
 
-/* —— Phase 2: panels, sections, chat —— */
+/* ?? Phase 2: panels, sections, chat ?? */
 .kx-panel {
   background: var(--kx-surface);
   border: 1px solid var(--kx-border);
@@ -1268,7 +1270,7 @@ pre {
   max-width: 40rem;
 }
 
-/* �� Policy packs picker �� */
+/* ?? Policy packs picker ?? */
 .kx-policy-packs {
   display: flex;
   flex-direction: column;

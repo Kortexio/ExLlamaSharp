@@ -1,5 +1,4 @@
 @page "/"
-@rendermode InteractiveServer
 @implements IDisposable
 @inject EngineHostService Engine
 @inject SettingsService Settings
@@ -117,12 +116,6 @@
             return;
         }
 
-        if (!Onboarding.TourCompleted)
-        {
-            Onboarding.TourCompleted = true;
-            Onboarding.Save();
-        }
-
         ShowAdvanced = Onboarding.AdvancedMode;
         try
         {
@@ -165,11 +158,13 @@
         try
         {
             // Check if admin user exists
-            var hasAdmin = await Db.Users.AnyAsync(u => u.Role == "admin");
-            if (!hasAdmin)
+            var admin = await Db.Users.FirstOrDefaultAsync(u => u.Role == "admin");
+            if (admin is null)
                 return true;
 
-            // Check if models path is configured
+            if (ExLlamaSharp.Server.Auth.PasswordHasher.Verify("changeme", admin.PasswordHash))
+                return true;
+
             var settings = await Settings.GetAsync();
             if (string.IsNullOrWhiteSpace(settings.ModelsPath))
                 return true;

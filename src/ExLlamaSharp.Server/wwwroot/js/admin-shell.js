@@ -1,4 +1,16 @@
-// ExLlamaSharp Admin shell — sidebar toggle (Kortexio body classes).
+// ExLlamaSharp Admin shell — sidebar toggle + kill stale service workers.
+(function () {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.getRegistrations().then(function (regs) {
+    regs.forEach(function (reg) { reg.unregister(); });
+  });
+  if (window.caches) {
+    caches.keys().then(function (keys) {
+      keys.forEach(function (key) { caches.delete(key); });
+    });
+  }
+})();
+
 window.exLlamaSharpAdmin = window.exLlamaSharpAdmin || {
   toggleSidebar: function () {
     var body = document.body;

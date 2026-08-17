@@ -227,6 +227,7 @@ if (-not $SkipPyTorch) {
             exit 1
         }
         # Optional exllamav3 — never fail install
+        & $pythonExe -m pip install huggingface_hub 2>&1 | Out-Null
         & $pythonExe -m pip install exllamav3 2>&1 | Out-Null
         if ($LASTEXITCODE -eq 0) { Write-Log "exllamav3 OK" "OK" }
         else { Write-Log "Optional exllamav3 failed (VS/CUDA) — native backend still OK" "WARN" }

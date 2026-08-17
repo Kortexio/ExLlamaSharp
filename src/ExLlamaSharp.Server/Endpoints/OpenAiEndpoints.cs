@@ -126,6 +126,13 @@ public static class OpenAiEndpoints
                 statusCode: StatusCodes.Status408RequestTimeout);
         }
 
+        if (result.Failed)
+        {
+            return Results.Json(
+                ErrorResponse.Create(result.Error ?? "Inference failed.", "server_error", "inference_failed"),
+                statusCode: StatusCodes.Status502BadGateway);
+        }
+
         RecordUsage(http, rateLimiter, audit, "/v1/chat/completions", result, started);
 
         var completionId = $"chatcmpl-{result.JobId:N}";
@@ -233,6 +240,13 @@ public static class OpenAiEndpoints
             return Results.Json(
                 ErrorResponse.Create("Request timed out or cancelled.", "timeout_error", "timeout"),
                 statusCode: StatusCodes.Status408RequestTimeout);
+        }
+
+        if (result.Failed)
+        {
+            return Results.Json(
+                ErrorResponse.Create(result.Error ?? "Inference failed.", "server_error", "inference_failed"),
+                statusCode: StatusCodes.Status502BadGateway);
         }
 
         RecordUsage(http, rateLimiter, audit, "/v1/completions", result, started);

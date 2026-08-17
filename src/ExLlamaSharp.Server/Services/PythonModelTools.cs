@@ -61,7 +61,8 @@ public sealed class PythonModelTools
             }
         }
 
-        return "python";
+        throw new InvalidOperationException(
+            "No Python interpreter found. Run Setup-Exl3Python from the Start Menu, or set EXLLAMASHARP_PYTHON.");
     }
 
     public ProcessStartInfo CreateConvertStartInfo(
@@ -98,8 +99,12 @@ public sealed class PythonModelTools
         var rev = string.IsNullOrWhiteSpace(revision) ? "main" : revision;
         var scriptPath = Path.Combine(Path.GetTempPath(), "exllamasharp-hf-pull.py");
         File.WriteAllText(scriptPath, """
-import os, sys
-from huggingface_hub import snapshot_download
+import os, subprocess, sys
+try:
+    from huggingface_hub import snapshot_download
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "huggingface_hub>=0.23"])
+    from huggingface_hub import snapshot_download
 repo, dest, rev = sys.argv[1], sys.argv[2], sys.argv[3]
 tok = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
 print(snapshot_download(repo_id=repo, local_dir=dest, revision=rev, token=tok or None), flush=True)

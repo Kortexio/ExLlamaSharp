@@ -11,6 +11,8 @@ Inspired by:
 - **ExLlamaV3** — fast EXL3 inference on NVIDIA
 - **Open WebUI** — browser-based administration
 
+**Current release: 1.1.0** — Admin click/circuit fixes, safer service startup, real Setup downloads, Hugging Face hub in the installer, and honest API/backup error handling.
+
 Default after install: **http://127.0.0.1:14563**
 
 | Role | Default |

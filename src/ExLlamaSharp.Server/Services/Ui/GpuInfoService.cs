@@ -26,36 +26,46 @@ public sealed class GpuInfoService
                 return MockGpus();
             }
 
-            var output = await process.StandardOutput.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-
-            if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(output))
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(4));
+            try
             {
-                return MockGpus();
-            }
+                var output = await process.StandardOutput.ReadToEndAsync(timeoutCts.Token).ConfigureAwait(false);
+                await process.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false);
 
-            var list = new List<GpuSnapshot>();
-            foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-            {
-                var parts = line.Split(',', StringSplitOptions.TrimEntries);
-                if (parts.Length < 6)
+                if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(output))
                 {
-                    continue;
+                    return MockGpus();
                 }
 
-                list.Add(new GpuSnapshot
+                var list = new List<GpuSnapshot>();
+                foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
                 {
-                    Index = int.TryParse(parts[0], out var idx) ? idx : list.Count,
-                    Name = parts[1],
-                    UtilizationPct = ParseDouble(parts[2]),
-                    MemoryUsedMb = ParseDouble(parts[3]),
-                    MemoryTotalMb = ParseDouble(parts[4]),
-                    TemperatureC = ParseDouble(parts[5]),
-                    IsMock = false,
-                });
-            }
+                    var parts = line.Split(',', StringSplitOptions.TrimEntries);
+                    if (parts.Length < 6)
+                    {
+                        continue;
+                    }
 
-            return list.Count > 0 ? list : MockGpus();
+                    list.Add(new GpuSnapshot
+                    {
+                        Index = int.TryParse(parts[0], out var idx) ? idx : list.Count,
+                        Name = parts[1],
+                        UtilizationPct = ParseDouble(parts[2]),
+                        MemoryUsedMb = ParseDouble(parts[3]),
+                        MemoryTotalMb = ParseDouble(parts[4]),
+                        TemperatureC = ParseDouble(parts[5]),
+                        IsMock = false,
+                    });
+                }
+
+                return list.Count > 0 ? list : MockGpus();
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+                return MockGpus();
+            }
         }
         catch
         {

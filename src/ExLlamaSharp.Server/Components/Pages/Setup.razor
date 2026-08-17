@@ -1,13 +1,13 @@
-﻿@page "/setup"
-@rendermode InteractiveServer
+@page "/setup"
 @inject GpuInfoService GpuInfo
 @inject SettingsService Settings
 @inject OnboardingState Onboarding
 @inject AppDbContext Db
 @inject NavigationManager Nav
+@inject ModelJobsService Jobs
 @using Microsoft.EntityFrameworkCore
 
-<PageTitle>Setup — ExLlamaSharp</PageTitle>
+<PageTitle>Setup ? ExLlamaSharp</PageTitle>
 
 <div class="page-header">
     <h1>Setup wizard</h1>
@@ -32,16 +32,16 @@
             <p>ExLlamaSharp Admin helps small teams run local LLM inference with a simple console.</p>
             @if (_gpu is null)
             {
-                <p class="text-muted">Detecting GPU…</p>
+                <p class="text-muted">Detecting GPU?</p>
             }
             else
             {
                 <div class="alert-soft mb-3">
                     <div><strong>@_gpu.Name</strong> @(_gpu.IsMock ? "(mock)" : "")</div>
                     <div class="text-muted small">
-                        Util @_gpu.UtilizationPct.ToString("0")% ·
-                        VRAM @_gpu.MemoryUsedMb.ToString("0") / @_gpu.MemoryTotalMb.ToString("0") MB ·
-                        @_gpu.TemperatureC.ToString("0")°C
+                        Util @_gpu.UtilizationPct.ToString("0")% ?
+                        VRAM @_gpu.MemoryUsedMb.ToString("0") / @_gpu.MemoryTotalMb.ToString("0") MB ?
+                        @_gpu.TemperatureC.ToString("0")?C
                     </div>
                 </div>
             }
@@ -216,8 +216,6 @@
         catch (Exception ex)
         {
             _error = $"Could not save admin (DB may not be ready): {ex.Message}";
-            // Allow progressing with stub for compile/demo
-            Next();
         }
     }
 
@@ -254,20 +252,21 @@
 
     private async Task QueueDownload()
     {
-        _status = $"Queued pull for {_starterRepo} (job stub). Finish setup to open the dashboard.";
+        if (string.IsNullOrWhiteSpace(_starterRepo))
+        {
+            _status = "Enter a Hugging Face repo id first.";
+            return;
+        }
+
         try
         {
-            Db.ModelJobs.Add(new ModelJob
-            {
-                Type = "pull",
-                Status = "pending",
-                ProgressPct = 0,
-            });
-            await Db.SaveChangesAsync();
+            var job = await Jobs.EnqueuePullAsync(_starterRepo.Trim());
+            _status = $"Download started for {_starterRepo}. Job {job.JobId:N} ? watch Jobs.";
         }
-        catch
+        catch (Exception ex)
         {
-            // ignore
+            _status = $"Could not start download: {ex.Message}";
+            return;
         }
 
         Finish();

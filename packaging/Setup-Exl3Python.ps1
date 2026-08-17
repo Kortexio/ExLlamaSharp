@@ -375,7 +375,7 @@ try {
     else {
         & $pyVenv -m pip install --upgrade `
             "tokenizers>=0.21.1" "numpy>=1.26" "safetensors>=0.3.2" `
-            "rich" "typing_extensions" "pyyaml" "pillow" "pydantic" "ninja"
+            "rich" "typing_extensions" "pyyaml" "pillow" "pydantic" "ninja" "huggingface_hub"
     }
 }
 finally {

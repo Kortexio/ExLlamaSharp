@@ -1,5 +1,41 @@
 /* ExLlamaSharp → Kortexio bridge (legacy class aliases). Theme tokens live in kortexio-theme.css. */
 
+.kx-connecting {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  background: var(--kx-bg, #f7f8fa);
+  color: var(--kx-muted, #6b7280);
+  font: 600 1rem/1.4 "DM Sans", system-ui, sans-serif;
+  pointer-events: none;
+}
+
+#blazor-error-ui {
+  display: none !important;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2000;
+  padding: 0.75rem 1rem;
+  background: #7f1d1d;
+  color: #fff;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+#blazor-error-ui.show {
+  display: block !important;
+  pointer-events: auto;
+}
+
+#blazor-error-ui .reload {
+  color: #fff;
+  margin-left: 0.75rem;
+}
+
 :root {
   --bg: var(--kx-bg);
   --surface: var(--kx-surface);

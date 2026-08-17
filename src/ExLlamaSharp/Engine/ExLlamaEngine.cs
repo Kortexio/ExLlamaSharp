@@ -169,6 +169,7 @@ public sealed class ExLlamaEngine : IInferenceEngine
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
+                Step();
                 var state = JobState(jobHandle.DangerousGetHandle());
                 if (state is ExlJobState.Finished or ExlJobState.Cancelled or ExlJobState.Failed)
                 {

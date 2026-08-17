@@ -1,5 +1,4 @@
 @page "/models"
-@rendermode InteractiveServer
 @inject AppDbContext Db
 @inject EngineHostService Engine
 @inject ModelInventoryService Inventory
@@ -51,7 +50,7 @@
                 <tbody>
                     @if (_hfHits.Count == 0 && !_searching)
                     {
-                        <tr><td colspan="6" class="text-muted">No Hugging Face results. Try “exl3” or check your network / HF token.</td></tr>
+                        <tr><td colspan="7" class="text-muted">No Hugging Face results. Try “exl3” or check your network / HF token.</td></tr>
                     }
                     @foreach (var m in _hfHits)
                     {
@@ -60,6 +59,7 @@
                             <td><code>@m.RepoId</code></td>
                             <td>@(m.ParameterLabel ?? "—")</td>
                             <td>@(m.SizeBytes is null ? "…" : m.SizeBytes > 0 ? HuggingFaceCatalogService.FormatBytes(m.SizeBytes.Value) : "—")</td>
+                            <td>@(m.Downloads > 0 ? m.Downloads.ToString("N0") : "—")</td>
                             <td><button class="btn btn-sm btn-outline-primary" disabled="@_pulling" @onclick="() => PullAsync(m.RepoId, m.DisplayName)">Download</button></td>
                         </tr>
                     }

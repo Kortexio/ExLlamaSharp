@@ -59,40 +59,54 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
         _watchdogCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _watchdogTask = Task.Run(() => WatchdogLoopAsync(_watchdogCts.Token), CancellationToken.None);
 
-        var settings = await _settings.GetAsync(cancellationToken).ConfigureAwait(false);
-        if (settings.LastLoadedModelId is Guid modelId)
+        try
         {
-            await using var scope = _scopeFactory.CreateAsyncScope();
-            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            var rec = await db.Models.AsNoTracking()
-                .FirstOrDefaultAsync(m => m.Id == modelId, cancellationToken)
-                .ConfigureAwait(false);
-            if (rec is not null && Directory.Exists(rec.Path))
+            var settings = await _settings.GetAsync(cancellationToken).ConfigureAwait(false);
+            if (_forceMock || _engine!.IsMock)
             {
-                _logger.LogInformation("Reloading last model {Alias} from {Path}", rec.Alias, rec.Path);
-                await LoadAsync(rec.Path, rec.Id, cancellationToken).ConfigureAwait(false);
+                await LoadAsync("mock://default", cancellationToken: cancellationToken).ConfigureAwait(false);
+                _logger.LogInformation("Mock engine auto-loaded at mock://default");
                 return;
             }
-        }
-        else if (_forceMock || _engine!.IsMock)
-        {
-            // Dev/CI: auto-load mock so /v1 works without a CUDA model.
-            await LoadAsync("mock://default", cancellationToken: cancellationToken).ConfigureAwait(false);
-            _logger.LogInformation("Mock engine auto-loaded at mock://default");
-        }
-        else
-        {
-            var defaultPath = _configuration["ExLlamaSharp:DefaultModelPath"];
-            if (string.IsNullOrWhiteSpace(defaultPath) && !string.IsNullOrWhiteSpace(settings.ModelsPath) && Directory.Exists(settings.ModelsPath))
+
+            if (!settings.LoadModelOnStartup)
             {
-                defaultPath = Directory.EnumerateDirectories(settings.ModelsPath)
-                    .FirstOrDefault(d => File.Exists(Path.Combine(d, "config.json")));
+                _logger.LogInformation("LoadModelOnStartup is off — Admin will start without a GPU model");
+                return;
             }
 
+            if (settings.LastLoadedModelId is Guid modelId)
+            {
+                await using var scope = _scopeFactory.CreateAsyncScope();
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var rec = await db.Models.AsNoTracking()
+                    .FirstOrDefaultAsync(m => m.Id == modelId, cancellationToken)
+                    .ConfigureAwait(false);
+                if (rec is not null && Directory.Exists(rec.Path))
+                {
+                    _logger.LogInformation("Reloading last model {Alias} from {Path}", rec.Alias, rec.Path);
+                    await LoadAsync(rec.Path, rec.Id, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+            }
+
+            var defaultPath = _configuration["ExLlamaSharp:DefaultModelPath"];
             if (!string.IsNullOrWhiteSpace(defaultPath) && Directory.Exists(defaultPath))
             {
                 _logger.LogInformation("Loading DefaultModelPath {Path}", defaultPath);
                 await LoadAsync(defaultPath, cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Startup model load failed; Admin UI will stay up without a loaded model");
+            try
+            {
+                await _settings.UpdateAsync(s => s.LastLoadedModelId = null, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception clearEx)
+            {
+                _logger.LogWarning(clearEx, "Could not clear LastLoadedModelId after a failed startup load");
             }
         }
     }
@@ -132,8 +146,24 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
             EnsureEngine(modelPath);
         }
 
-        await _engine.LoadAsync(modelPath, cancellationToken).ConfigureAwait(false);
-        _engine.Start();
+        try
+        {
+            await _engine.LoadAsync(modelPath, cancellationToken).ConfigureAwait(false);
+            _engine.Start();
+        }
+        catch
+        {
+            try
+            {
+                await UnloadAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch
+            {
+                // keep the original load error
+            }
+
+            throw;
+        }
 
         lock (_gate)
         {

@@ -144,11 +144,15 @@ public sealed class BackupService : BackgroundService
             }
         }
 
-        // Simple replace for config entities (weights never included).
-        db.ModerationRules.RemoveRange(await db.ModerationRules.ToListAsync(cancellationToken).ConfigureAwait(false));
-        if (payload.ModerationRules is { Count: > 0 })
+        ReplaceRange(db.ModerationRules, await db.ModerationRules.ToListAsync(cancellationToken).ConfigureAwait(false), payload.ModerationRules);
+        ReplaceRange(db.Users, await db.Users.ToListAsync(cancellationToken).ConfigureAwait(false), payload.Users);
+        ReplaceRange(db.ApiKeys, await db.ApiKeys.ToListAsync(cancellationToken).ConfigureAwait(false), payload.ApiKeys);
+        ReplaceRange(db.Models, await db.Models.ToListAsync(cancellationToken).ConfigureAwait(false), payload.Models);
+        ReplaceRange(db.AbTests, await db.AbTests.ToListAsync(cancellationToken).ConfigureAwait(false), payload.AbTests);
+        if (payload.Tenants is { Count: > 0 })
         {
-            db.ModerationRules.AddRange(payload.ModerationRules);
+            ReplaceRange(db.TenantQuotas, await db.TenantQuotas.ToListAsync(cancellationToken).ConfigureAwait(false), payload.TenantQuotas);
+            ReplaceRange(db.Tenants, await db.Tenants.ToListAsync(cancellationToken).ConfigureAwait(false), payload.Tenants);
         }
 
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -241,6 +245,16 @@ public sealed class BackupService : BackgroundService
         if (old.Count > 0)
         {
             await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static void ReplaceRange<T>(DbSet<T> set, IEnumerable<T> existing, List<T>? incoming)
+        where T : class
+    {
+        set.RemoveRange(existing);
+        if (incoming is { Count: > 0 })
+        {
+            set.AddRange(incoming);
         }
     }
 

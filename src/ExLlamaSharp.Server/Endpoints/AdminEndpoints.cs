@@ -282,7 +282,17 @@ public static class AdminEndpoints
         }
 
         record ??= await inventory.EnsureRecordAsync(path, body.Alias, ct).ConfigureAwait(false);
-        await engine.LoadAsync(path, record.Id, ct).ConfigureAwait(false);
+        try
+        {
+            await engine.LoadAsync(path, record.Id, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            return Results.Json(
+                ErrorResponse.Create(ex.Message, "server_error", "model_load_failed"),
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
         return Results.Json(new
         {
             loaded = true,
@@ -402,10 +412,16 @@ public static class AdminEndpoints
     private static async Task<IResult> CancelJobAsync(Guid id, ModelJobsService jobs, EngineHostService engine, CancellationToken ct)
     {
         var cancelled = await jobs.CancelAsync(id, ct).ConfigureAwait(false);
-        if (!cancelled)
+        if (!cancelled && engine.IsLoaded)
         {
-            // Also try engine job cancel for inference jobs
-            cancelled = engine.Engine.Cancel(id);
+            try
+            {
+                cancelled = engine.Engine.Cancel(id);
+            }
+            catch
+            {
+                cancelled = false;
+            }
         }
 
         return cancelled
@@ -492,6 +508,14 @@ public static class AdminEndpoints
             return Results.Json(
                 ErrorResponse.Create("username and password required", code: "invalid_user"),
                 statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var exists = await db.Users.AnyAsync(u => u.Username == body.Username, ct).ConfigureAwait(false);
+        if (exists)
+        {
+            return Results.Json(
+                ErrorResponse.Create("Username already exists", code: "user_exists"),
+                statusCode: StatusCodes.Status409Conflict);
         }
 
         var user = new User

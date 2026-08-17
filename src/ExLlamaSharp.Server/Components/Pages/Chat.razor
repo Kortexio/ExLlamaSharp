@@ -1,5 +1,4 @@
 @page "/chat"
-@rendermode InteractiveServer
 @inject IHttpClientFactory HttpClientFactory
 @inject EngineHostService Engine
 @inject NavigationManager Nav
@@ -50,7 +49,7 @@
 
     private void RefreshModelStatus()
     {
-        _modelReady = Engine.IsLoaded && Engine.IsRunning && !Engine.Engine.IsMock;
+        _modelReady = Engine.IsLoaded && Engine.IsRunning;
         if (_modelReady)
         {
             var name = Engine.LoadedModelPath is { } p

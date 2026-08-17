@@ -91,7 +91,8 @@ builder.Services.AddCors(options =>
 builder.WebHost.ConfigureKestrel((context, options) =>
 {
     var port = context.Configuration.GetValue("Kestrel:Port", 14563);
-    var bind = context.Configuration.GetValue("Kestrel:Bind", "0.0.0.0");
+    var bind = context.Configuration.GetValue("Kestrel:Bind", "0.0.0.0") ?? "0.0.0.0";
+    TryApplyListenSettingsFromDatabase(dataRoot, ref bind, ref port);
     if (bind is "0.0.0.0" or "*")
     {
         options.ListenAnyIP(port);
@@ -142,5 +143,49 @@ app.Logger.LogInformation(
     dataRoot);
 
 await app.RunAsync();
+
+static void TryApplyListenSettingsFromDatabase(string root, ref string bind, ref int port)
+{
+    try
+    {
+        var dbPath = Path.Combine(root, "app.db");
+        if (!File.Exists(dbPath))
+        {
+            return;
+        }
+
+        using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath}");
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT BindAddress, Port FROM Settings LIMIT 1";
+        using var reader = cmd.ExecuteReader();
+        if (!reader.Read())
+        {
+            return;
+        }
+
+        if (!reader.IsDBNull(0))
+        {
+            var dbBind = reader.GetString(0);
+            if (!string.IsNullOrWhiteSpace(dbBind))
+            {
+                bind = dbBind.Trim();
+            }
+        }
+
+        if (!reader.IsDBNull(1))
+        {
+            var dbPort = reader.GetInt32(1);
+            if (dbPort is > 0 and < 65536)
+            {
+                port = dbPort;
+            }
+        }
+    }
+    catch
+    {
+        // first run / schema not ready — keep appsettings defaults
+    }
+}
 
 public partial class Program;
