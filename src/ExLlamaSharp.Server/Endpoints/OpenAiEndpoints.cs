@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json;
 using ExLlamaSharp.Chat;
 using ExLlamaSharp.Engine;
@@ -6,6 +5,7 @@ using ExLlamaSharp.Server.Auth;
 using ExLlamaSharp.Server.Data;
 using ExLlamaSharp.Server.Data.Entities;
 using ExLlamaSharp.Server.Models;
+using ExLlamaSharp.Server.OpenAi;
 using ExLlamaSharp.Server.Services;
 using Microsoft.EntityFrameworkCore;
 
@@ -13,11 +13,7 @@ namespace ExLlamaSharp.Server.Endpoints;
 
 public static class OpenAiEndpoints
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-    };
+    private static readonly JsonSerializerOptions JsonOptions = OpenAiSseWriter.JsonOptions;
 
     public static IEndpointRouteBuilder MapOpenAiEndpoints(this IEndpointRouteBuilder app)
     {
@@ -32,7 +28,7 @@ public static class OpenAiEndpoints
         v1.MapPost("/detokenize", DetokenizeAsync);
         v1.MapGet("/metrics", MetricsJsonAsync);
 
-        // Catch-all for unimplemented OpenAI routes → 501 shaped error
+        // Catch-all for unimplemented OpenAI routes â†’ 501 shaped error
         v1.Map("{**path}", (HttpContext ctx) =>
         {
             ctx.Response.StatusCode = StatusCodes.Status501NotImplemented;
@@ -91,8 +87,6 @@ public static class OpenAiEndpoints
         }
 
         var timeoutCts = await CreateTimeoutCtsAsync(settingsService, http.RequestAborted).ConfigureAwait(false);
-        var ct = timeoutCts.Token;
-
         var engineRequest = new CompletionRequest
         {
             Prompt = prompt,
@@ -114,126 +108,50 @@ public static class OpenAiEndpoints
         catch (InvalidOperationException ex)
         {
             timeoutCts.Dispose();
-            return Results.Json(
-                ErrorResponse.Create(ex.Message, "server_error", "engine_not_ready"),
-                statusCode: StatusCodes.Status503ServiceUnavailable);
+            return OpenAiCompletionRunner.JsonError(ex.Message, "server_error", "engine_not_ready", StatusCodes.Status503ServiceUnavailable);
         }
 
-        var engine = engineHost.Engine;
-        var completionId = $"chatcmpl-{engineRequest.JobId:N}";
-        var created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-
-        if (request.Stream)
-        {
-            return Results.Stream(async stream =>
+        return await OpenAiCompletionRunner.RunAsync(
+            http,
+            engineHost.Engine,
+            new OpenAiRunContext
             {
-                using (timeoutCts)
+                EngineRequest = engineRequest,
+                Stream = request.Stream,
+                ModelId = modelId,
+                Endpoint = "/v1/chat/completions",
+                CompletionId = $"chatcmpl-{engineRequest.JobId:N}",
+                SseKind = OpenAiSseKind.Chat,
+                ToJson = (completed, created) => new ChatCompletionResponse
                 {
-                    CompletionResult? usage = null;
-                    try
-                    {
-                        if (engine.SupportsStreaming)
+                    Id = $"chatcmpl-{completed.JobId:N}",
+                    Created = created,
+                    Model = modelId,
+                    Choices =
+                    [
+                        new ChatCompletionChoice
                         {
-                            usage = await WriteSseChatStreamLiveAsync(
-                                    stream,
-                                    completionId,
-                                    created,
-                                    modelId,
-                                    engine.SubmitStreamAsync(engineRequest, ct),
-                                    ct)
-                                .ConfigureAwait(false);
-                        }
-                        else
-                        {
-                            var result = await engine.SubmitAsync(engineRequest, ct).ConfigureAwait(false);
-                            usage = result;
-                            if (!result.Failed)
+                            Index = 0,
+                            Message = new ChatCompletionResponseMessage
                             {
-                                await WriteSseChatStreamAsync(
-                                        stream, completionId, created, modelId, result.Text, http.RequestAborted)
-                                    .ConfigureAwait(false);
-                            }
-                        }
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        usage ??= new CompletionResult
-                        {
-                            JobId = engineRequest.JobId!.Value,
-                            Text = "",
-                            TokenIds = [],
-                            Cancelled = true,
-                            Duration = DateTime.UtcNow - started,
-                        };
-                    }
-
-                    if (usage is not null)
-                    {
-                        RecordUsage(http, rateLimiter, audit, "/v1/chat/completions", usage, started);
-                    }
-                }
-            }, "text/event-stream");
-        }
-
-        try
-        {
-            CompletionResult completed;
-            try
-            {
-                completed = await engine.SubmitAsync(engineRequest, ct).ConfigureAwait(false);
-            }
-            catch (InvalidOperationException ex)
-            {
-                return Results.Json(
-                    ErrorResponse.Create(ex.Message, "server_error", "engine_not_ready"),
-                    statusCode: StatusCodes.Status503ServiceUnavailable);
-            }
-            catch (OperationCanceledException)
-            {
-                return Results.Json(
-                    ErrorResponse.Create("Request timed out or cancelled.", "timeout_error", "timeout"),
-                    statusCode: StatusCodes.Status408RequestTimeout);
-            }
-
-            if (completed.Failed)
-            {
-                return Results.Json(
-                    ErrorResponse.Create(completed.Error ?? "Inference failed.", "server_error", "inference_failed"),
-                    statusCode: StatusCodes.Status502BadGateway);
-            }
-
-            RecordUsage(http, rateLimiter, audit, "/v1/chat/completions", completed, started);
-
-            return Results.Json(new ChatCompletionResponse
-            {
-                Id = $"chatcmpl-{completed.JobId:N}",
-                Created = created,
-                Model = modelId,
-                Choices =
-                [
-                    new ChatCompletionChoice
-                    {
-                        Index = 0,
-                        Message = new ChatCompletionResponseMessage
-                        {
-                            Role = "assistant",
-                            Content = completed.Text,
+                                Role = "assistant",
+                                Content = completed.Text,
+                            },
+                            FinishReason = completed.Cancelled ? "cancelled" : "stop",
                         },
-                        FinishReason = completed.Cancelled ? "cancelled" : "stop",
+                    ],
+                    Usage = new UsageInfo
+                    {
+                        PromptTokens = completed.PromptTokens,
+                        CompletionTokens = completed.CompletionTokens,
+                        TotalTokens = completed.PromptTokens + completed.CompletionTokens,
                     },
-                ],
-                Usage = new UsageInfo
-                {
-                    PromptTokens = completed.PromptTokens,
-                    CompletionTokens = completed.CompletionTokens,
-                    TotalTokens = completed.PromptTokens + completed.CompletionTokens,
                 },
-            }, JsonOptions);
-        }
-        finally
-        {
-            timeoutCts.Dispose();
-        }
+            },
+            timeoutCts,
+            started,
+            rateLimiter,
+            audit).ConfigureAwait(false);
     }
 
     private static async Task<IResult> CompletionsAsync(
@@ -273,7 +191,6 @@ public static class OpenAiEndpoints
             .ConfigureAwait(false);
 
         var timeoutCts = await CreateTimeoutCtsAsync(settingsService, http.RequestAborted).ConfigureAwait(false);
-        var ct = timeoutCts.Token;
         var engineRequest = new CompletionRequest
         {
             Prompt = prompt,
@@ -293,122 +210,46 @@ public static class OpenAiEndpoints
         catch (InvalidOperationException ex)
         {
             timeoutCts.Dispose();
-            return Results.Json(
-                ErrorResponse.Create(ex.Message, "server_error", "engine_not_ready"),
-                statusCode: StatusCodes.Status503ServiceUnavailable);
+            return OpenAiCompletionRunner.JsonError(ex.Message, "server_error", "engine_not_ready", StatusCodes.Status503ServiceUnavailable);
         }
 
-        var engine = engineHost.Engine;
-        var completionId = $"cmpl-{engineRequest.JobId:N}";
-        var created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-
-        if (request.Stream)
-        {
-            return Results.Stream(async stream =>
+        return await OpenAiCompletionRunner.RunAsync(
+            http,
+            engineHost.Engine,
+            new OpenAiRunContext
             {
-                using (timeoutCts)
+                EngineRequest = engineRequest,
+                Stream = request.Stream,
+                ModelId = modelId,
+                Endpoint = "/v1/completions",
+                CompletionId = $"cmpl-{engineRequest.JobId:N}",
+                SseKind = OpenAiSseKind.Completion,
+                ToJson = (completed, created) => new CompletionResponse
                 {
-                    CompletionResult? usage = null;
-                    try
-                    {
-                        if (engine.SupportsStreaming)
+                    Id = $"cmpl-{completed.JobId:N}",
+                    Created = created,
+                    Model = modelId,
+                    Choices =
+                    [
+                        new CompletionChoice
                         {
-                            usage = await WriteSseCompletionStreamLiveAsync(
-                                    stream,
-                                    completionId,
-                                    created,
-                                    modelId,
-                                    engine.SubmitStreamAsync(engineRequest, ct),
-                                    ct)
-                                .ConfigureAwait(false);
-                        }
-                        else
-                        {
-                            var result = await engine.SubmitAsync(engineRequest, ct).ConfigureAwait(false);
-                            usage = result;
-                            if (!result.Failed)
-                            {
-                                await WriteSseCompletionStreamAsync(
-                                        stream, completionId, created, modelId, result.Text, http.RequestAborted)
-                                    .ConfigureAwait(false);
-                            }
-                        }
-                    }
-                    catch (OperationCanceledException)
+                            Index = 0,
+                            Text = completed.Text,
+                            FinishReason = completed.Cancelled ? "cancelled" : "stop",
+                        },
+                    ],
+                    Usage = new UsageInfo
                     {
-                        usage ??= new CompletionResult
-                        {
-                            JobId = engineRequest.JobId!.Value,
-                            Text = "",
-                            TokenIds = [],
-                            Cancelled = true,
-                            Duration = DateTime.UtcNow - started,
-                        };
-                    }
-
-                    if (usage is not null)
-                    {
-                        RecordUsage(http, rateLimiter, audit, "/v1/completions", usage, started);
-                    }
-                }
-            }, "text/event-stream");
-        }
-
-        try
-        {
-            CompletionResult completed;
-            try
-            {
-                completed = await engine.SubmitAsync(engineRequest, ct).ConfigureAwait(false);
-            }
-            catch (InvalidOperationException ex)
-            {
-                return Results.Json(
-                    ErrorResponse.Create(ex.Message, "server_error", "engine_not_ready"),
-                    statusCode: StatusCodes.Status503ServiceUnavailable);
-            }
-            catch (OperationCanceledException)
-            {
-                return Results.Json(
-                    ErrorResponse.Create("Request timed out or cancelled.", "timeout_error", "timeout"),
-                    statusCode: StatusCodes.Status408RequestTimeout);
-            }
-
-            if (completed.Failed)
-            {
-                return Results.Json(
-                    ErrorResponse.Create(completed.Error ?? "Inference failed.", "server_error", "inference_failed"),
-                    statusCode: StatusCodes.Status502BadGateway);
-            }
-
-            RecordUsage(http, rateLimiter, audit, "/v1/completions", completed, started);
-
-            return Results.Json(new CompletionResponse
-            {
-                Id = $"cmpl-{completed.JobId:N}",
-                Created = created,
-                Model = modelId,
-                Choices =
-                [
-                    new CompletionChoice
-                    {
-                        Index = 0,
-                        Text = completed.Text,
-                        FinishReason = completed.Cancelled ? "cancelled" : "stop",
+                        PromptTokens = completed.PromptTokens,
+                        CompletionTokens = completed.CompletionTokens,
+                        TotalTokens = completed.PromptTokens + completed.CompletionTokens,
                     },
-                ],
-                Usage = new UsageInfo
-                {
-                    PromptTokens = completed.PromptTokens,
-                    CompletionTokens = completed.CompletionTokens,
-                    TotalTokens = completed.PromptTokens + completed.CompletionTokens,
                 },
-            }, JsonOptions);
-        }
-        finally
-        {
-            timeoutCts.Dispose();
-        }
+            },
+            timeoutCts,
+            started,
+            rateLimiter,
+            audit).ConfigureAwait(false);
     }
 
     private static async Task<IResult> ListModelsAsync(AppDbContext db, EngineHostService engineHost, CancellationToken ct)
@@ -659,7 +500,7 @@ public static class OpenAiEndpoints
         _ => ChatRole.User,
     };
 
-    /// <summary>API key priority 1 (highest) → engine priority higher number scheduled sooner.</summary>
+    /// <summary>API key priority 1 (highest) â†’ engine priority higher number scheduled sooner.</summary>
     private static int InvertPriority(int apiKeyPriority) => Math.Clamp(11 - apiKeyPriority, 1, 10);
 
     private static async Task<CancellationTokenSource> CreateTimeoutCtsAsync(
@@ -671,447 +512,5 @@ public static class OpenAiEndpoints
         var cts = CancellationTokenSource.CreateLinkedTokenSource(requestAborted);
         cts.CancelAfter(TimeSpan.FromSeconds(seconds));
         return cts;
-    }
-
-    private static void RecordUsage(
-        HttpContext http,
-        RateLimiter rateLimiter,
-        AuditService audit,
-        string endpoint,
-        CompletionResult result,
-        DateTime started)
-    {
-        var keyId = http.GetKeyId();
-        if (keyId is Guid id)
-        {
-            rateLimiter.RecordTokens(id.ToString("N"), result.PromptTokens + result.CompletionTokens);
-        }
-
-        audit.Enqueue(new AuditLog
-        {
-            Timestamp = DateTime.UtcNow,
-            Endpoint = endpoint,
-            KeyId = keyId,
-            TenantId = http.GetTenantId(),
-            PromptTokens = result.PromptTokens,
-            CompletionTokens = result.CompletionTokens,
-            StatusCode = 200,
-            DurationMs = (long)(DateTime.UtcNow - started).TotalMilliseconds,
-            Error = result.Failed ? result.Error : null,
-        });
-    }
-
-    private static async Task<CompletionResult> WriteSseChatStreamLiveAsync(
-        Stream stream,
-        string id,
-        long created,
-        string model,
-        IAsyncEnumerable<CompletionDelta> deltas,
-        CancellationToken ct)
-    {
-        await using var writer = new StreamWriter(stream, new UTF8Encoding(false), leaveOpen: true);
-        var roleChunk = new ChatCompletionChunk
-        {
-            Id = id,
-            Created = created,
-            Model = model,
-            Choices =
-            [
-                new ChatCompletionChunkChoice
-                {
-                    Index = 0,
-                    Delta = new ChatCompletionDelta { Role = "assistant" },
-                    FinishReason = null,
-                },
-            ],
-        };
-        await WriteSseDataAsync(writer, roleChunk, ct).ConfigureAwait(false);
-
-        var filter = new StreamingStopFilter();
-        var sb = new StringBuilder();
-        var tokens = new List<int>();
-        var promptTokens = 0;
-        var completionTokens = 0;
-        var finish = "stop";
-        string? error = null;
-        var failed = false;
-        var cancelled = false;
-        Guid jobId = Guid.Empty;
-
-        await foreach (var delta in deltas.WithCancellation(ct).ConfigureAwait(false))
-        {
-            jobId = delta.JobId;
-            if (delta.PromptTokens > 0)
-            {
-                promptTokens = delta.PromptTokens;
-            }
-
-            if (delta.CompletionTokens > 0)
-            {
-                completionTokens = delta.CompletionTokens;
-            }
-
-            if (delta.TokenIds.Length > 0)
-            {
-                tokens.AddRange(delta.TokenIds);
-            }
-
-            if (delta.Failed)
-            {
-                failed = true;
-                error = delta.Error;
-            }
-
-            if (delta.Cancelled)
-            {
-                cancelled = true;
-                finish = "cancelled";
-            }
-
-            var piece = filter.Push(delta.Text);
-            if (piece.Length > 0)
-            {
-                sb.Append(piece);
-                var chunk = new ChatCompletionChunk
-                {
-                    Id = id,
-                    Created = created,
-                    Model = model,
-                    Choices =
-                    [
-                        new ChatCompletionChunkChoice
-                        {
-                            Index = 0,
-                            Delta = new ChatCompletionDelta { Content = piece },
-                            FinishReason = null,
-                        },
-                    ],
-                };
-                await WriteSseDataAsync(writer, chunk, ct).ConfigureAwait(false);
-            }
-
-            if (delta.Eos || delta.Failed || delta.Cancelled || filter.Stopped)
-            {
-                break;
-            }
-        }
-
-        var flushed = filter.Flush();
-        if (flushed.Length > 0)
-        {
-            sb.Append(flushed);
-            var chunk = new ChatCompletionChunk
-            {
-                Id = id,
-                Created = created,
-                Model = model,
-                Choices =
-                [
-                    new ChatCompletionChunkChoice
-                    {
-                        Index = 0,
-                        Delta = new ChatCompletionDelta { Content = flushed },
-                        FinishReason = null,
-                    },
-                ],
-            };
-            await WriteSseDataAsync(writer, chunk, ct).ConfigureAwait(false);
-        }
-
-        var doneChunk = new ChatCompletionChunk
-        {
-            Id = id,
-            Created = created,
-            Model = model,
-            Choices =
-            [
-                new ChatCompletionChunkChoice
-                {
-                    Index = 0,
-                    Delta = new ChatCompletionDelta(),
-                    FinishReason = finish,
-                },
-            ],
-        };
-        await WriteSseDataAsync(writer, doneChunk, ct).ConfigureAwait(false);
-        await writer.WriteAsync("data: [DONE]\n\n").ConfigureAwait(false);
-        await writer.FlushAsync(ct).ConfigureAwait(false);
-
-        return new CompletionResult
-        {
-            JobId = jobId,
-            Text = sb.ToString(),
-            TokenIds = tokens.ToArray(),
-            PromptTokens = promptTokens,
-            CompletionTokens = completionTokens > 0 ? completionTokens : tokens.Count,
-            Failed = failed,
-            Error = error,
-            Cancelled = cancelled,
-        };
-    }
-
-    private static async Task<CompletionResult> WriteSseCompletionStreamLiveAsync(
-        Stream stream,
-        string id,
-        long created,
-        string model,
-        IAsyncEnumerable<CompletionDelta> deltas,
-        CancellationToken ct)
-    {
-        await using var writer = new StreamWriter(stream, new UTF8Encoding(false), leaveOpen: true);
-        var filter = new StreamingStopFilter();
-        var sb = new StringBuilder();
-        var tokens = new List<int>();
-        var promptTokens = 0;
-        var completionTokens = 0;
-        var finish = "stop";
-        string? error = null;
-        var failed = false;
-        var cancelled = false;
-        Guid jobId = Guid.Empty;
-
-        await foreach (var delta in deltas.WithCancellation(ct).ConfigureAwait(false))
-        {
-            jobId = delta.JobId;
-            if (delta.PromptTokens > 0)
-            {
-                promptTokens = delta.PromptTokens;
-            }
-
-            if (delta.CompletionTokens > 0)
-            {
-                completionTokens = delta.CompletionTokens;
-            }
-
-            if (delta.TokenIds.Length > 0)
-            {
-                tokens.AddRange(delta.TokenIds);
-            }
-
-            if (delta.Failed)
-            {
-                failed = true;
-                error = delta.Error;
-            }
-
-            if (delta.Cancelled)
-            {
-                cancelled = true;
-                finish = "cancelled";
-            }
-
-            var piece = filter.Push(delta.Text);
-            if (piece.Length > 0)
-            {
-                sb.Append(piece);
-                var payload = new
-                {
-                    id,
-                    @object = "text_completion",
-                    created,
-                    model,
-                    choices = new[]
-                    {
-                        new { index = 0, text = piece, finish_reason = (string?)null },
-                    },
-                };
-                await WriteSseDataAsync(writer, payload, ct).ConfigureAwait(false);
-            }
-
-            if (delta.Eos || delta.Failed || delta.Cancelled || filter.Stopped)
-            {
-                break;
-            }
-        }
-
-        var flushed = filter.Flush();
-        if (flushed.Length > 0)
-        {
-            sb.Append(flushed);
-            var payload = new
-            {
-                id,
-                @object = "text_completion",
-                created,
-                model,
-                choices = new[]
-                {
-                    new { index = 0, text = flushed, finish_reason = (string?)null },
-                },
-            };
-            await WriteSseDataAsync(writer, payload, ct).ConfigureAwait(false);
-        }
-
-        var final = new
-        {
-            id,
-            @object = "text_completion",
-            created,
-            model,
-            choices = new[]
-            {
-                new { index = 0, text = "", finish_reason = (string?)finish },
-            },
-        };
-        await WriteSseDataAsync(writer, final, ct).ConfigureAwait(false);
-        await writer.WriteAsync("data: [DONE]\n\n").ConfigureAwait(false);
-        await writer.FlushAsync(ct).ConfigureAwait(false);
-
-        return new CompletionResult
-        {
-            JobId = jobId,
-            Text = sb.ToString(),
-            TokenIds = tokens.ToArray(),
-            PromptTokens = promptTokens,
-            CompletionTokens = completionTokens > 0 ? completionTokens : tokens.Count,
-            Failed = failed,
-            Error = error,
-            Cancelled = cancelled,
-        };
-    }
-
-    private static async Task WriteSseChatStreamAsync(
-        Stream stream,
-        string id,
-        long created,
-        string model,
-        string text,
-        CancellationToken ct)
-    {
-        await using var writer = new StreamWriter(stream, new UTF8Encoding(false), leaveOpen: true);
-
-        var roleChunk = new ChatCompletionChunk
-        {
-            Id = id,
-            Created = created,
-            Model = model,
-            Choices =
-            [
-                new ChatCompletionChunkChoice
-                {
-                    Index = 0,
-                    Delta = new ChatCompletionDelta { Role = "assistant" },
-                    FinishReason = null,
-                },
-            ],
-        };
-        await WriteSseDataAsync(writer, roleChunk, ct).ConfigureAwait(false);
-
-        foreach (var piece in ChunkText(text, 12))
-        {
-            ct.ThrowIfCancellationRequested();
-            var chunk = new ChatCompletionChunk
-            {
-                Id = id,
-                Created = created,
-                Model = model,
-                Choices =
-                [
-                    new ChatCompletionChunkChoice
-                    {
-                        Index = 0,
-                        Delta = new ChatCompletionDelta { Content = piece },
-                        FinishReason = null,
-                    },
-                ],
-            };
-            await WriteSseDataAsync(writer, chunk, ct).ConfigureAwait(false);
-        }
-
-        var doneChunk = new ChatCompletionChunk
-        {
-            Id = id,
-            Created = created,
-            Model = model,
-            Choices =
-            [
-                new ChatCompletionChunkChoice
-                {
-                    Index = 0,
-                    Delta = new ChatCompletionDelta(),
-                    FinishReason = "stop",
-                },
-            ],
-        };
-        await WriteSseDataAsync(writer, doneChunk, ct).ConfigureAwait(false);
-        await writer.WriteAsync("data: [DONE]\n\n").ConfigureAwait(false);
-        await writer.FlushAsync(ct).ConfigureAwait(false);
-    }
-
-    private static async Task WriteSseCompletionStreamAsync(
-        Stream stream,
-        string id,
-        long created,
-        string model,
-        string text,
-        CancellationToken ct)
-    {
-        await using var writer = new StreamWriter(stream, new UTF8Encoding(false), leaveOpen: true);
-
-        foreach (var piece in ChunkText(text, 12))
-        {
-            ct.ThrowIfCancellationRequested();
-            var payload = new
-            {
-                id,
-                @object = "text_completion",
-                created,
-                model,
-                choices = new[]
-                {
-                    new { index = 0, text = piece, finish_reason = (string?)null },
-                },
-            };
-            await WriteSseDataAsync(writer, payload, ct).ConfigureAwait(false);
-        }
-
-        var final = new
-        {
-            id,
-            @object = "text_completion",
-            created,
-            model,
-            choices = new[]
-            {
-                new { index = 0, text = "", finish_reason = (string?)"stop" },
-            },
-        };
-        await WriteSseDataAsync(writer, final, ct).ConfigureAwait(false);
-        await writer.WriteAsync("data: [DONE]\n\n").ConfigureAwait(false);
-        await writer.FlushAsync(ct).ConfigureAwait(false);
-    }
-
-    private static async Task WriteSseDataAsync<T>(StreamWriter writer, T payload, CancellationToken ct)
-    {
-        var json = JsonSerializer.Serialize(payload, JsonOptions);
-        await writer.WriteAsync($"data: {json}\n\n").ConfigureAwait(false);
-        await writer.FlushAsync(ct).ConfigureAwait(false);
-    }
-
-    private static IEnumerable<string> ChunkText(string text, int wordsPerChunk)
-    {
-        if (string.IsNullOrEmpty(text))
-        {
-            yield break;
-        }
-
-        var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (words.Length == 0)
-        {
-            yield return text;
-            yield break;
-        }
-
-        for (var i = 0; i < words.Length; i += wordsPerChunk)
-        {
-            var slice = words.Skip(i).Take(wordsPerChunk);
-            var piece = string.Join(' ', slice);
-            if (i + wordsPerChunk < words.Length)
-            {
-                piece += " ";
-            }
-
-            yield return piece;
-        }
     }
 }
