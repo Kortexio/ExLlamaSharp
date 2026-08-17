@@ -20,4 +20,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\ExLlamaSharp\ExLlamaSharp.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="Fixtures\fake_exl3_worker.py" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

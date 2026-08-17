@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using ExLlamaSharp.Server.Auth;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 
 namespace ExLlamaSharp.Server.Tests;
@@ -27,7 +28,10 @@ public sealed class E2eHostFixture : IDisposable
         Directory.CreateDirectory(DataRoot);
         Environment.SetEnvironmentVariable("EXLLAMASHARP_DATA_ROOT", DataRoot);
 
-        Factory = new WebApplicationFactory<Program>();
+        Factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("ExLlamaSharp:ForceMockEngine", "true");
+        });
         // Force host start so DbInitializer seeds before tests run.
         using var warmup = Factory.CreateClient();
         _ = warmup.GetAsync("/health").GetAwaiter().GetResult();

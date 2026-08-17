@@ -80,4 +80,31 @@ public class MockEngineParityTests
         Assert.Equal(32, results.Length);
         Assert.All(results, r => Assert.False(string.IsNullOrEmpty(r.Text)));
     }
+
+    [Fact]
+    public async Task Default_stream_yields_one_terminal_delta()
+    {
+        IInferenceEngine engine = ExLlamaEngine.Create(forceMock: true);
+        await using (engine)
+        {
+            await engine.LoadAsync("mock://stream");
+            engine.Start();
+
+            Assert.False(engine.SupportsStreaming);
+            var n = 0;
+            await foreach (var delta in engine.SubmitStreamAsync(new CompletionRequest
+            {
+                Prompt = "stream-default",
+                MaxNewTokens = 8,
+                Temperature = 0f,
+            }))
+            {
+                n++;
+                Assert.True(delta.Eos);
+                Assert.False(string.IsNullOrEmpty(delta.Text));
+            }
+
+            Assert.Equal(1, n);
+        }
+    }
 }

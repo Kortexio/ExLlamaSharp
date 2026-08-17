@@ -148,6 +148,11 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
 
         try
         {
+            if (_engine is ExLlamaV3WorkerEngine worker)
+            {
+                worker.Options = WorkerOptionsFromSettings();
+            }
+
             await _engine.LoadAsync(modelPath, cancellationToken).ConfigureAwait(false);
             _engine.Start();
         }
@@ -286,9 +291,20 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
     private IInferenceEngine CreateEngine(EngineKind kind) => kind switch
     {
         EngineKind.Mock => ExLlamaEngine.Create(_logger, forceMock: true),
-        EngineKind.Worker => new ExLlamaV3WorkerEngine(_logger),
+        EngineKind.Worker => new ExLlamaV3WorkerEngine(_logger, WorkerOptionsFromSettings()),
         _ => ExLlamaEngine.Create(_logger, forceMock: false),
     };
+
+    private WorkerEngineOptions WorkerOptionsFromSettings()
+    {
+        var s = _settings.PeekOrDefault();
+        return new WorkerEngineOptions
+        {
+            MaxNumSeqs = Math.Max(1, s.MaxNumSeqs),
+            MaxChunkSize = Math.Max(1, s.MaxChunkSize),
+            MaxBatchedTokens = Math.Max(256, s.MaxBatchedTokens),
+        };
+    }
 
     private async Task WatchdogLoopAsync(CancellationToken cancellationToken)
     {

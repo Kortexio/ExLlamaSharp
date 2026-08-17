@@ -1,7 +1,10 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Threading.Channels;
 using ExLlamaSharp.Chat;
 using ExLlamaSharp.Tokenizer;
 using Microsoft.Extensions.Logging;
@@ -25,12 +28,24 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
     private readonly ILogger _logger;
     private readonly SimpleTokenizer _fallbackTokenizer = new();
     private readonly object _gate = new();
+    private readonly object _admitGate = new();
+    private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private readonly ConcurrentDictionary<int, Channel<WorkerEvent>> _streams = new();
+    private readonly ConcurrentDictionary<int, TaskCompletionSource<JsonElement>> _pending = new();
+    private readonly ConcurrentDictionary<Guid, int> _jobToWorkerId = new();
     private readonly Dictionary<Guid, CancellationTokenSource> _jobs = new();
+    private readonly List<AdmissionWaiter> _waiters = [];
 
+    private WorkerEngineOptions _options;
     private Process? _process;
     private StreamWriter? _stdin;
     private StreamReader? _stdout;
+    private CancellationTokenSource? _pumpCts;
+    private Task? _pumpTask;
     private int _nextId = 1;
+    private long _admitSeq;
+    private int _inFlight;
+    private WorkerStats _stats;
     private bool _loaded;
     private bool _running;
     private bool _disposed;
@@ -40,14 +55,22 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
     private long _finished;
     private double _lastTps;
 
-    public ExLlamaV3WorkerEngine(ILogger? logger = null)
+    public ExLlamaV3WorkerEngine(ILogger? logger = null, WorkerEngineOptions? options = null)
     {
         _logger = logger ?? NullLogger.Instance;
+        _options = options ?? new WorkerEngineOptions();
+    }
+
+    public WorkerEngineOptions Options
+    {
+        get => _options;
+        set => _options = value ?? new WorkerEngineOptions();
     }
 
     public bool IsMock => false;
     public bool IsLoaded => _loaded;
     public bool IsRunning => _running;
+    public bool SupportsStreaming => true;
 
     /// <summary>True when a suitable Python + worker script can be located.</summary>
     public static bool IsAvailable(string? repoRoot = null)
@@ -90,7 +113,6 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
                     return hasSafetensors || hasTokenizer;
                 }
 
-                // Some EXL3 packs still set quant_method nested under quantization_config
                 using var doc = JsonDocument.Parse(json);
                 if (ContainsExl3(doc.RootElement))
                 {
@@ -151,12 +173,16 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
 
         await EnsureWorkerAsync(cancellationToken).ConfigureAwait(false);
 
-        var maxTokens = 8192;
-        var resp = await SendAsync(new
+        var maxTokens = Math.Max(256, _options.MaxBatchedTokens);
+        var maxSeqs = Math.Max(1, _options.MaxNumSeqs);
+        var maxChunk = Math.Max(1, _options.MaxChunkSize);
+        var resp = await SendControlAsync(new
         {
             cmd = "load",
             path = Path.GetFullPath(modelPath),
             max_num_tokens = maxTokens,
+            max_batch_size = maxSeqs,
+            max_chunk_size = maxChunk,
         }, cancellationToken).ConfigureAwait(false);
 
         if (!resp.GetProperty("ok").GetBoolean())
@@ -171,7 +197,12 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
             _loaded = true;
         }
 
-        _logger.LogInformation("ExLlamaV3WorkerEngine loaded {Path}", modelPath);
+        _logger.LogInformation(
+            "ExLlamaV3WorkerEngine loaded {Path} (max_num_tokens={MaxTokens} max_batch_size={MaxSeqs} max_chunk_size={MaxChunk})",
+            modelPath,
+            maxTokens,
+            maxSeqs,
+            maxChunk);
     }
 
     public async Task UnloadAsync(CancellationToken cancellationToken = default)
@@ -187,7 +218,7 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
 
         try
         {
-            await SendAsync(new { cmd = "unload" }, cancellationToken).ConfigureAwait(false);
+            await SendControlAsync(new { cmd = "unload" }, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -218,6 +249,49 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
         CompletionRequest request,
         CancellationToken cancellationToken = default)
     {
+        var started = DateTime.UtcNow;
+        var jobId = request.JobId ?? Guid.NewGuid();
+        var sb = new StringBuilder();
+        var tokens = new List<int>();
+        var filter = new StreamingStopFilter();
+        CompletionDelta? last = null;
+
+        await foreach (var delta in SubmitStreamAsync(request, cancellationToken).ConfigureAwait(false))
+        {
+            var piece = filter.Push(delta.Text);
+            sb.Append(piece);
+            if (delta.TokenIds.Length > 0)
+            {
+                tokens.AddRange(delta.TokenIds);
+            }
+
+            last = delta;
+            if (delta.Eos || delta.Failed || delta.Cancelled || filter.Stopped)
+            {
+                break;
+            }
+        }
+
+        sb.Append(filter.Flush());
+        var text = ChatTemplate.StripSpecialTokens(sb.ToString());
+        return new CompletionResult
+        {
+            JobId = last?.JobId ?? jobId,
+            Text = text,
+            TokenIds = tokens.ToArray(),
+            PromptTokens = last?.PromptTokens ?? 0,
+            CompletionTokens = last?.CompletionTokens > 0 ? last.CompletionTokens : tokens.Count,
+            Failed = last?.Failed == true,
+            Error = last?.Error,
+            Cancelled = last?.Cancelled == true || cancellationToken.IsCancellationRequested,
+            Duration = DateTime.UtcNow - started,
+        };
+    }
+
+    public async IAsyncEnumerable<CompletionDelta> SubmitStreamAsync(
+        CompletionRequest request,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(request);
 
@@ -238,14 +312,29 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
             _jobs[jobId] = cts;
         }
 
-        var started = DateTime.UtcNow;
+        var workerId = 0;
+        var admitted = false;
+        Channel<WorkerEvent>? channel = null;
+        var filter = new StreamingStopFilter();
         try
         {
+            await AdmitAsync(request.Priority, cts.Token).ConfigureAwait(false);
+            admitted = true;
+
+            workerId = Interlocked.Increment(ref _nextId);
+            channel = Channel.CreateUnbounded<WorkerEvent>(new UnboundedChannelOptions
+            {
+                SingleReader = true,
+                SingleWriter = true,
+            });
+            _streams[workerId] = channel;
+            _jobToWorkerId[jobId] = workerId;
+
             var stops = BuildStopList(request);
             object payload = request.Messages is { Count: > 0 }
                 ? new
                 {
-                    cmd = "chat",
+                    cmd = "submit",
                     messages = request.Messages.Select(m => new
                     {
                         role = RoleWire(m.Role),
@@ -259,7 +348,7 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
                 }
                 : new
                 {
-                    cmd = "generate",
+                    cmd = "submit",
                     prompt = request.Prompt,
                     max_new_tokens = request.MaxNewTokens,
                     temperature = request.Temperature,
@@ -268,59 +357,91 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
                     stop = stops,
                 };
 
-            var resp = await SendAsync(payload, cts.Token).ConfigureAwait(false);
+            await WriteLineAsync(payload, workerId, cts.Token).ConfigureAwait(false);
 
-            if (!resp.GetProperty("ok").GetBoolean())
+            var promptTokens = 0;
+            var completionTokens = 0;
+            await foreach (var ev in channel.Reader.ReadAllAsync(cts.Token).ConfigureAwait(false))
             {
-                var err = resp.TryGetProperty("error", out var e) ? e.GetString() : "generate failed";
-                return new CompletionResult
+                if (ev.PromptTokens > 0)
+                {
+                    promptTokens = ev.PromptTokens;
+                }
+
+                if (ev.CompletionTokens > 0)
+                {
+                    completionTokens = ev.CompletionTokens;
+                }
+
+                if (ev.TokensPerSecond > 0)
+                {
+                    _lastTps = ev.TokensPerSecond;
+                }
+
+                var piece = filter.Push(ev.Text);
+                var eos = ev.Eos || !ev.Ok || filter.Stopped;
+                if (eos)
+                {
+                    piece += filter.Flush();
+                }
+
+                if (piece.Length == 0 && !eos)
+                {
+                    continue;
+                }
+
+                yield return new CompletionDelta
                 {
                     JobId = jobId,
-                    Text = string.Empty,
-                    TokenIds = [],
-                    Failed = true,
-                    Error = err,
-                    Duration = DateTime.UtcNow - started,
+                    Text = piece,
+                    TokenIds = ev.TokenIds,
+                    Eos = eos,
+                    EosReason = ev.EosReason,
+                    Stage = ev.Stage,
+                    PromptTokens = promptTokens,
+                    CompletionTokens = completionTokens,
+                    Failed = !ev.Ok,
+                    Error = ev.Error,
+                    TokensPerSecond = ev.TokensPerSecond,
                 };
+
+                if (eos)
+                {
+                    Interlocked.Add(ref _promptTokens, promptTokens);
+                    Interlocked.Add(ref _generatedTokens, completionTokens > 0 ? completionTokens : 0);
+                    Interlocked.Increment(ref _finished);
+                    yield break;
+                }
             }
-
-            var text = Chat.ChatTemplate.StripSpecialTokens(
-                resp.TryGetProperty("text", out var t) ? t.GetString() ?? "" : "");
-            var promptTokens = resp.TryGetProperty("prompt_tokens", out var pt) ? pt.GetInt32() : 0;
-            var completionTokens = resp.TryGetProperty("completion_tokens", out var ct) ? ct.GetInt32() : 0;
-            var tokenIds = ReadIntArray(resp, "token_ids");
-            if (resp.TryGetProperty("tokens_per_second", out var tps))
-            {
-                _lastTps = tps.GetDouble();
-            }
-
-            Interlocked.Add(ref _promptTokens, promptTokens);
-            Interlocked.Add(ref _generatedTokens, completionTokens);
-            Interlocked.Increment(ref _finished);
-
-            return new CompletionResult
-            {
-                JobId = jobId,
-                Text = text,
-                TokenIds = tokenIds,
-                PromptTokens = promptTokens,
-                CompletionTokens = completionTokens,
-                Duration = DateTime.UtcNow - started,
-            };
-        }
-        catch (OperationCanceledException) when (cts.IsCancellationRequested)
-        {
-            return new CompletionResult
-            {
-                JobId = jobId,
-                Text = string.Empty,
-                TokenIds = [],
-                Cancelled = true,
-                Duration = DateTime.UtcNow - started,
-            };
         }
         finally
         {
+            if (channel is not null)
+            {
+                _streams.TryRemove(workerId, out _);
+                channel.Writer.TryComplete();
+            }
+
+            _jobToWorkerId.TryRemove(jobId, out _);
+
+            if (workerId != 0)
+            {
+                try
+                {
+                    await WriteLineAsync(new { cmd = "cancel" }, workerId, CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Worker cancel write failed for {JobId}", jobId);
+                }
+            }
+
+            if (admitted)
+            {
+                ReleaseSlot();
+            }
+
             lock (_gate)
             {
                 _jobs.Remove(jobId);
@@ -337,6 +458,11 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
             if (_jobs.TryGetValue(jobId, out var cts))
             {
                 cts.Cancel();
+                if (_jobToWorkerId.TryGetValue(jobId, out var workerId))
+                {
+                    _ = WriteLineAsync(new { cmd = "cancel" }, workerId, CancellationToken.None);
+                }
+
                 return true;
             }
         }
@@ -347,9 +473,9 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
     public EngineMetrics GetMetrics()
     {
         int waiting;
-        lock (_gate)
+        lock (_admitGate)
         {
-            waiting = _jobs.Count;
+            waiting = _waiters.Count;
         }
 
         return new EngineMetrics
@@ -357,8 +483,10 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
             TotalPromptTokens = Interlocked.Read(ref _promptTokens),
             TotalGeneratedTokens = Interlocked.Read(ref _generatedTokens),
             NumJobsWaiting = waiting,
-            NumJobsRunning = waiting > 0 ? 1 : 0,
+            NumJobsRunning = _stats.Active,
+            NumJobsSwapped = _stats.Pending,
             NumJobsFinished = Interlocked.Read(ref _finished),
+            NumPagesFree = _stats.FreePages,
             TokensPerSecond = _lastTps,
             IsMock = false,
         };
@@ -373,7 +501,7 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
 
         try
         {
-            var resp = SendAsync(new { cmd = "tokenize", text }, CancellationToken.None)
+            var resp = SendControlAsync(new { cmd = "tokenize", text }, CancellationToken.None)
                 .GetAwaiter()
                 .GetResult();
             if (resp.GetProperty("ok").GetBoolean())
@@ -399,7 +527,7 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
         try
         {
             var arr = tokens.ToArray();
-            var resp = SendAsync(new { cmd = "detokenize", tokens = arr }, CancellationToken.None)
+            var resp = SendControlAsync(new { cmd = "detokenize", tokens = arr }, CancellationToken.None)
                 .GetAwaiter()
                 .GetResult();
             if (resp.GetProperty("ok").GetBoolean() && resp.TryGetProperty("text", out var t))
@@ -425,12 +553,116 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
         _disposed = true;
         Stop();
         KillWorker();
+        _writeLock.Dispose();
     }
 
     public ValueTask DisposeAsync()
     {
         Dispose();
         return ValueTask.CompletedTask;
+    }
+
+    private async Task AdmitAsync(int priority, CancellationToken cancellationToken)
+    {
+        AdmissionWaiter? waiter = null;
+        lock (_admitGate)
+        {
+            if (CanAdmitLocked() && _waiters.Count == 0)
+            {
+                _inFlight++;
+                return;
+            }
+
+            waiter = new AdmissionWaiter
+            {
+                Priority = priority,
+                Seq = Interlocked.Increment(ref _admitSeq),
+            };
+            _waiters.Add(waiter);
+            _waiters.Sort(static (a, b) =>
+            {
+                var c = b.Priority.CompareTo(a.Priority);
+                return c != 0 ? c : a.Seq.CompareTo(b.Seq);
+            });
+        }
+
+        using var reg = cancellationToken.Register(() => waiter.Slot.TrySetCanceled(cancellationToken));
+        try
+        {
+            await waiter.Slot.Task.ConfigureAwait(false);
+        }
+        catch
+        {
+            lock (_admitGate)
+            {
+                _waiters.Remove(waiter);
+            }
+
+            throw;
+        }
+    }
+
+    private void ReleaseSlot()
+    {
+        lock (_admitGate)
+        {
+            _inFlight = Math.Max(0, _inFlight - 1);
+            TryAdmitOneLocked();
+        }
+    }
+
+    private void OnStats(WorkerStats stats)
+    {
+        lock (_admitGate)
+        {
+            _stats = stats;
+            TryAdmitOneLocked();
+        }
+    }
+
+    private int CapacityLocked()
+    {
+        var cap = Math.Max(1, _options.MaxNumSeqs);
+        if (_stats.Seen && _stats.MaxBatchSize > 0)
+        {
+            cap = Math.Min(cap, _stats.MaxBatchSize);
+        }
+
+        return cap;
+    }
+
+    private bool CanAdmitLocked()
+    {
+        if (_inFlight >= CapacityLocked())
+        {
+            return false;
+        }
+
+        // Before the first stats packet, pipeline a single job so we do not dump
+        // the whole .NET queue into Python FIFO pending.
+        if (!_stats.Seen)
+        {
+            return _inFlight < 1;
+        }
+
+        return _stats.Pending <= 1;
+    }
+
+    private void TryAdmitOneLocked()
+    {
+        if (_waiters.Count == 0 || !CanAdmitLocked())
+        {
+            return;
+        }
+
+        var next = _waiters[0];
+        _waiters.RemoveAt(0);
+        _inFlight++;
+        if (!next.Slot.TrySetResult())
+        {
+            _inFlight = Math.Max(0, _inFlight - 1);
+            TryAdmitOneLocked();
+        }
     }
 
     private async Task EnsureWorkerAsync(CancellationToken cancellationToken)
@@ -440,13 +672,23 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
             return;
         }
 
-        if (!TryResolvePython(out var python))
+        string python;
+        if (!string.IsNullOrWhiteSpace(_options.PythonPath) && File.Exists(_options.PythonPath))
+        {
+            python = _options.PythonPath;
+        }
+        else if (!TryResolvePython(out python!))
         {
             throw new InvalidOperationException(
                 "Python not found. Run packaging/Setup-Exl3Python.ps1 or set EXLLAMASHARP_PYTHON.");
         }
 
-        if (!TryResolveWorkerScript(null, out var script))
+        string script;
+        if (!string.IsNullOrWhiteSpace(_options.WorkerScript) && File.Exists(_options.WorkerScript))
+        {
+            script = _options.WorkerScript;
+        }
+        else if (!TryResolveWorkerScript(null, out script!))
         {
             throw new InvalidOperationException("tools/exl3_worker/worker.py not found.");
         }
@@ -461,13 +703,11 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
-            // No BOM: Python json.loads rejects UTF-8 BOM on stdin lines.
             StandardOutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
             StandardInputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
         };
         psi.Environment["PYTHONUNBUFFERED"] = "1";
         psi.Environment["PYTHONIOENCODING"] = "utf-8";
-        // Windows: DeepSeek DSA Triton path is unavailable; Llama EXL3 does not need it.
         psi.Environment["EXL3_BC_DSA"] = "0";
         PrependNativeSearchPath(psi, python);
         TryAddDonorExtPath(psi, python);
@@ -485,7 +725,6 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
 
         _ = Task.Run(() => DrainStderr(proc), CancellationToken.None);
 
-        // Read ready line
         var readyLine = await _stdout.ReadLineAsync(cancellationToken).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(readyLine))
         {
@@ -499,6 +738,119 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
             KillWorker();
             throw new InvalidOperationException($"EXL3 worker handshake failed: {readyLine}");
         }
+
+        _pumpCts = new CancellationTokenSource();
+        _pumpTask = Task.Run(() => PumpAsync(_pumpCts.Token), CancellationToken.None);
+    }
+
+    private async Task PumpAsync(CancellationToken cancellationToken)
+    {
+        var stdout = _stdout;
+        var proc = _process;
+        if (stdout is null || proc is null)
+        {
+            return;
+        }
+
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                if (proc.HasExited)
+                {
+                    throw new InvalidOperationException($"EXL3 worker exited with code {proc.ExitCode}.");
+                }
+
+                var line = await stdout.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+                if (line is null)
+                {
+                    throw new InvalidOperationException("EXL3 worker closed stdout.");
+                }
+
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    continue;
+                }
+
+                JsonElement root;
+                try
+                {
+                    using var doc = JsonDocument.Parse(line);
+                    root = doc.RootElement.Clone();
+                }
+                catch (JsonException ex)
+                {
+                    _logger.LogWarning(ex, "Ignoring non-JSON worker line");
+                    continue;
+                }
+
+                if (root.TryGetProperty("events", out var eventsEl) && eventsEl.ValueKind == JsonValueKind.Array)
+                {
+                    if (root.TryGetProperty("stats", out var statsEl))
+                    {
+                        OnStats(WorkerStats.FromJson(statsEl));
+                    }
+
+                    foreach (var evEl in eventsEl.EnumerateArray())
+                    {
+                        DispatchEvent(WorkerEvent.FromJson(evEl));
+                    }
+
+                    continue;
+                }
+
+                if (TryReadId(root, out var id) && _pending.TryRemove(id, out var tcs))
+                {
+                    tcs.TrySetResult(root);
+                    continue;
+                }
+
+                if (root.TryGetProperty("stage", out _) && TryReadId(root, out _))
+                {
+                    DispatchEvent(WorkerEvent.FromJson(root));
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // shutting down
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "EXL3 worker pump failed");
+            FailAllWaiters(ex);
+        }
+    }
+
+    private void DispatchEvent(WorkerEvent ev)
+    {
+        if (!_streams.TryGetValue(ev.Id, out var ch))
+        {
+            return;
+        }
+
+        ch.Writer.TryWrite(ev);
+        if (ev.Eos || !ev.Ok)
+        {
+            ch.Writer.TryComplete();
+            _streams.TryRemove(ev.Id, out _);
+        }
+    }
+
+    private void FailAllWaiters(Exception ex)
+    {
+        foreach (var kv in _pending)
+        {
+            kv.Value.TrySetException(ex);
+        }
+
+        _pending.Clear();
+        foreach (var kv in _streams)
+        {
+            kv.Value.Writer.TryComplete(ex);
+        }
+
+        _streams.Clear();
     }
 
     private void DrainStderr(Process proc)
@@ -522,70 +874,74 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
         }
     }
 
-    private async Task<JsonElement> SendAsync(object payload, CancellationToken cancellationToken)
+    private async Task<JsonElement> SendControlAsync(object payload, CancellationToken cancellationToken)
     {
         await EnsureWorkerAsync(cancellationToken).ConfigureAwait(false);
 
         var id = Interlocked.Increment(ref _nextId);
+        var tcs = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_pending.TryAdd(id, tcs))
+        {
+            throw new InvalidOperationException("Failed to register worker control request.");
+        }
+
+        try
+        {
+            await WriteLineAsync(payload, id, cancellationToken).ConfigureAwait(false);
+            using var reg = cancellationToken.Register(() => tcs.TrySetCanceled(cancellationToken));
+            return await tcs.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            _pending.TryRemove(id, out _);
+            throw;
+        }
+    }
+
+    private async Task WriteLineAsync(object payload, int id, CancellationToken cancellationToken)
+    {
+        await EnsureWorkerAsync(cancellationToken).ConfigureAwait(false);
+
         var node = JsonSerializer.SerializeToNode(payload, JsonOpts)!.AsObject();
         node["id"] = id;
         var line = node.ToJsonString();
 
-        Process proc;
-        StreamWriter stdin;
-        StreamReader stdout;
-        lock (_gate)
+        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            if (_process is null || _stdin is null || _stdout is null || _process.HasExited)
+            StreamWriter stdin;
+            lock (_gate)
             {
-                throw new InvalidOperationException("EXL3 worker is not running.");
-            }
-
-            proc = _process;
-            stdin = _stdin;
-            stdout = _stdout;
-        }
-
-        await stdin.WriteLineAsync(line.AsMemory(), cancellationToken).ConfigureAwait(false);
-        await stdin.FlushAsync(cancellationToken).ConfigureAwait(false);
-
-        while (true)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (proc.HasExited)
-            {
-                throw new InvalidOperationException($"EXL3 worker exited with code {proc.ExitCode}.");
-            }
-
-            var respLine = await stdout.ReadLineAsync(cancellationToken).ConfigureAwait(false);
-            if (respLine is null)
-            {
-                throw new InvalidOperationException("EXL3 worker closed stdout.");
-            }
-
-            using var doc = JsonDocument.Parse(respLine);
-            var root = doc.RootElement.Clone();
-            if (root.TryGetProperty("id", out var rid))
-            {
-                if (rid.ValueKind == JsonValueKind.Number && rid.GetInt32() == id)
+                if (_process is null || _stdin is null || _process.HasExited)
                 {
-                    return root;
+                    throw new InvalidOperationException("EXL3 worker is not running.");
                 }
 
-                // unrelated / ready echoes — keep waiting
-                continue;
+                stdin = _stdin;
             }
 
-            // Responses without id (shouldn't happen after handshake) — accept if ok/error present
-            if (root.TryGetProperty("ok", out _))
-            {
-                return root;
-            }
+            await stdin.WriteLineAsync(line.AsMemory(), cancellationToken).ConfigureAwait(false);
+            await stdin.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeLock.Release();
         }
     }
 
     private void KillWorker()
     {
+        try
+        {
+            _pumpCts?.Cancel();
+        }
+        catch
+        {
+            // ignore
+        }
+
+        FailAllWaiters(new InvalidOperationException("EXL3 worker stopped."));
+
         try
         {
             _stdin?.Dispose();
@@ -620,6 +976,35 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
             _process.Dispose();
             _process = null;
         }
+
+        try
+        {
+            _pumpTask?.Wait(TimeSpan.FromSeconds(1));
+        }
+        catch
+        {
+            // ignore
+        }
+
+        _pumpCts?.Dispose();
+        _pumpCts = null;
+        _pumpTask = null;
+    }
+
+    private static bool TryReadId(JsonElement root, out int id)
+    {
+        id = 0;
+        if (!root.TryGetProperty("id", out var el))
+        {
+            return false;
+        }
+
+        if (el.ValueKind == JsonValueKind.Number && el.TryGetInt32(out id))
+        {
+            return true;
+        }
+
+        return el.ValueKind == JsonValueKind.String && int.TryParse(el.GetString(), out id);
     }
 
     private static int[] ReadIntArray(JsonElement root, string name)
@@ -790,7 +1175,6 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
             candidates.Add(Path.Combine(root, ".venv-exl3", "Scripts", "python.exe"));
         }
 
-        // Legacy location (older installs)
         candidates.Add(Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
             "ExLlamaSharp", "venv", "Scripts", "python.exe"));
@@ -804,7 +1188,6 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
             }
         }
 
-        // py -3 / python on PATH
         foreach (var name in new[] { "py", "python" })
         {
             try
@@ -844,6 +1227,13 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
     internal static bool TryResolveWorkerScript(string? repoRoot, out string script)
     {
         script = "";
+        var env = Environment.GetEnvironmentVariable("EXLLAMASHARP_WORKER_SCRIPT");
+        if (!string.IsNullOrWhiteSpace(env) && File.Exists(env))
+        {
+            script = env;
+            return true;
+        }
+
         var root = repoRoot ?? FindRepoRoot();
         if (root is not null)
         {
@@ -878,10 +1268,7 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
             try
             {
                 var full = Path.GetFullPath(d);
-                if (seen.Add(full))
-                {
-                    // yield via list below
-                }
+                seen.Add(full);
             }
             catch
             {
@@ -950,7 +1337,6 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
 
     private static string? FindRepoRoot()
     {
-        // Walk up from BaseDirectory and cwd looking for tools/exl3_worker or third_party/exllamav3
         foreach (var start in new[] { AppContext.BaseDirectory, Environment.CurrentDirectory })
         {
             try
@@ -1011,5 +1397,95 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
         }
 
         return stops;
+    }
+
+    private sealed class AdmissionWaiter
+    {
+        public int Priority { get; init; }
+        public long Seq { get; init; }
+        public TaskCompletionSource Slot { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    private readonly struct WorkerStats
+    {
+        public bool Seen { get; init; }
+        public int Active { get; init; }
+        public int Pending { get; init; }
+        public int FreePages { get; init; }
+        public int MaxBatchSize { get; init; }
+
+        public static WorkerStats FromJson(JsonElement el)
+        {
+            return new WorkerStats
+            {
+                Seen = true,
+                Active = ReadInt(el, "active"),
+                Pending = ReadInt(el, "pending"),
+                FreePages = ReadInt(el, "free_pages"),
+                MaxBatchSize = ReadInt(el, "max_batch_size"),
+            };
+        }
+
+        private static int ReadInt(JsonElement el, string name)
+        {
+            if (el.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.Number && p.TryGetInt32(out var v))
+            {
+                return v;
+            }
+
+            return 0;
+        }
+    }
+
+    private sealed class WorkerEvent
+    {
+        public int Id { get; init; }
+        public string Stage { get; init; } = "";
+        public string Text { get; init; } = "";
+        public int[] TokenIds { get; init; } = [];
+        public bool Eos { get; init; }
+        public bool Ok { get; init; } = true;
+        public string? EosReason { get; init; }
+        public string? Error { get; init; }
+        public int PromptTokens { get; init; }
+        public int CompletionTokens { get; init; }
+        public double TokensPerSecond { get; init; }
+
+        public static WorkerEvent FromJson(JsonElement el)
+        {
+            TryReadId(el, out var id);
+            var ok = true;
+            if (el.TryGetProperty("ok", out var okEl) && okEl.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                ok = okEl.GetBoolean();
+            }
+
+            var completion = 0;
+            if (el.TryGetProperty("completion_tokens", out var ct) && ct.TryGetInt32(out var ctv))
+            {
+                completion = ctv;
+            }
+            else if (el.TryGetProperty("new_tokens", out var nt) && nt.TryGetInt32(out var ntv))
+            {
+                completion = ntv;
+            }
+
+            return new WorkerEvent
+            {
+                Id = id,
+                Stage = el.TryGetProperty("stage", out var st) ? st.GetString() ?? "" : "",
+                Text = el.TryGetProperty("text", out var tx) ? tx.GetString() ?? "" : "",
+                TokenIds = ReadIntArray(el, "token_ids"),
+                Eos = el.TryGetProperty("eos", out var eos) && eos.ValueKind == JsonValueKind.True,
+                Ok = ok,
+                EosReason = el.TryGetProperty("eos_reason", out var er) ? er.GetString() : null,
+                Error = el.TryGetProperty("error", out var err) ? err.GetString() : null,
+                PromptTokens = el.TryGetProperty("prompt_tokens", out var pt) && pt.TryGetInt32(out var ptv) ? ptv : 0,
+                CompletionTokens = completion,
+                TokensPerSecond = el.TryGetProperty("tokens_per_second", out var tps) && tps.ValueKind == JsonValueKind.Number
+                    ? tps.GetDouble()
+                    : 0,
+            };
+        }
     }
 }

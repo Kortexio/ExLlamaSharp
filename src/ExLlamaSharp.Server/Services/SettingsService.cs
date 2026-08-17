@@ -16,6 +16,15 @@ public sealed class SettingsService
         _scopeFactory = scopeFactory;
     }
 
+    /// <summary>Cached snapshot, or constructor defaults when the cache is cold.</summary>
+    public AppSettings PeekOrDefault()
+    {
+        lock (_gate)
+        {
+            return _cached is not null ? Clone(_cached) : new AppSettings();
+        }
+    }
+
     public async Task<AppSettings> GetAsync(CancellationToken cancellationToken = default)
     {
         lock (_gate)

@@ -5,15 +5,22 @@ ExLlamaSharp EXL3 Python worker — JSON-lines over stdin/stdout.
 Uses local third_party/exllamav3 (official Config/Model/Cache/Tokenizer/Generator).
 This is the real CUDA EXL3 GEMM/attention path.
 
-Protocol: one JSON object per line on stdin; one JSON response per line on stdout.
-Stderr is for logs only.
+Protocol jsonl-v2: stdin and stdout are independent streams.
+  .NET → Python: submit / cancel / load / unload / metrics / tokenize / detokenize
+  Python → .NET: RPC replies (ok/error + id) and multiplexed event batches:
+      {"events":[...], "stats":{"active":N,"pending":N,"free_pages":N,"max_batch_size":N}}
+
+A reader thread only parses stdin into a queue. The main thread owns the
+ExLlamaV3 Generator and calls iterate() so multiple Jobs share one forward pass.
 """
 from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import sys
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -32,6 +39,7 @@ _LEAK_MARKERS = (
     "<eos>",
 )
 _LEAK_RE = re.compile("|".join(re.escape(m) for m in _LEAK_MARKERS))
+_MAX_LEAK_LEN = max(len(m) for m in _LEAK_MARKERS)
 
 # Prefer the pip-installed prebuilt CUDA wheel (avoids JIT nvcc on Windows).
 # Only use local third_party/exllamav3 when EXLLAMASHARP_USE_LOCAL_EXL3=1.
@@ -75,6 +83,46 @@ def _err(message: str, req_id: Any = None, **kwargs: Any) -> None:
     _reply(payload)
 
 
+class _StreamSanitizer:
+    """Hold back suffixes that might still grow into a leak/stop marker."""
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self.stopped = False
+
+    def push(self, text: str) -> str:
+        if self.stopped or not text:
+            return ""
+        self._buf += text
+        m = _LEAK_RE.search(self._buf)
+        if m:
+            emit = self._buf[: m.start()]
+            self._buf = ""
+            self.stopped = True
+            return emit
+        hold = 0
+        limit = min(_MAX_LEAK_LEN, len(self._buf))
+        for i in range(1, limit + 1):
+            suffix = self._buf[-i:]
+            if any(marker.startswith(suffix) for marker in _LEAK_MARKERS):
+                hold = i
+        if hold:
+            emit = self._buf[:-hold]
+            self._buf = self._buf[-hold:]
+            return emit
+        emit = self._buf
+        self._buf = ""
+        return emit
+
+    def flush(self) -> str:
+        if self.stopped:
+            self._buf = ""
+            return ""
+        emit = self._buf
+        self._buf = ""
+        return emit
+
+
 class WorkerState:
     def __init__(self) -> None:
         self.config = None
@@ -84,10 +132,16 @@ class WorkerState:
         self.generator = None
         self.model_path: str | None = None
         self.max_num_tokens: int = 8192
+        self.max_batch_size: int = 256
+        self.max_chunk_size: int = 2048
         self.prompt_tokens: int = 0
         self.generated_tokens: int = 0
         self.finished: int = 0
         self.load_ts: float | None = None
+        self.jobs: dict[Any, Any] = {}
+        self.sanitizers: dict[Any, _StreamSanitizer] = {}
+        self.prompt_lens: dict[Any, int] = {}
+        self.t0: dict[Any, float] = {}
 
     @property
     def loaded(self) -> bool:
@@ -95,11 +149,23 @@ class WorkerState:
 
 
 STATE = WorkerState()
+_INBOX: queue.Queue[str | None] = queue.Queue()
+_STDIN_CLOSED = False
 
 
 def _unload() -> None:
     import torch
 
+    gen = STATE.generator
+    if gen is not None:
+        try:
+            gen.clear_queue()
+        except Exception:
+            pass
+    STATE.jobs.clear()
+    STATE.sanitizers.clear()
+    STATE.prompt_lens.clear()
+    STATE.t0.clear()
     if STATE.model is not None:
         try:
             STATE.model.unload()
@@ -135,7 +201,12 @@ def _preload_torch_dlls() -> None:
         _log(f"torch DLL preload skipped: {ex}")
 
 
-def _load(path: str, max_num_tokens: int = 8192) -> None:
+def _load(
+    path: str,
+    max_num_tokens: int = 8192,
+    max_batch_size: int = 256,
+    max_chunk_size: int = 2048,
+) -> None:
     _preload_torch_dlls()
     from exllamav3 import Config, Model, Cache, Tokenizer, Generator
 
@@ -144,14 +215,28 @@ def _load(path: str, max_num_tokens: int = 8192) -> None:
     if not Path(path).is_dir():
         raise FileNotFoundError(f"Model directory not found: {path}")
 
-    _log(f"Loading EXL3 model from {path} (max_num_tokens={max_num_tokens})")
+    max_num_tokens = max(256, int(max_num_tokens))
+    max_batch_size = max(1, int(max_batch_size))
+    max_chunk_size = max(1, int(max_chunk_size))
+
+    _log(
+        f"Loading EXL3 model from {path} "
+        f"(max_num_tokens={max_num_tokens} max_batch_size={max_batch_size} "
+        f"max_chunk_size={max_chunk_size})"
+    )
     t0 = time.perf_counter()
     config = Config.from_directory(path)
     model = Model.from_config(config)
-    cache = Cache(model, max_num_tokens=int(max_num_tokens))
+    cache = Cache(model, max_num_tokens=max_num_tokens)
     model.load()
     tokenizer = Tokenizer.from_config(config)
-    generator = Generator(model=model, cache=cache, tokenizer=tokenizer)
+    generator = Generator(
+        model=model,
+        cache=cache,
+        tokenizer=tokenizer,
+        max_batch_size=max_batch_size,
+        max_chunk_size=max_chunk_size,
+    )
 
     STATE.config = config
     STATE.model = model
@@ -159,7 +244,9 @@ def _load(path: str, max_num_tokens: int = 8192) -> None:
     STATE.tokenizer = tokenizer
     STATE.generator = generator
     STATE.model_path = path
-    STATE.max_num_tokens = int(max_num_tokens)
+    STATE.max_num_tokens = max_num_tokens
+    STATE.max_batch_size = max_batch_size
+    STATE.max_chunk_size = max_chunk_size
     STATE.load_ts = time.time()
     _log(f"Loaded in {time.perf_counter() - t0:.2f}s")
 
@@ -284,77 +371,237 @@ def _try_hf_chat_template(messages: list[dict], add_generation_prompt: bool = Tr
     return None
 
 
-def _generate(
-    prompt: str,
-    max_new_tokens: int = 256,
-    temperature: float = 0.7,
-    top_p: float = 0.9,
-    top_k: int = 0,
-    stop: Any = None,
-) -> dict[str, Any]:
-    if not STATE.loaded:
+def _format_messages(messages: list[dict]) -> str:
+    prompt = _try_hf_chat_template(messages, add_generation_prompt=True)
+    used = "hf"
+    if prompt is None:
+        if _looks_like_llama3():
+            used = "llama3"
+            prompt = _format_llama3_chat(messages, add_generation_prompt=True)
+        else:
+            used = "chatml"
+            prompt = _format_chatml(messages, add_generation_prompt=True)
+    _log(f"chat template={used} chars={len(prompt)}")
+    return prompt
+
+
+def _tensor_to_list(value: Any) -> list[int]:
+    if value is None:
+        return []
+    try:
+        if hasattr(value, "detach"):
+            value = value.detach().cpu()
+        if hasattr(value, "tolist"):
+            value = value.tolist()
+        if isinstance(value, list) and value and isinstance(value[0], list):
+            value = value[0]
+        return [int(x) for x in value]
+    except Exception:
+        return []
+
+
+def _stats() -> dict[str, int]:
+    gen = STATE.generator
+    if gen is None:
+        return {
+            "active": 0,
+            "pending": 0,
+            "free_pages": 0,
+            "max_batch_size": STATE.max_batch_size,
+        }
+    free = 0
+    try:
+        free = int(gen.pagetable.num_unreferenced_pages())
+    except Exception:
+        pass
+    return {
+        "active": int(gen.num_active_jobs()),
+        "pending": int(gen.num_pending_jobs()),
+        "free_pages": free,
+        "max_batch_size": int(getattr(gen, "max_batch_size", STATE.max_batch_size) or STATE.max_batch_size),
+    }
+
+
+def _prompt_len(ids: Any) -> int:
+    if hasattr(ids, "numel"):
+        return int(ids.numel())
+    if hasattr(ids, "shape"):
+        return int(ids.shape[-1])
+    try:
+        return len(ids)
+    except TypeError:
+        return 0
+
+
+def _enqueue(req_id: Any, prompt: str, msg: dict[str, Any]) -> None:
+    from exllamav3 import Job
+
+    if not STATE.loaded or STATE.generator is None or STATE.tokenizer is None:
         raise RuntimeError("No model loaded")
 
-    sampler = _make_sampler(temperature, top_p, top_k)
-    stops = _stop_conditions(stop)
-    t0 = time.perf_counter()
-
-    prompt_ids = STATE.tokenizer.encode(prompt, encode_special_tokens=True)
-    if hasattr(prompt_ids, "numel"):
-        n_prompt = int(prompt_ids.numel())
-    elif hasattr(prompt_ids, "shape"):
-        n_prompt = int(prompt_ids.shape[-1])
-    else:
-        n_prompt = len(prompt_ids)
-
-    gen_kwargs = dict(
-        prompt=prompt,
-        max_new_tokens=int(max_new_tokens),
+    sampler = _make_sampler(
+        float(msg.get("temperature", 0.7)),
+        float(msg.get("top_p", 0.9)),
+        int(msg.get("top_k") or 0),
+    )
+    stops = _stop_conditions(msg.get("stop"))
+    input_ids = STATE.tokenizer.encode(prompt, encode_special_tokens=True)
+    n_prompt = _prompt_len(input_ids)
+    kwargs = dict(
+        input_ids=input_ids,
+        max_new_tokens=int(msg.get("max_new_tokens") or 256),
         sampler=sampler,
         stop_conditions=stops or None,
-        encode_special_tokens=True,
         decode_special_tokens=False,
-        add_bos=False,
-        completion_only=True,
+        identifier=req_id,
     )
     try:
-        text = STATE.generator.generate(**gen_kwargs, stop_on_loop=(16, 3))
+        job = Job(**kwargs, stop_on_loop=(16, 3))
     except TypeError:
-        text = STATE.generator.generate(**gen_kwargs)
-    if isinstance(text, list):
-        text = text[0] if text else ""
-    text = _sanitize_completion(str(text))
+        job = Job(**kwargs)
 
-    # Approximate completion token count via encode
-    try:
-        comp_ids = STATE.tokenizer.encode(text, encode_special_tokens=False)
-        if hasattr(comp_ids, "numel"):
-            n_comp = int(comp_ids.numel())
-        elif hasattr(comp_ids, "shape"):
-            n_comp = int(comp_ids.shape[-1])
-        else:
-            n_comp = len(comp_ids)
-        token_ids = comp_ids.tolist() if hasattr(comp_ids, "tolist") else list(comp_ids)
-        if token_ids and isinstance(token_ids[0], list):
-            token_ids = token_ids[0]
-    except Exception:
-        n_comp = max(1, len(text.split()))
-        token_ids = []
-
+    STATE.jobs[req_id] = job
+    STATE.sanitizers[req_id] = _StreamSanitizer()
+    STATE.prompt_lens[req_id] = n_prompt
+    STATE.t0[req_id] = time.perf_counter()
     STATE.prompt_tokens += n_prompt
-    STATE.generated_tokens += n_comp
-    STATE.finished += 1
-    elapsed = time.perf_counter() - t0
-    tps = n_comp / elapsed if elapsed > 0 else 0.0
+    STATE.generator.enqueue(job)
 
-    return {
-        "text": text,
-        "prompt_tokens": n_prompt,
-        "completion_tokens": n_comp,
-        "token_ids": token_ids,
-        "duration_ms": round(elapsed * 1000, 2),
-        "tokens_per_second": round(tps, 2),
+
+def _cancel_job(req_id: Any) -> bool:
+    job = STATE.jobs.pop(req_id, None)
+    STATE.sanitizers.pop(req_id, None)
+    STATE.prompt_lens.pop(req_id, None)
+    STATE.t0.pop(req_id, None)
+    if job is None or STATE.generator is None:
+        return False
+    try:
+        STATE.generator.cancel(job)
+    except Exception as ex:
+        _log(f"cancel failed id={req_id}: {ex}")
+        return False
+    return True
+
+
+def _event_from_result(result: dict[str, Any]) -> dict[str, Any] | None:
+    ident = result.get("identifier")
+    stage = result.get("stage") or ""
+    eos = bool(result.get("eos"))
+    ev: dict[str, Any] = {
+        "id": ident,
+        "stage": stage,
+        "eos": eos,
+        "serial": result.get("serial"),
+        "ok": True,
     }
+    if stage == "prefill":
+        ev["curr_progress"] = result.get("curr_progress")
+        ev["max_progress"] = result.get("max_progress")
+        if result.get("max_progress") is not None:
+            ev["prompt_tokens"] = int(result["max_progress"])
+    if stage == "started":
+        ev["prompt_tokens"] = STATE.prompt_lens.get(ident, 0)
+
+    text = result.get("text") or ""
+    san = STATE.sanitizers.get(ident)
+    stopped_early = False
+    if stage == "streaming" and text:
+        if san is not None:
+            text = san.push(text)
+        ev["text"] = text
+        ev["token_ids"] = _tensor_to_list(result.get("token_ids"))
+        if san is not None and san.stopped and not eos:
+            ev["eos"] = True
+            ev["eos_reason"] = "stop_string"
+            eos = True
+            stopped_early = True
+    elif stage == "streaming":
+        ev["text"] = ""
+        ev["token_ids"] = _tensor_to_list(result.get("token_ids"))
+
+    if eos:
+        extra = san.flush() if san is not None else ""
+        if extra:
+            ev["text"] = (ev.get("text") or "") + extra
+        n_new = int(result.get("new_tokens") or 0)
+        full = result.get("full_completion")
+        if isinstance(full, str) and full:
+            ev["full_completion"] = _sanitize_completion(full)
+        ev["eos_reason"] = ev.get("eos_reason") or result.get("eos_reason")
+        ev["new_tokens"] = n_new
+        ev["completion_tokens"] = n_new
+        ev["prompt_tokens"] = STATE.prompt_lens.get(ident, 0)
+        t0 = STATE.t0.get(ident)
+        if t0 is not None and n_new > 0:
+            elapsed = time.perf_counter() - t0
+            if elapsed > 0:
+                ev["tokens_per_second"] = round(n_new / elapsed, 2)
+        STATE.generated_tokens += n_new
+        STATE.finished += 1
+        job = STATE.jobs.pop(ident, None)
+        STATE.sanitizers.pop(ident, None)
+        STATE.prompt_lens.pop(ident, None)
+        STATE.t0.pop(ident, None)
+        if stopped_early and job is not None and STATE.generator is not None:
+            try:
+                STATE.generator.cancel(job)
+            except Exception as ex:
+                _log(f"early-stop cancel failed id={ident}: {ex}")
+    return ev
+
+
+def _emit_batch(results: list) -> None:
+    events: list[dict[str, Any]] = []
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        ev = _event_from_result(result)
+        if ev is not None:
+            events.append(ev)
+    if not events:
+        return
+    _reply({"events": events, "stats": _stats()})
+
+
+def _fail_all_jobs(message: str) -> None:
+    events = []
+    for ident in list(STATE.jobs.keys()):
+        events.append(
+            {
+                "id": ident,
+                "stage": "streaming",
+                "eos": True,
+                "ok": False,
+                "error": message,
+            }
+        )
+    STATE.jobs.clear()
+    STATE.sanitizers.clear()
+    STATE.prompt_lens.clear()
+    STATE.t0.clear()
+    if STATE.generator is not None:
+        try:
+            STATE.generator.clear_queue()
+        except Exception:
+            pass
+    if events:
+        _reply({"events": events, "stats": _stats()})
+
+
+def _normalize_messages(raw: Any) -> list[dict]:
+    norm = []
+    if not isinstance(raw, list):
+        return norm
+    for m in raw:
+        if not isinstance(m, dict):
+            continue
+        norm.append(
+            {
+                "role": (m.get("role") or "user"),
+                "content": m.get("content") or "",
+            }
+        )
+    return norm
 
 
 def handle(msg: dict[str, Any]) -> None:
@@ -367,16 +614,20 @@ def handle(msg: dict[str, Any]) -> None:
             return
 
         if cmd == "metrics":
+            st = _stats()
             _ok(
                 req_id,
                 loaded=STATE.loaded,
                 model_path=STATE.model_path,
                 max_num_tokens=STATE.max_num_tokens,
+                max_batch_size=STATE.max_batch_size,
+                max_chunk_size=STATE.max_chunk_size,
                 prompt_tokens=STATE.prompt_tokens,
                 generated_tokens=STATE.generated_tokens,
                 finished=STATE.finished,
                 load_ts=STATE.load_ts,
                 is_mock=False,
+                **st,
             )
             return
 
@@ -386,8 +637,17 @@ def handle(msg: dict[str, Any]) -> None:
                 _err("path required", req_id)
                 return
             max_tok = int(msg.get("max_num_tokens") or msg.get("max_tokens") or 8192)
-            _load(path, max_tok)
-            _ok(req_id, loaded=True, path=STATE.model_path, max_num_tokens=STATE.max_num_tokens)
+            max_batch = int(msg.get("max_batch_size") or msg.get("max_num_seqs") or 256)
+            max_chunk = int(msg.get("max_chunk_size") or 2048)
+            _load(path, max_tok, max_batch, max_chunk)
+            _ok(
+                req_id,
+                loaded=True,
+                path=STATE.model_path,
+                max_num_tokens=STATE.max_num_tokens,
+                max_batch_size=STATE.max_batch_size,
+                max_chunk_size=STATE.max_chunk_size,
+            )
             return
 
         if cmd == "unload":
@@ -401,11 +661,7 @@ def handle(msg: dict[str, Any]) -> None:
                 return
             text = msg.get("text") or ""
             ids = STATE.tokenizer.encode(text, encode_special_tokens=bool(msg.get("special", True)))
-            if hasattr(ids, "tolist"):
-                ids = ids.tolist()
-            if ids and isinstance(ids[0], list):
-                ids = ids[0]
-            _ok(req_id, tokens=[int(x) for x in ids])
+            _ok(req_id, tokens=_tensor_to_list(ids))
             return
 
         if cmd == "detokenize":
@@ -417,57 +673,24 @@ def handle(msg: dict[str, Any]) -> None:
             _ok(req_id, text=text if isinstance(text, str) else str(text))
             return
 
-        if cmd == "generate":
-            prompt = msg.get("prompt")
-            if prompt is None:
-                _err("prompt required", req_id)
-                return
-            result = _generate(
-                prompt=str(prompt),
-                max_new_tokens=int(msg.get("max_new_tokens") or 256),
-                temperature=float(msg.get("temperature", 0.7)),
-                top_p=float(msg.get("top_p", 0.9)),
-                top_k=int(msg.get("top_k") or 0),
-                stop=msg.get("stop"),
-            )
-            _ok(req_id, **result)
+        if cmd == "cancel":
+            cancelled = _cancel_job(req_id)
+            _ok(req_id, cancelled=cancelled)
             return
 
-        if cmd == "chat":
-            messages = msg.get("messages")
-            if not isinstance(messages, list) or not messages:
-                _err("messages required", req_id)
+        if cmd in ("submit", "generate", "chat"):
+            if not STATE.loaded:
+                _err("No model loaded", req_id)
                 return
-            # Normalize roles/content
-            norm = []
-            for m in messages:
-                if not isinstance(m, dict):
-                    continue
-                norm.append(
-                    {
-                        "role": (m.get("role") or "user"),
-                        "content": m.get("content") or "",
-                    }
-                )
-            prompt = _try_hf_chat_template(norm, add_generation_prompt=True)
-            used = "hf"
+            messages = _normalize_messages(msg.get("messages"))
+            prompt = msg.get("prompt")
+            if messages:
+                prompt = _format_messages(messages)
             if prompt is None:
-                if _looks_like_llama3():
-                    used = "llama3"
-                    prompt = _format_llama3_chat(norm, add_generation_prompt=True)
-                else:
-                    used = "chatml"
-                    prompt = _format_chatml(norm, add_generation_prompt=True)
-            _log(f"chat template={used} chars={len(prompt)}")
-            result = _generate(
-                prompt=prompt,
-                max_new_tokens=int(msg.get("max_new_tokens") or 256),
-                temperature=float(msg.get("temperature", 0.7)),
-                top_p=float(msg.get("top_p", 0.9)),
-                top_k=int(msg.get("top_k") or 0),
-                stop=msg.get("stop"),
-            )
-            _ok(req_id, prompt=prompt, **result)
+                _err("prompt or messages required", req_id)
+                return
+            _enqueue(req_id, str(prompt), msg)
+            _ok(req_id, accepted=True, streaming=True)
             return
 
         _err(f"unknown cmd: {cmd}", req_id)
@@ -476,22 +699,74 @@ def handle(msg: dict[str, Any]) -> None:
         _err(str(ex), req_id, type=type(ex).__name__)
 
 
-def main() -> None:
-    _log(f"ready repo={_REPO_ROOT} exl3={_EXL3_ROOT.is_dir()}")
-    _ok(ready=True, protocol="jsonl-v1")
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
+def _reader() -> None:
+    global _STDIN_CLOSED
+    try:
+        for line in sys.stdin:
+            _INBOX.put(line)
+    except Exception as ex:
+        _log(f"stdin reader stopped: {ex}")
+    finally:
+        _STDIN_CLOSED = True
+        _INBOX.put(None)
+
+
+def _drain_inbox(*, block: bool) -> bool:
+    """Dispatch pending stdin messages. Returns False when stdin has closed."""
+    if block:
+        line = _INBOX.get()
+        if line is None:
+            return False
+        _dispatch_line(line)
+    while True:
+        try:
+            line = _INBOX.get_nowait()
+        except queue.Empty:
+            return True
+        if line is None:
+            return False
+        _dispatch_line(line)
+
+
+def _dispatch_line(line: str) -> None:
+    line = line.strip()
+    if not line:
+        return
+    try:
+        msg = json.loads(line)
+    except json.JSONDecodeError as ex:
+        _err(f"invalid json: {ex}")
+        return
+    if not isinstance(msg, dict):
+        _err("message must be a JSON object")
+        return
+    handle(msg)
+
+
+def serve() -> None:
+    threading.Thread(target=_reader, daemon=True, name="exl3-stdin").start()
+    _log("serve loop jsonl-v2")
+    while True:
+        gen = STATE.generator
+        idle = gen is None or gen.num_remaining_jobs() == 0
+        if not _drain_inbox(block=idle):
+            break
+        gen = STATE.generator
+        if gen is None or gen.num_remaining_jobs() == 0:
             continue
         try:
-            msg = json.loads(line)
-        except json.JSONDecodeError as ex:
-            _err(f"invalid json: {ex}")
+            results = gen.iterate()
+        except Exception as ex:
+            _log(traceback.format_exc())
+            _fail_all_jobs(str(ex))
             continue
-        if not isinstance(msg, dict):
-            _err("message must be a JSON object")
-            continue
-        handle(msg)
+        _emit_batch(results)
+
+
+def main() -> None:
+    _log(f"ready repo={_REPO_ROOT} exl3={_EXL3_ROOT.is_dir()}")
+    _ok(ready=True, protocol="jsonl-v2")
+    serve()
 
 
 if __name__ == "__main__":
