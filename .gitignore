@@ -120,8 +120,9 @@ publish/
 *.msix
 *.pfx
 
-# Large CUDA wheels (download via packaging\Download-OfflineWheels.ps1)
+# Large CUDA wheels / redistributables (download via packaging\Download-OfflineWheels.ps1)
 packaging/offline-wheels/
+packaging/redist/
 
 # Local Python / CUDA trees — never commit
 .venv-exl3/

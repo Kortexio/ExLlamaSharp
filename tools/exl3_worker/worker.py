@@ -116,7 +116,27 @@ def _unload() -> None:
         torch.cuda.empty_cache()
 
 
+def _preload_torch_dlls() -> None:
+    """Make torch/CUDA DLLs resolvable before importing exllamav3_ext on Windows."""
+    if os.name != "nt":
+        return
+    try:
+        import torch
+
+        torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
+        if os.path.isdir(torch_lib):
+            os.environ["PATH"] = torch_lib + os.pathsep + os.environ.get("PATH", "")
+            add_dir = getattr(os, "add_dll_directory", None)
+            if add_dir is not None:
+                add_dir(torch_lib)
+        # Force CUDA runtime load so dependent .pyd files resolve cublas/cudart.
+        _ = torch.cuda.is_available()
+    except Exception as ex:
+        _log(f"torch DLL preload skipped: {ex}")
+
+
 def _load(path: str, max_num_tokens: int = 8192) -> None:
+    _preload_torch_dlls()
     from exllamav3 import Config, Model, Cache, Tokenizer, Generator
 
     _unload()

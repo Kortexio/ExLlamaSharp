@@ -7,7 +7,7 @@
 .DESCRIPTION
   - Copies payload
   - VC++ Redistributable (if missing)
-  - Creates/reuses venv and installs PyTorch (does not wipe a working venv)
+  - Creates/reuses venv and installs PyTorch CUDA + the official ExLlamaV3 CUDA wheel
   - Registers the Windows service via New-Service
   - Firewall, shortcuts, Tray
   - Frees the port and starts with a health check
@@ -97,6 +97,91 @@ function Test-TorchOk([string]$PythonExe) {
     return ($LASTEXITCODE -eq 0)
 }
 
+function Test-Exl3ExtOk([string]$PythonExe) {
+    if (-not (Test-Path $PythonExe)) { return $false }
+    & $PythonExe -c "import importlib.util, sys; s=importlib.util.find_spec('exllamav3_ext'); sys.exit(0 if s and s.origin and s.origin.endswith(('.pyd','.so')) else 1)" 2>$null | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Resolve-OfflineWheelsDir {
+    foreach ($c in @(
+            (Join-Path $InstallDir "offline-wheels"),
+            (Join-Path $PSScriptRoot "offline-wheels"),
+            (Join-Path $PSScriptRoot "payload\offline-wheels")
+        )) {
+        if ((Test-Path $c) -and (Get-ChildItem $c -Filter "*.whl" -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+            return $c
+        }
+    }
+    return $null
+}
+
+function Resolve-RedistDir {
+    foreach ($c in @(
+            (Join-Path $InstallDir "redist"),
+            (Join-Path $PSScriptRoot "payload\redist"),
+            (Join-Path $PSScriptRoot "redist")
+        )) {
+        if (Test-Path $c) { return $c }
+    }
+    return $null
+}
+
+function Install-ExLlamaV3CudaWheel([string]$PythonExe) {
+    Write-Log "ExLlamaV3 CUDA extension (prebuilt wheel, not PyPI source)" "STEP"
+    if (Test-Exl3ExtOk $PythonExe) {
+        Write-Log "exllamav3_ext already present" "OK"
+        & $PythonExe -m pip install --upgrade huggingface_hub ninja 2>$null | Out-Null
+        return
+    }
+
+    $pyVer = (& $PythonExe -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')").Trim()
+    $mm = (& $PythonExe -c "import torch; print('.'.join(torch.__version__.split('+')[0].split('.')[:2]))").Trim()
+    if (-not $pyVer -or -not $mm) {
+        throw "Cannot resolve Python/torch versions for the ExLlamaV3 CUDA wheel"
+    }
+
+    $wheelName = "exllamav3-1.4.2+cu128.torch${mm}.0-cp$pyVer-cp$pyVer-win_amd64.whl"
+    $wheelFile = $null
+    $offline = Resolve-OfflineWheelsDir
+    if ($offline) {
+        $local = Get-ChildItem $offline -Filter "exllamav3-*.whl" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match "cp$pyVer" -and $_.Name -match [regex]::Escape("torch$mm") -and $_.Name -match "win_amd64" } |
+            Select-Object -First 1
+        if (-not $local) {
+            $local = Get-ChildItem $offline -Filter "exllamav3-*.whl" -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match "cp$pyVer" -and $_.Name -match "win_amd64" -and $_.Name -notmatch "py3-none" } |
+                Select-Object -First 1
+        }
+        if ($local) {
+            $wheelFile = $local.FullName
+            Write-Log "Using bundled $($local.Name)"
+        }
+    }
+
+    if (-not $wheelFile) {
+        $url = "https://github.com/turboderp-org/exllamav3/releases/download/v1.4.2/exllamav3-1.4.2%2Bcu128.torch${mm}.0-cp$pyVer-cp$pyVer-win_amd64.whl"
+        $wheelFile = Join-Path $env:TEMP $wheelName
+        Write-Log "Downloading $wheelName (~242 MB)"
+        Invoke-WebRequest -Uri $url -OutFile $wheelFile -UseBasicParsing
+        if (-not (Test-Path $wheelFile) -or ((Get-Item $wheelFile).Length -lt 1MB)) {
+            throw "Failed to download ExLlamaV3 CUDA wheel: $url"
+        }
+    }
+
+    & $PythonExe -m pip uninstall -y exllamav3 2>$null | Out-Null
+    & $PythonExe -m pip install --force-reinstall --no-deps $wheelFile
+    if ($LASTEXITCODE -ne 0) {
+        throw "pip install of ExLlamaV3 CUDA wheel failed"
+    }
+    & $PythonExe -m pip install --upgrade huggingface_hub ninja "triton-windows" 2>$null | Out-Null
+
+    if (-not (Test-Exl3ExtOk $PythonExe)) {
+        throw "exllamav3_ext.pyd missing after wheel install. The PyPI source package is not enough for inference."
+    }
+    Write-Log "exllamav3 CUDA extension OK" "OK"
+}
+
 function New-InternetShortcut([string]$Path, [string]$Url, [string]$Icon = "") {
     $body = "[InternetShortcut]`r`nURL=$Url"
     if ($Icon -and (Test-Path $Icon)) {
@@ -118,7 +203,7 @@ function New-AppShortcut([string]$Path, [string]$Target, [string]$Arguments = ""
 # ---- start ----
 "" | Set-Content $LogFile -Encoding UTF8
 Write-Host "===============================================================" -ForegroundColor Cyan
-Write-Host "  ExLlamaSharp Installer v2.1" -ForegroundColor Cyan
+Write-Host "  ExLlamaSharp Installer v2.2" -ForegroundColor Cyan
 Write-Host "  Log: $LogFile" -ForegroundColor DarkGray
 Write-Host "===============================================================" -ForegroundColor Cyan
 
@@ -128,19 +213,38 @@ if (-not (Test-IsAdmin)) {
 }
 Write-Log "Admin OK" "OK"
 
-$pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-if (-not $pythonCmd) {
-    Write-Log "Python 3.10+ not found on PATH" "ERR"
-    exit 1
-}
-Write-Log ("Python: " + (& python --version 2>&1)) "OK"
-
 $payload = Resolve-PayloadDir
 if (-not $payload) {
     Write-Log "Payload not found (run Build-Installer.ps1 or use the ZIP)" "ERR"
     exit 1
 }
 Write-Log "Payload: $payload" "OK"
+
+function Refresh-ProcessPath {
+    $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
+                [Environment]::GetEnvironmentVariable("Path", "User")
+}
+
+$pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+if (-not $pythonCmd) {
+    $pySetup = Get-ChildItem (Join-Path $payload "redist") -Filter "python-*.exe" -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($pySetup) {
+        Write-Log "Installing bundled Python ($($pySetup.Name))" "STEP"
+        $p = Start-Process -FilePath $pySetup.FullName -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 Include_pip=1 Include_test=0 SimpleInstall=1" -Wait -PassThru
+        Refresh-ProcessPath
+        $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+        if (-not $pythonCmd) {
+            Write-Log "Bundled Python installer finished (exit $($p.ExitCode)) but python is still not on PATH" "ERR"
+            exit 1
+        }
+    }
+}
+if (-not $pythonCmd) {
+    Write-Log "Python 3.10+ not found on PATH and no bundled installer in payload\redist" "ERR"
+    exit 1
+}
+Write-Log ("Python: " + (& python --version 2>&1)) "OK"
 
 # 1) Stop leftovers
 Write-Log "Cleaning processes / port / service" "STEP"
@@ -185,10 +289,20 @@ if (-not $SkipVCRedist) {
         if ($ver) { $vcOk = $true; Write-Log "Already installed ($ver)" "OK" }
     }
     if (-not $vcOk) {
-        $vcInstaller = Join-Path $env:TEMP "vc_redist.x64.exe"
-        Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile $vcInstaller -UseBasicParsing
-        Start-Process $vcInstaller -ArgumentList "/install /quiet /norestart" -Wait
-        Remove-Item $vcInstaller -Force -ErrorAction SilentlyContinue
+        $vcInstaller = Get-ChildItem (Join-Path $payload "redist") -Filter "vc_redist*.exe" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        $vcPath = $null
+        if ($vcInstaller) {
+            $vcPath = $vcInstaller.FullName
+            Write-Log "Using bundled $($vcInstaller.Name)"
+        } else {
+            $vcPath = Join-Path $env:TEMP "vc_redist.x64.exe"
+            Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile $vcPath -UseBasicParsing
+        }
+        Start-Process $vcPath -ArgumentList "/install /quiet /norestart" -Wait
+        if ($vcPath -like "$env:TEMP*") {
+            Remove-Item $vcPath -Force -ErrorAction SilentlyContinue
+        }
         Write-Log "VC++ installed" "OK"
     }
 }
@@ -216,25 +330,42 @@ if (-not (Test-Path $pythonExe)) {
 }
 
 if (-not $SkipPyTorch) {
+    $offline = Resolve-OfflineWheelsDir
     if ($torchOk) {
-        Write-Log "PyTorch already present — skipping download" "OK"
+        Write-Log "PyTorch already present — skipping torch download" "OK"
     } else {
-        Write-Log "Installing PyTorch cu128 (~2-3 GB)..."
-        & $pythonExe -m pip install --upgrade pip --quiet
+        if ($offline) {
+            Write-Log "Upgrading pip from bundled wheels"
+            & $pythonExe -m pip install --no-index --find-links $offline pip wheel setuptools 2>$null
+        } else {
+            & $pythonExe -m pip install --upgrade pip --quiet
+        }
+        Write-Log "Downloading PyTorch cu128 from pytorch.org (~2-3 GB)..."
         & $pythonExe -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
         if ($LASTEXITCODE -ne 0) {
-            Write-Log "PyTorch install failed — retry with -SkipPyTorch and run Setup-Exl3Python.bat later" "ERR"
+            Write-Log "PyTorch install failed" "ERR"
             exit 1
         }
-        # Optional exllamav3 — never fail install
-        & $pythonExe -m pip install huggingface_hub 2>&1 | Out-Null
-        & $pythonExe -m pip install exllamav3 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) { Write-Log "exllamav3 OK" "OK" }
-        else { Write-Log "Optional exllamav3 failed (VS/CUDA) — native backend still OK" "WARN" }
-
-        & $pythonExe -c "import torch; print(torch.__version__, 'cuda=', torch.cuda.is_available())"
         Write-Log "PyTorch ready" "OK"
     }
+
+    if ($offline) {
+        Write-Log "Installing worker Python deps from bundled wheels"
+        & $pythonExe -m pip install --no-index --find-links $offline `
+            tokenizers numpy safetensors rich typing_extensions pyyaml pillow pydantic ninja huggingface_hub 2>$null
+        & $pythonExe -m pip install --no-index --find-links $offline "triton-windows" 2>$null
+    } else {
+        & $pythonExe -m pip install --upgrade huggingface_hub ninja "triton-windows" 2>$null | Out-Null
+    }
+
+    try {
+        Install-ExLlamaV3CudaWheel $pythonExe
+    } catch {
+        Write-Log $_.Exception.Message "ERR"
+        exit 1
+    }
+
+    & $pythonExe -c "import torch; print(torch.__version__, 'cuda=', torch.cuda.is_available())"
 } else {
     Write-Log "PyTorch skipped (-SkipPyTorch)" "WARN"
 }

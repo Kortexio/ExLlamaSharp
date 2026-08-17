@@ -20,9 +20,10 @@
 - Administrador local para instalação
 
 ### Dependências (instalador)
-- Visual C++ Redistributable 2022 x64 (download automático)
+- Visual C++ Redistributable 2022 x64 (embutido no Setup)
 - .NET runtime embutido (self-contained)
-- PyTorch + CUDA 12.8 no venv (download ~2–3 GB durante Install.ps1)
+- PyTorch CUDA 12.8 no venv (download ~2–3 GB durante Install.ps1)
+- ExLlamaV3 `.pyd` + deps + Python/VC (embutidos no Setup)
 
 ---
 
@@ -30,14 +31,14 @@
 
 | Pacote | Arquivo | Notas |
 |--------|---------|--------|
-| **Recomendado** | `ExLlamaSharp-Setup-win-x64.zip` | Contém `Install.ps1` / `Install.bat` |
-| Offline wheels | Build com `-BundlePytorch` | ZIP muito maior |
+| **Recomendado** | `ExLlamaSharp-Setup-win-x64.exe` | App + ExLlamaV3 `.pyd` + deps + Python/VC; PyTorch descarrega na instalação |
+| Slim | `Build-Installer.ps1 -SkipBundleWheels` | Só a app; GPU fica para depois |
 
 Build:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File packaging\Build-Installer.ps1
-# opcional: -BundlePytorch
+# slim: -SkipBundleWheels
 ```
 
 ---

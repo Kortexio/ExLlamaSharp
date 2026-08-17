@@ -5,7 +5,7 @@
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File packaging\Build-Installer.ps1
-  powershell -ExecutionPolicy Bypass -File packaging\Build-Installer.ps1 -BundlePytorch
+  powershell -ExecutionPolicy Bypass -File packaging\Build-Installer.ps1 -SkipBundleWheels
 #>
 [CmdletBinding()]
 param(
@@ -20,7 +20,11 @@ param(
 
     [switch]$SkipExe,
 
-    # Embed CUDA PyTorch + ExLlamaV3 wheels in the ZIP (~2-3 GB). Offline GPU setup.
+    # Default: embed ExLlamaV3 CUDA wheel + worker deps + Python/VC. PyTorch downloads at install.
+    # Pass -SkipBundleWheels only for a slim app-only Setup.exe.
+    [switch]$SkipBundleWheels,
+
+    # Kept for compatibility; bundling is now the default.
     [switch]$BundlePytorch,
 
     [ValidateSet("cu128", "cu126", "cu124")]
@@ -148,6 +152,7 @@ $scripts = @(
     "Check-Requirements.ps1",
     "Uninstall.ps1",
     "Setup-Exl3Python.ps1",
+    "Repair-Exl3Ext.ps1",
     "Download-DemoModel.ps1",
     "Cleanup-BrokenInstall.ps1"
 )
@@ -177,24 +182,37 @@ if (Test-Path $workerSrc) {
     Write-Step "Included tools/exl3_worker"
 }
 
-# Optional: bundle PyTorch wheels inside the installer (large)
+# Bundle ExLlamaV3 CUDA wheel + worker deps + Python/VC. PyTorch is downloaded at install time.
+$bundleWheels = -not $SkipBundleWheels
 $offlineSrc = Join-Path $PSScriptRoot "offline-wheels"
-$offlineDst = Join-Path $Stage "offline-wheels"
-if ($BundlePytorch) {
-    Write-Step "Bundling PyTorch wheels (-BundlePytorch) - downloading if needed"
+$redistSrc = Join-Path $PSScriptRoot "redist"
+if ($bundleWheels) {
+    Write-Step "Bundling ExLlamaV3 CUDA wheel, worker deps, Python installer, VC++ (PyTorch stays a download)"
     $dl = Join-Path $PSScriptRoot "Download-OfflineWheels.ps1"
     & powershell -NoProfile -ExecutionPolicy Bypass -File $dl -OutDir $offlineSrc -CudaIndex $CudaIndex -PythonTag $PythonTag
     if ($LASTEXITCODE -ne 0) { throw "Download-OfflineWheels.ps1 failed" }
-}
-if (Test-Path $offlineSrc) {
-    $count = (Get-ChildItem $offlineSrc -File -EA SilentlyContinue | Measure-Object).Count
-    if ($count -gt 0) {
-        Write-Step ("Including offline-wheels ({0} files) in ZIP stage" -f $count)
-        if (Test-Path $offlineDst) { Remove-Item $offlineDst -Recurse -Force }
-        Copy-Item $offlineSrc $offlineDst -Recurse -Force
-        $payloadOffline = Join-Path $Payload "offline-wheels"
-        if (Test-Path $payloadOffline) { Remove-Item $payloadOffline -Recurse -Force }
-        Copy-Item $offlineSrc $payloadOffline -Recurse -Force
+    $hasExt = @(Get-ChildItem $offlineSrc -Filter "exllamav3-*.whl" -File -EA SilentlyContinue |
+        Where-Object { $_.Name -notmatch "py3-none-any" }).Count
+    if ($hasExt -lt 1) {
+        throw "offline-wheels is incomplete (need prebuilt exllamav3 CUDA wheel)"
+    }
+    $payloadOffline = Join-Path $Payload "offline-wheels"
+    if (Test-Path $payloadOffline) { Remove-Item $payloadOffline -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $payloadOffline | Out-Null
+    Get-ChildItem $offlineSrc -File | Where-Object {
+        $_.Name -notmatch '^(torch-|torchvision-|torchaudio-)'
+    } | ForEach-Object {
+        Copy-Item $_.FullName (Join-Path $payloadOffline $_.Name) -Force
+    }
+    $copied = @(Get-ChildItem $payloadOffline -File)
+    $copiedGb = [math]::Round((($copied | Measure-Object Length -Sum).Sum) / 1GB, 2)
+    Write-Step ("Included offline-wheels without PyTorch ({0} files, {1} GB)" -f $copied.Count, $copiedGb)
+
+    if (Test-Path $redistSrc) {
+        $payloadRedist = Join-Path $Payload "redist"
+        if (Test-Path $payloadRedist) { Remove-Item $payloadRedist -Recurse -Force }
+        Copy-Item $redistSrc $payloadRedist -Recurse -Force
+        Write-Step "Included redist (Python installer + VC++)"
     }
 }
 
@@ -219,13 +237,14 @@ Write-Host "  Included Install.ps1 / Install.bat" -ForegroundColor Gray
 
 1. Right-click Install.ps1 -> Run with PowerShell (Admin)
    OR right-click Install.bat -> Run as administrator
-2. Wait for PyTorch download (~2-3 GB, 5-10 min)
+2. PyTorch CUDA downloads during install (~2-3 GB). ExLlamaV3 .pyd and other deps are already in the package.
 3. Open http://localhost:14563
 
 Installed automatically:
 - Server + Windows Service
-- VC++ Redistributable
-- Python venv + PyTorch CUDA 12.8
+- Python 3.12 (if missing) + VC++ Redistributable (bundled)
+- Python venv + PyTorch CUDA 12.8 (downloaded)
+- ExLlamaV3 CUDA extension (bundled official wheel)
 - Firewall + shortcuts + Tray app
 
 ## Options
@@ -243,7 +262,7 @@ Run Uninstall.bat as Administrator.
 Setup-Exl3Python.bat — reinstall PyTorch into Program Files\ExLlamaSharp\venv
 "@ | Set-Content -Path (Join-Path $Stage "README.txt") -Encoding UTF8
 
-$version = "1.0.0"
+$version = "1.2.0"
 $info = @{
     product = "ExLlamaSharp"
     version = $version

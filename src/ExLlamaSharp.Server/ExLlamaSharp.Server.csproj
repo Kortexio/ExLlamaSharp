@@ -14,7 +14,7 @@
     <ServerGarbageCollection>true</ServerGarbageCollection>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>false</SelfContained>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <Description>ExLlamaSharp Server — Windows LLM inference service with OpenAI API and Blazor admin</Description>
     <ApplicationIcon>..\..\packaging\assets\exllamasharp.ico</ApplicationIcon>
   </PropertyGroup>

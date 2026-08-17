@@ -11,7 +11,7 @@ Inspired by:
 - **ExLlamaV3** — fast EXL3 inference on NVIDIA
 - **Open WebUI** — browser-based administration
 
-**Current release: 1.1.0** — Admin click/circuit fixes, safer service startup, real Setup downloads, Hugging Face hub in the installer, and honest API/backup error handling.
+**Current release: 1.2.0** — Setup.exe bundles the ExLlamaV3 CUDA `.pyd`, worker deps, Python installer and VC++. PyTorch CUDA is downloaded during install.
 
 Default after install: **http://127.0.0.1:14563**
 
@@ -32,7 +32,7 @@ One-liner (downloads Setup and launches UAC):
 irm https://raw.githubusercontent.com/vitorcastro78/ExLlamaSharp/main/packaging/install-web.ps1 | iex
 ```
 
-Double-click the Setup.exe → allow UAC → optional PyTorch/CUDA Python venv → open **http://127.0.0.1:14563**.
+Double-click the Setup.exe → allow UAC → PyTorch CUDA downloads into the venv, ExLlamaV3 extension installs from the package → open **http://127.0.0.1:14563**.
 
 ---
 
@@ -48,10 +48,10 @@ The Setup.exe (Inno Setup) installs a self-contained .NET host. End users do **n
 |-------|----------------|
 | **Windows Service `ExLlamaSharp`** | Starts at boot, binds Kestrel to `127.0.0.1:14563` by default, serves the Admin UI and APIs |
 | **Start Menu shortcuts** | Admin UI, data folder, optional GPU Python repair |
-| **Program Files payload** | Server binaries, tray app, `tools/exl3_worker/worker.py` |
+| **Program Files payload** | Server binaries, tray app, `tools/exl3_worker/worker.py`, `offline-wheels\`, `redist\` |
 | **`%ProgramData%\ExLlamaSharp`** | SQLite `app.db`, `models\`, `logs\`, `backups\`, UI onboarding state |
-| **Optional PyTorch venv** | `%ProgramFiles%\ExLlamaSharp\venv\` via `Setup-Exl3Python.ps1` — required for real EXL3 inference |
-| **ZIP fallback** | Same payload as `ExLlamaSharp-Setup-win-x64.zip` with `Install.ps1` / `Install.bat` |
+| **GPU Python venv** | `%ProgramFiles%\ExLlamaSharp\venv\` — PyTorch CUDA downloaded at install; ExLlamaV3 `.pyd` comes from the Setup package |
+| **ZIP fallback** | Slim builds only (`-SkipBundleWheels`). Full Setup.exe is the supported installer |
 | **Uninstall** | Removes the service, shortcuts, and Program Files (data under ProgramData can be kept) |
 
 Firewall rule and Start Menu icon are created by the installer. The service listens on **14563** so it does not collide with common local ports (8080, 8787).
@@ -235,7 +235,7 @@ These exist in the UI or HTTP surface but are **not** full production features:
 4. **Models → My Models → Load**.
 5. Open **Chat** and send a message.
 
-If inference fails, run Start Menu **Setup Exl3 Python** (or `packaging\Setup-Exl3Python.ps1`) so the CUDA worker venv exists. Do not rely on a JIT `pip install exllamav3` under Program Files — that path does not produce a working CUDA extension on a typical Windows box.
+If inference fails after a custom Python repair, run `Setup-Exl3Python.bat` in the install folder. The Setup.exe already installs the official CUDA wheel — do not `pip install exllamav3` from PyPI.
 
 ### Developers (run from source)
 

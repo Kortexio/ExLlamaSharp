@@ -469,6 +469,8 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
         psi.Environment["PYTHONIOENCODING"] = "utf-8";
         // Windows: DeepSeek DSA Triton path is unavailable; Llama EXL3 does not need it.
         psi.Environment["EXL3_BC_DSA"] = "0";
+        PrependNativeSearchPath(psi, python);
+        TryAddDonorExtPath(psi, python);
 
         _logger.LogInformation("Starting EXL3 worker: {Python} {Script}", python, script);
         var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
@@ -637,6 +639,125 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
         }
 
         return list.ToArray();
+    }
+
+    /// <summary>
+    /// Windows Service (LocalSystem) has a minimal PATH. Prepend venv Scripts
+    /// (ninja) and torch/lib (cublas/cudart) so <c>exllamav3_ext.pyd</c> can load.
+    /// </summary>
+    private static void PrependNativeSearchPath(ProcessStartInfo psi, string python)
+    {
+        var extras = new List<string>();
+        try
+        {
+            var scripts = Path.GetDirectoryName(python);
+            if (!string.IsNullOrWhiteSpace(scripts) && Directory.Exists(scripts))
+            {
+                extras.Add(scripts);
+                var venv = Path.GetDirectoryName(scripts);
+                if (!string.IsNullOrWhiteSpace(venv))
+                {
+                    var torchLib = Path.Combine(venv, "Lib", "site-packages", "torch", "lib");
+                    if (Directory.Exists(torchLib))
+                    {
+                        extras.Add(torchLib);
+                    }
+                }
+            }
+
+            var cuda = Environment.GetEnvironmentVariable("CUDA_PATH");
+            if (!string.IsNullOrWhiteSpace(cuda))
+            {
+                var cudaBin = Path.Combine(cuda, "bin");
+                if (Directory.Exists(cudaBin))
+                {
+                    extras.Add(cudaBin);
+                }
+            }
+        }
+        catch
+        {
+            // best-effort
+        }
+
+        if (extras.Count == 0)
+        {
+            return;
+        }
+
+        var current = "";
+        if (psi.Environment.TryGetValue("Path", out var existing) && !string.IsNullOrWhiteSpace(existing))
+        {
+            current = existing;
+        }
+        else
+        {
+            current = Environment.GetEnvironmentVariable("Path") ?? "";
+        }
+
+        psi.Environment["Path"] = string.Join(";", extras.Concat(new[] { current }).Where(s => !string.IsNullOrWhiteSpace(s)));
+    }
+
+    /// <summary>
+    /// If the product venv has the PyPI source package (no <c>exllamav3_ext.pyd</c>),
+    /// put a donor site-packages (repo <c>.venv-exl3</c>) on PYTHONPATH so the
+    /// prebuilt CUDA extension can be imported.
+    /// </summary>
+    private static void TryAddDonorExtPath(ProcessStartInfo psi, string python)
+    {
+        try
+        {
+            var scripts = Path.GetDirectoryName(python);
+            var venv = scripts is null ? null : Path.GetDirectoryName(scripts);
+            if (string.IsNullOrWhiteSpace(venv))
+            {
+                return;
+            }
+
+            var localPyd = Path.Combine(venv, "Lib", "site-packages", "exllamav3_ext.cp312-win_amd64.pyd");
+            if (File.Exists(localPyd))
+            {
+                return;
+            }
+
+            var donors = new List<string>();
+            var repo = FindRepoRoot();
+            if (repo is not null)
+            {
+                donors.Add(Path.Combine(repo, ".venv-exl3", "Lib", "site-packages"));
+            }
+
+            var programDataDonor = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                "ExLlamaSharp", "exl3-ext-donor.txt");
+            if (File.Exists(programDataDonor))
+            {
+                var line = File.ReadAllText(programDataDonor).Trim();
+                if (!string.IsNullOrWhiteSpace(line))
+                {
+                    donors.Add(line);
+                }
+            }
+
+            foreach (var site in donors.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                var donorPyd = Path.Combine(site, "exllamav3_ext.cp312-win_amd64.pyd");
+                if (!File.Exists(donorPyd))
+                {
+                    continue;
+                }
+
+                psi.Environment.TryGetValue("PYTHONPATH", out var existing);
+                psi.Environment["PYTHONPATH"] = string.IsNullOrWhiteSpace(existing)
+                    ? site
+                    : site + Path.PathSeparator + existing;
+                return;
+            }
+        }
+        catch
+        {
+            // best-effort
+        }
     }
 
     public static bool TryResolvePython(out string python)

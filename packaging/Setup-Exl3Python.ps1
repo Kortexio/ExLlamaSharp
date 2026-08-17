@@ -5,8 +5,8 @@
   next to the app (%ProgramFiles%\ExLlamaSharp\venv), plus the matching ExLlamaV3 Windows wheel.
 
   Note: PyTorch does not ship a single official CUDA "Setup.exe". This script downloads the
-  current cu128 wheels from https://download.pytorch.org/whl/cu128 (same result as the
-  official install instructions). MSI/ZIP stay small; this step is the remote GPU install.
+  current cu128 wheels from https://download.pytorch.org/whl/cu128 and the matching
+  ExLlamaV3 CUDA wheel from GitHub (not the PyPI source package).
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File packaging\Setup-Exl3Python.ps1
@@ -205,7 +205,6 @@ Write-Host "ExLlamaSharp - PyTorch / EXL3 runtime setup" -ForegroundColor Green
 Write-Host "Venv: $VenvPath"
 Write-Host "PyTorch index: https://download.pytorch.org/whl/$CudaIndex"
 Write-Host "Uses bundled offline-wheels\ when present; otherwise downloads ~2+ GB."
-Write-Host "NOTE: This is NOT part of the MSI - run after install via Start Menu." -ForegroundColor DarkYellow
 Write-Host ""
 
 function Find-Python {
@@ -422,7 +421,11 @@ if (-not $wheelOk) {
     Write-Step "Trying py3-none-any + note (may need local compile)"
     try {
         & $pyVenv -m pip install "exllamav3==1.4.2"
-        $wheelOk = ($LASTEXITCODE -eq 0)
+        $pyd = & $pyVenv -c "import importlib.util; s=importlib.util.find_spec('exllamav3_ext'); print(s.origin if s and s.origin else '')"
+        $wheelOk = ($LASTEXITCODE -eq 0) -and ($pyd -match '\.(pyd|so)$')
+        if (-not $wheelOk) {
+            Write-Warning "PyPI exllamav3==1.4.2 has no prebuilt CUDA extension. Do not use this for inference."
+        }
     }
     catch { }
 
@@ -451,8 +454,18 @@ if ($env:OS -match "Windows") {
 Write-Step "Verifying imports"
 $verifyFile = Join-Path $env:TEMP "exl3-verify-import.py"
 [System.IO.File]::WriteAllText($verifyFile, @"
-from exllamav3 import Config, Model, Cache, Tokenizer, Generator
+import importlib.util, os
 import torch
+torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
+os.environ["PATH"] = torch_lib + os.pathsep + os.environ.get("PATH", "")
+if hasattr(os, "add_dll_directory"):
+    os.add_dll_directory(torch_lib)
+spec = importlib.util.find_spec("exllamav3_ext")
+origin = spec.origin if spec else ""
+print("ext=", origin)
+if not origin or not origin.endswith((".pyd", ".so")):
+    raise SystemExit("exllamav3_ext native module missing — install the official CUDA wheel, not the PyPI source package")
+from exllamav3 import Config, Model, Cache, Tokenizer, Generator
 print("exllamav3 OK; cuda=", torch.cuda.is_available(), "; torch=", torch.__version__)
 "@)
 $env:Path = "$(Join-Path $VenvPath 'Scripts');$env:Path"
