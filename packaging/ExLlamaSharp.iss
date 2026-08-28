@@ -3,7 +3,7 @@
 ;   & "${env:LocalAppData}\Programs\Inno Setup 6\ISCC.exe" packaging\ExLlamaSharp.iss
 
 #define MyAppName "ExLlamaSharp"
-#define MyAppVersion "1.2.0-beta"
+#define MyAppVersion "1.2.1-beta"
 #define MyAppPublisher "ExLlamaSharp"
 #define MyAppURL "http://127.0.0.1:14563"
 ; Stage folder produced by Build-Installer.ps1 (relative to this .iss)

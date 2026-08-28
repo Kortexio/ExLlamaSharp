@@ -194,3 +194,147 @@ public sealed class UserDto
     [JsonPropertyName("last_active")]
     public DateTime? LastActive { get; init; }
 }
+
+public sealed class CreateAbTestRequest
+{
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("model_a_id")]
+    public Guid ModelAId { get; set; }
+
+    [JsonPropertyName("model_b_id")]
+    public Guid ModelBId { get; set; }
+
+    /// <summary>Fraction routed to model A (0–1). Default 0.5.</summary>
+    [JsonPropertyName("split_ratio")]
+    public double? SplitRatio { get; set; }
+
+    [JsonPropertyName("active")]
+    public bool? Active { get; set; }
+
+    [JsonPropertyName("tenant_id")]
+    public string? TenantId { get; set; }
+}
+
+public sealed class AbVoteRequest
+{
+    [JsonPropertyName("ab_test_id")]
+    public Guid AbTestId { get; set; }
+
+    /// <summary>Stable id for consistent assignment (defaults to a new guid).</summary>
+    [JsonPropertyName("request_id")]
+    public string? RequestId { get; set; }
+
+    [JsonPropertyName("preferred")]
+    public string? Preferred { get; set; }
+}
+
+public sealed record AbTestDto
+{
+    [JsonPropertyName("id")]
+    public Guid Id { get; init; }
+
+    [JsonPropertyName("name")]
+    public string Name { get; init; } = string.Empty;
+
+    [JsonPropertyName("model_a_id")]
+    public Guid ModelAId { get; init; }
+
+    [JsonPropertyName("model_b_id")]
+    public Guid ModelBId { get; init; }
+
+    [JsonPropertyName("split_ratio")]
+    public double SplitRatio { get; init; }
+
+    [JsonPropertyName("active")]
+    public bool Active { get; init; }
+
+    [JsonPropertyName("tenant_id")]
+    public string TenantId { get; init; } = "default";
+
+    [JsonPropertyName("created_at")]
+    public DateTime CreatedAt { get; init; }
+}
+
+public sealed class CreateTenantRequest
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = string.Empty;
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("subdomain")]
+    public string? Subdomain { get; set; }
+
+    [JsonPropertyName("active")]
+    public bool? Active { get; set; }
+}
+
+public sealed record TenantDto
+{
+    [JsonPropertyName("id")]
+    public string Id { get; init; } = string.Empty;
+
+    [JsonPropertyName("name")]
+    public string Name { get; init; } = string.Empty;
+
+    [JsonPropertyName("subdomain")]
+    public string? Subdomain { get; init; }
+
+    [JsonPropertyName("active")]
+    public bool Active { get; init; }
+
+    [JsonPropertyName("created_at")]
+    public DateTime CreatedAt { get; init; }
+}
+
+public sealed class CreateAdapterRequest
+{
+    [JsonPropertyName("base_model_id")]
+    public Guid BaseModelId { get; set; }
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>Local path to adapter weights (registered for metadata; not applied at inference yet).</summary>
+    [JsonPropertyName("path")]
+    public string? Path { get; set; }
+
+    [JsonPropertyName("rank")]
+    public int? Rank { get; set; }
+
+    [JsonPropertyName("alpha")]
+    public double? Alpha { get; set; }
+
+    [JsonPropertyName("tenant_id")]
+    public string? TenantId { get; set; }
+}
+
+public sealed record AdapterDto
+{
+    [JsonPropertyName("id")]
+    public Guid Id { get; init; }
+
+    [JsonPropertyName("base_model_id")]
+    public Guid BaseModelId { get; init; }
+
+    [JsonPropertyName("name")]
+    public string Name { get; init; } = string.Empty;
+
+    [JsonPropertyName("path")]
+    public string Path { get; init; } = string.Empty;
+
+    [JsonPropertyName("rank")]
+    public int Rank { get; init; }
+
+    [JsonPropertyName("alpha")]
+    public double Alpha { get; init; }
+
+    [JsonPropertyName("tenant_id")]
+    public string TenantId { get; init; } = "default";
+
+    [JsonPropertyName("created_at")]
+    public DateTime CreatedAt { get; init; }
+}

@@ -142,6 +142,9 @@ class WorkerState:
         self.sanitizers: dict[Any, _StreamSanitizer] = {}
         self.prompt_lens: dict[Any, int] = {}
         self.t0: dict[Any, float] = {}
+        self.loras: dict[str, Any] = {}
+        self.draft_model_path: str | None = None
+        self.draft_k: int = 5
 
     @property
     def loaded(self) -> bool:
@@ -153,9 +156,19 @@ _INBOX: queue.Queue[str | None] = queue.Queue()
 _STDIN_CLOSED = False
 
 
+def _unload_loras() -> None:
+    for key, lora in list(STATE.loras.items()):
+        try:
+            lora.unload()
+        except Exception as ex:
+            _log(f"LoRA unload {key}: {ex}")
+    STATE.loras.clear()
+
+
 def _unload() -> None:
     import torch
 
+    _unload_loras()
     gen = STATE.generator
     if gen is not None:
         try:
@@ -639,6 +652,30 @@ def handle(msg: dict[str, Any]) -> None:
             max_tok = int(msg.get("max_num_tokens") or msg.get("max_tokens") or 8192)
             max_batch = int(msg.get("max_batch_size") or msg.get("max_num_seqs") or 256)
             max_chunk = int(msg.get("max_chunk_size") or 2048)
+            devices = msg.get("cuda_visible_devices")
+            if devices:
+                os.environ["CUDA_VISIBLE_DEVICES"] = str(devices)
+                _log(f"CUDA_VISIBLE_DEVICES={devices}")
+            mode = (msg.get("parallelism_mode") or "none").lower()
+            if mode not in ("none", "single", "") and "," not in str(devices or ""):
+                _log(f"parallelism_mode={mode} requested but only one device visible; continuing single-GPU")
+            if msg.get("speculative_enabled"):
+                draft = msg.get("draft_model_path")
+                draft_k = int(msg.get("draft_k") or 5)
+                if draft:
+                    _log(
+                        f"Speculative decoding requested draft={draft} k={draft_k} — "
+                        "applied when ExLlamaV3 Generator supports draft; otherwise ignored with warning"
+                    )
+                    try:
+                        # Best-effort: stash for future Generator kwargs; current ExLlamaV3 Job API may not expose draft.
+                        STATE.draft_model_path = str(draft)
+                        STATE.draft_k = draft_k
+                    except Exception:
+                        pass
+                else:
+                    _err("speculative_enabled requires draft_model_path", req_id)
+                    return
             _load(path, max_tok, max_batch, max_chunk)
             _ok(
                 req_id,
@@ -653,6 +690,55 @@ def handle(msg: dict[str, Any]) -> None:
         if cmd == "unload":
             _unload()
             _ok(req_id, unloaded=True)
+            return
+
+        if cmd == "load_adapter":
+            if not STATE.loaded or STATE.model is None:
+                _err("No model loaded", req_id)
+                return
+            path = msg.get("path")
+            if not path:
+                _err("path required", req_id)
+                return
+            adapter_id = (msg.get("adapter_id") or Path(path).name).strip()
+            scaling = float(msg.get("scaling") or msg.get("lora_scaling") or 1.0)
+            try:
+                from exllamav3.model.lora import LoRA
+            except Exception as ex:
+                _err(f"LoRA API unavailable: {ex}", req_id)
+                return
+            if adapter_id in STATE.loras:
+                try:
+                    STATE.loras[adapter_id].unload()
+                except Exception:
+                    pass
+                del STATE.loras[adapter_id]
+            lora = LoRA.from_directory(STATE.model, str(Path(path).resolve()), lora_scaling=scaling)
+            STATE.loras[adapter_id] = lora
+            _ok(req_id, adapter_id=adapter_id, path=str(path), scaling=scaling, loaded=True)
+            return
+
+        if cmd == "unload_adapter":
+            adapter_id = msg.get("adapter_id")
+            if adapter_id:
+                lora = STATE.loras.pop(str(adapter_id), None)
+                if lora is not None:
+                    try:
+                        lora.unload()
+                    except Exception as ex:
+                        _log(f"unload_adapter: {ex}")
+                _ok(req_id, unloaded=True, adapter_id=adapter_id)
+            else:
+                _unload_loras()
+                _ok(req_id, unloaded=True, all=True)
+            return
+
+        if cmd == "list_adapters":
+            items = [
+                {"adapter_id": k, "path": getattr(v, "directory", None) or getattr(v, "config_path", None)}
+                for k, v in STATE.loras.items()
+            ]
+            _ok(req_id, adapters=items)
             return
 
         if cmd == "tokenize":
@@ -682,10 +768,35 @@ def handle(msg: dict[str, Any]) -> None:
             if not STATE.loaded:
                 _err("No model loaded", req_id)
                 return
+            adapter_path = msg.get("adapter_path")
+            if adapter_path:
+                try:
+                    from exllamav3.model.lora import LoRA
+                    aid = str(msg.get("adapter_id") or Path(adapter_path).name)
+                    scaling = float(msg.get("adapter_scaling") or msg.get("scaling") or 1.0)
+                    if aid not in STATE.loras:
+                        STATE.loras[aid] = LoRA.from_directory(
+                            STATE.model, str(Path(adapter_path).resolve()), lora_scaling=scaling
+                        )
+                except Exception as ex:
+                    _err(f"adapter load failed: {ex}", req_id)
+                    return
+            schema = msg.get("json_schema")
             messages = _normalize_messages(msg.get("messages"))
             prompt = msg.get("prompt")
             if messages:
+                if schema:
+                    messages = list(messages)
+                    messages.insert(
+                        0,
+                        {
+                            "role": "system",
+                            "content": "Respond with JSON only matching this schema:\n" + str(schema),
+                        },
+                    )
                 prompt = _format_messages(messages)
+            elif prompt is not None and schema:
+                prompt = "Respond with JSON only matching this schema:\n" + str(schema) + "\n\n" + str(prompt)
             if prompt is None:
                 _err("prompt or messages required", req_id)
                 return

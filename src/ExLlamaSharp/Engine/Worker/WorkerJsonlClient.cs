@@ -107,8 +107,16 @@ internal sealed class WorkerJsonlClient : IDisposable
             StandardInputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
         };
         WorkerRuntimeLocator.ConfigureProcessEnvironment(psi, python);
+        if (!string.IsNullOrWhiteSpace(_options.CudaVisibleDevices))
+        {
+            psi.Environment["CUDA_VISIBLE_DEVICES"] = _options.CudaVisibleDevices;
+        }
 
-        _logger.LogInformation("Starting EXL3 worker: {Python} {Script}", python, script);
+        _logger.LogInformation(
+            "Starting EXL3 worker: {Python} {Script} (CUDA_VISIBLE_DEVICES={Cuda})",
+            python,
+            script,
+            _options.CudaVisibleDevices ?? "(default)");
         var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
         if (!proc.Start())
         {

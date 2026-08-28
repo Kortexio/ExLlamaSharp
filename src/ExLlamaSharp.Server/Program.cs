@@ -54,6 +54,7 @@ builder.Services.AddSingleton<SettingsService>();
 builder.Services.AddSingleton<AbTestRouter>();
 builder.Services.AddSingleton<TenantResolver>();
 builder.Services.AddSingleton<ContentModerationService>();
+builder.Services.AddSingleton<MetricsHistoryService>();
 builder.Services.AddSingleton<EmbeddingService>();
 builder.Services.AddSingleton<AboutService>();
 builder.Services.AddSingleton<HealthService>();
@@ -69,6 +70,7 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<EngineHostService>
 builder.Services.AddSingleton<AuditService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AuditService>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<BackupService>());
+builder.Services.AddHostedService<DashboardBroadcastService>();
 
 builder.Services.AddExLlamaSharpUi();
 

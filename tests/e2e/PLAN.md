@@ -16,12 +16,13 @@ Exercise every shipped surface (ops, OpenAI `/v1`, admin `/api/v1`, Blazor pages
 | B OpenAI | chat, completions, models, embeddings, tokenize, detokenize, metrics, stream, 501 catch-all | 200/501 as expected; 401 without key |
 | C Admin | settings, library, load/unload mock, jobs, keys CRUD, users CRUD, moderation, backup, about, logs SSE | 200/201/202; admin scope enforced |
 | D Auth | missing key, non-admin scope on `/api/v1`, revoked key | 401/403 |
-| E Stubs | `/ab`, `/tenants`, `/adapters` | 200 + stub message (contract only) |
+| E Admin extras | `/ab`, `/tenants`, `/adapters` | 200 list + create tenant 201 |
 | F UI | GET each Blazor route | 200 HTML (smoke) |
 | G Unit | `dotnet test` solution | all green |
 
-## Out of scope (documented stubs)
-Real HF pull, real CUDA kernels, real LoRA load, real A/B routing persistence via HTTP, signed MSIX.
+## Out of scope (by design)
+OpenAI images/audio (501 — Media version plan), native DLL text generate (worker-only).
+
 
 ## Execution
 Automated: `tests/ExLlamaSharp.Server.Tests/E2eFeatureMatrixTests.cs`  

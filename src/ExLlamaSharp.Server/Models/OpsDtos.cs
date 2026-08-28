@@ -178,15 +178,3 @@ public sealed class ModerationRuleDto
     [JsonPropertyName("created_at")]
     public DateTime CreatedAt { get; init; }
 }
-
-public sealed class StubListResponse
-{
-    [JsonPropertyName("object")]
-    public string Object { get; init; } = "list";
-
-    [JsonPropertyName("data")]
-    public List<object> Data { get; init; } = [];
-
-    [JsonPropertyName("message")]
-    public string? Message { get; init; }
-}

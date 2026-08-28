@@ -51,6 +51,7 @@ public static class OpenAiEndpoints
         ContentModerationService moderation,
         AuditService audit,
         RateLimiter rateLimiter,
+        AbTestRouter abRouter,
         AppDbContext db)
     {
         if (request.Messages is null || request.Messages.Count == 0)
@@ -67,8 +68,22 @@ public static class OpenAiEndpoints
                 statusCode: StatusCodes.Status403Forbidden);
         }
 
-        var modelId = await ResolveModelNameAsync(request.Model, engineHost, db, http.RequestAborted)
-            .ConfigureAwait(false);
+        var jobId = Guid.NewGuid();
+        string modelId;
+        Guid? abTestId;
+        string? abVariant;
+        try
+        {
+            (modelId, abTestId, abVariant) = await ResolveModelWithAbAsync(
+                    request.Model, jobId.ToString("N"), http, engineHost, abRouter, db, http.RequestAborted)
+                .ConfigureAwait(false);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.Json(
+                ErrorResponse.Create(ex.Message, "server_error", "ab_model_load_failed"),
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
 
         var messages = request.Messages.Select(m => new ChatMessage
         {
@@ -86,6 +101,29 @@ public static class OpenAiEndpoints
                 statusCode: StatusCodes.Status400BadRequest);
         }
 
+        string? toolsJson = null;
+        if (request.Tools is { Count: > 0 })
+        {
+            toolsJson = JsonSerializer.Serialize(request.Tools, JsonOptions);
+        }
+
+        string? jsonSchema = null;
+        if (request.ResponseFormat?.JsonSchema is JsonElement schemaEl
+            && schemaEl.ValueKind is not JsonValueKind.Undefined and not JsonValueKind.Null)
+        {
+            jsonSchema = schemaEl.GetRawText();
+        }
+
+        string? adapterPath = null;
+        if (http.Request.Headers.TryGetValue("X-Adapter-Id", out var adapterHeader)
+            && Guid.TryParse(adapterHeader.ToString(), out var adapterGuid))
+        {
+            var adapter = await db.LoraAdapters.AsNoTracking()
+                .FirstOrDefaultAsync(a => a.Id == adapterGuid, http.RequestAborted)
+                .ConfigureAwait(false);
+            adapterPath = adapter?.Path;
+        }
+
         var timeoutCts = await CreateTimeoutCtsAsync(settingsService, http.RequestAborted).ConfigureAwait(false);
         var engineRequest = new CompletionRequest
         {
@@ -97,7 +135,10 @@ public static class OpenAiEndpoints
             TopP = request.TopP ?? 0.9f,
             TopK = request.TopK ?? 40,
             Priority = InvertPriority(http.GetPriority()),
-            JobId = Guid.NewGuid(),
+            JobId = jobId,
+            ToolsJson = toolsJson,
+            JsonSchema = jsonSchema,
+            AdapterPath = adapterPath,
         };
 
         var started = DateTime.UtcNow;
@@ -122,6 +163,8 @@ public static class OpenAiEndpoints
                 Endpoint = "/v1/chat/completions",
                 CompletionId = $"chatcmpl-{engineRequest.JobId:N}",
                 SseKind = OpenAiSseKind.Chat,
+                AbTestId = abTestId,
+                AbVariant = abVariant,
                 ToJson = (completed, created) => new ChatCompletionResponse
                 {
                     Id = $"chatcmpl-{completed.JobId:N}",
@@ -162,6 +205,7 @@ public static class OpenAiEndpoints
         ContentModerationService moderation,
         AuditService audit,
         RateLimiter rateLimiter,
+        AbTestRouter abRouter,
         AppDbContext db)
     {
         if (!http.HasScope("completions") && !http.HasScope("chat"))
@@ -187,8 +231,22 @@ public static class OpenAiEndpoints
                 statusCode: StatusCodes.Status400BadRequest);
         }
 
-        var modelId = await ResolveModelNameAsync(request.Model, engineHost, db, http.RequestAborted)
-            .ConfigureAwait(false);
+        var jobId = Guid.NewGuid();
+        string modelId;
+        Guid? abTestId;
+        string? abVariant;
+        try
+        {
+            (modelId, abTestId, abVariant) = await ResolveModelWithAbAsync(
+                    request.Model, jobId.ToString("N"), http, engineHost, abRouter, db, http.RequestAborted)
+                .ConfigureAwait(false);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.Json(
+                ErrorResponse.Create(ex.Message, "server_error", "ab_model_load_failed"),
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
 
         var timeoutCts = await CreateTimeoutCtsAsync(settingsService, http.RequestAborted).ConfigureAwait(false);
         var engineRequest = new CompletionRequest
@@ -199,7 +257,7 @@ public static class OpenAiEndpoints
             TopP = request.TopP ?? 0.9f,
             TopK = request.TopK ?? 40,
             Priority = InvertPriority(http.GetPriority()),
-            JobId = Guid.NewGuid(),
+            JobId = jobId,
         };
 
         var started = DateTime.UtcNow;
@@ -224,6 +282,8 @@ public static class OpenAiEndpoints
                 Endpoint = "/v1/completions",
                 CompletionId = $"cmpl-{engineRequest.JobId:N}",
                 SseKind = OpenAiSseKind.Completion,
+                AbTestId = abTestId,
+                AbVariant = abVariant,
                 ToJson = (completed, created) => new CompletionResponse
                 {
                     Id = $"cmpl-{completed.JobId:N}",
@@ -429,6 +489,59 @@ public static class OpenAiEndpoints
         {
             throw new InvalidOperationException("No model loaded. Use POST /api/v1/models/load first.");
         }
+    }
+
+    private static async Task<(string ModelId, Guid? AbTestId, string? AbVariant)> ResolveModelWithAbAsync(
+        string? requested,
+        string requestId,
+        HttpContext http,
+        EngineHostService engineHost,
+        AbTestRouter abRouter,
+        AppDbContext db,
+        CancellationToken ct)
+    {
+        Guid? abTestId = null;
+        if (http.Request.Headers.TryGetValue("X-Ab-Test-Id", out var header)
+            && Guid.TryParse(header.ToString(), out var fromHeader))
+        {
+            abTestId = fromHeader;
+        }
+        else if (!string.IsNullOrWhiteSpace(requested)
+                 && requested.StartsWith("ab:", StringComparison.OrdinalIgnoreCase)
+                 && Guid.TryParse(requested.AsSpan(3), out var fromModel))
+        {
+            abTestId = fromModel;
+        }
+
+        if (abTestId is Guid id)
+        {
+            var route = await abRouter.RouteAsync(id, requestId, ct).ConfigureAwait(false);
+            if (route is not null)
+            {
+                http.Response.Headers["X-Ab-Test-Id"] = route.AbTestId.ToString("N");
+                http.Response.Headers["X-Ab-Variant"] = route.Variant;
+
+                try
+                {
+                    await engineHost.EnsureModelIdLoadedAsync(route.ModelId, ct).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException(
+                        $"A/B variant {route.Variant} model could not be loaded: {ex.Message}", ex);
+                }
+
+                var record = await db.Models.AsNoTracking()
+                    .FirstOrDefaultAsync(m => m.Id == route.ModelId, ct)
+                    .ConfigureAwait(false);
+                var name = record?.Alias
+                           ?? route.ModelId.ToString("N");
+                return (name, route.AbTestId, route.Variant);
+            }
+        }
+
+        var fallback = await ResolveModelNameAsync(requested, engineHost, db, ct).ConfigureAwait(false);
+        return (fallback, null, null);
     }
 
     private static async Task<string> ResolveModelNameAsync(

@@ -9,7 +9,7 @@ using Microsoft.Extensions.Logging;
 namespace ExLlamaSharp.Server.Services;
 
 /// <summary>
-/// Pull/quantize/import job queue. Progress simulation stub; SignalR broadcast wired later.
+/// Pull/quantize/import job queue with real progress where possible.
 /// </summary>
 public sealed class ModelJobsService
 {
@@ -89,7 +89,7 @@ public sealed class ModelJobsService
             string stderr;
             try
             {
-                (code, stdout, stderr) = await _python.RunStubAsync(psi, ct).ConfigureAwait(false);
+                (code, stdout, stderr) = await _python.RunAsync(psi, ct).ConfigureAwait(false);
             }
             finally
             {
@@ -122,8 +122,42 @@ public sealed class ModelJobsService
     {
         return await CreateAndRunAsync("quantize", modelId, async (job, ct) =>
         {
-            await SimulateProgressAsync(job.JobId, ct).ConfigureAwait(false);
-            _logger.LogInformation("Stub quantize completed for model {ModelId} at {Bits} bpw", modelId, bits);
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var record = await db.Models.AsNoTracking()
+                .FirstOrDefaultAsync(m => m.Id == modelId, ct)
+                .ConfigureAwait(false)
+                ?? throw new InvalidOperationException($"Model {modelId} not found.");
+
+            if (!Directory.Exists(record.Path))
+            {
+                throw new InvalidOperationException($"Model path missing: {record.Path}");
+            }
+
+            var settings = await _settings.GetAsync(ct).ConfigureAwait(false);
+            var root = string.IsNullOrWhiteSpace(settings.ModelsPath)
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ExLlamaSharp", "models")
+                : settings.ModelsPath;
+            Directory.CreateDirectory(root);
+
+            var outName = $"{Path.GetFileName(record.Path.TrimEnd(Path.DirectorySeparatorChar))}-exl3-{bits.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}bpw";
+            var outputPath = Path.Combine(root, outName);
+            var workPath = Path.Combine(root, ".quantize-work", job.JobId.ToString("N"));
+            Directory.CreateDirectory(workPath);
+
+            await UpdateStatusAsync(job.JobId, "running", 10, null, $"Quantizing → {outName}").ConfigureAwait(false);
+            var psi = _python.CreateConvertStartInfo(record.Path, outputPath, workPath, bits);
+            var (code, stdout, stderr) = await _python.RunAsync(psi, ct).ConfigureAwait(false);
+            if (code != 0)
+            {
+                var err = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr;
+                throw new InvalidOperationException(err.Length > 800 ? err[^800..] : err);
+            }
+
+            await UpdateStatusAsync(job.JobId, "running", 90, null, "Registering quantized model").ConfigureAwait(false);
+            var inventory = scope.ServiceProvider.GetRequiredService<ModelInventoryService>();
+            await inventory.EnsureRecordAsync(outputPath, outName, ct).ConfigureAwait(false);
+            _logger.LogInformation("Quantize completed for {ModelId} → {Out}", modelId, outputPath);
         }, cancellationToken).ConfigureAwait(false);
     }
 
@@ -132,8 +166,27 @@ public sealed class ModelJobsService
         ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
         return await CreateAndRunAsync("import", null, async (job, ct) =>
         {
-            await SimulateProgressAsync(job.JobId, ct).ConfigureAwait(false);
-            _logger.LogInformation("Stub import completed for {Path}", sourcePath);
+            var path = Path.GetFullPath(sourcePath.Trim());
+            await UpdateStatusAsync(job.JobId, "running", 20, null, "Validating folder").ConfigureAwait(false);
+            if (!Directory.Exists(path))
+            {
+                throw new InvalidOperationException($"Source path not found: {path}");
+            }
+
+            if (!ExLlamaSharp.Engine.ExLlamaV3WorkerEngine.LooksLikeExl3Directory(path)
+                && !File.Exists(Path.Combine(path, "config.json")))
+            {
+                throw new InvalidOperationException(
+                    "Folder does not look like an EXL3/HF model (need config.json and weights).");
+            }
+
+            await UpdateStatusAsync(job.JobId, "running", 60, null, "Registering model").ConfigureAwait(false);
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var inventory = scope.ServiceProvider.GetRequiredService<ModelInventoryService>();
+            var alias = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            await inventory.EnsureRecordAsync(path, alias, ct).ConfigureAwait(false);
+            await UpdateStatusAsync(job.JobId, "running", 95, null, path).ConfigureAwait(false);
+            _logger.LogInformation("Import completed for {Path}", path);
         }, cancellationToken).ConfigureAwait(false);
     }
 

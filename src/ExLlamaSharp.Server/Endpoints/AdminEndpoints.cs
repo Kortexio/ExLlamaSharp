@@ -71,20 +71,19 @@ public static class AdminEndpoints
         api.MapPost("/backup/restore", RestoreAsync);
         api.MapPost("/restart", RestartAsync);
 
-        // Stubs
-        api.MapGet("/ab", () => Results.Json(new StubListResponse { Message = "A/B tests stub" }, JsonOptions));
-        api.MapGet("/ab/{id:guid}", (Guid id) => Results.Json(new { id, active = false, message = "A/B stub" }, JsonOptions));
-        api.MapPost("/ab", () => Results.Json(new { id = Guid.NewGuid(), message = "A/B create stub" }, JsonOptions));
-        api.MapPost("/ab/vote", () => Results.Json(new { ok = true, message = "A/B vote stub" }, JsonOptions));
+        api.MapGet("/ab", ListAbTestsAsync);
+        api.MapGet("/ab/{id:guid}", GetAbTestAsync);
+        api.MapPost("/ab", CreateAbTestAsync);
+        api.MapPost("/ab/vote", VoteAbTestAsync);
 
-        api.MapGet("/tenants", () => Results.Json(new StubListResponse { Message = "Tenants stub" }, JsonOptions));
-        api.MapGet("/tenants/{id}", (string id) => Results.Json(new { id, name = id, message = "Tenant stub" }, JsonOptions));
-        api.MapPost("/tenants", () => Results.Json(new { id = "new", message = "Tenant create stub" }, JsonOptions));
+        api.MapGet("/tenants", ListTenantsAsync);
+        api.MapGet("/tenants/{id}", GetTenantAsync);
+        api.MapPost("/tenants", CreateTenantAsync);
 
-        api.MapGet("/adapters", () => Results.Json(new StubListResponse { Message = "LoRA adapters stub" }, JsonOptions));
-        api.MapGet("/adapters/{id:guid}", (Guid id) => Results.Json(new { id, message = "Adapter stub" }, JsonOptions));
-        api.MapPost("/adapters", () => Results.Json(new { id = Guid.NewGuid(), message = "Adapter create stub" }, JsonOptions));
-        api.MapDelete("/adapters/{id:guid}", (Guid id) => Results.Json(new { id, deleted = true, message = "Adapter delete stub" }, JsonOptions));
+        api.MapGet("/adapters", ListAdaptersAsync);
+        api.MapGet("/adapters/{id:guid}", GetAdapterAsync);
+        api.MapPost("/adapters", CreateAdapterAsync);
+        api.MapDelete("/adapters/{id:guid}", DeleteAdapterAsync);
 
         return app;
     }
@@ -189,10 +188,21 @@ public static class AdminEndpoints
         }, JsonOptions);
     }
 
-    private static async Task<IResult> GetModelLibraryAsync(AppDbContext db, CancellationToken ct)
+    private static async Task<IResult> GetModelLibraryAsync(
+        HttpContext http,
+        AppDbContext db,
+        SettingsService settings,
+        CancellationToken ct)
     {
+        var filter = await TenantScope.EffectiveFilterAsync(http, settings, ct).ConfigureAwait(false);
         var catalog = await db.ModelLibrary.AsNoTracking().ToListAsync(ct).ConfigureAwait(false);
-        var installed = await db.Models.AsNoTracking().ToListAsync(ct).ConfigureAwait(false);
+        var installedQuery = db.Models.AsNoTracking().AsQueryable();
+        if (filter is not null)
+        {
+            installedQuery = installedQuery.Where(m => m.TenantId == filter || m.Shared);
+        }
+
+        var installed = await installedQuery.ToListAsync(ct).ConfigureAwait(false);
 
         return Results.Json(new
         {
@@ -431,9 +441,20 @@ public static class AdminEndpoints
                 statusCode: StatusCodes.Status404NotFound);
     }
 
-    private static async Task<IResult> ListKeysAsync(AppDbContext db, CancellationToken ct)
+    private static async Task<IResult> ListKeysAsync(
+        HttpContext http,
+        AppDbContext db,
+        SettingsService settings,
+        CancellationToken ct)
     {
-        var keys = await db.ApiKeys.AsNoTracking().OrderBy(k => k.Name).ToListAsync(ct).ConfigureAwait(false);
+        var filter = await TenantScope.EffectiveFilterAsync(http, settings, ct).ConfigureAwait(false);
+        var query = db.ApiKeys.AsNoTracking().AsQueryable();
+        if (filter is not null)
+        {
+            query = query.Where(k => k.TenantId == filter);
+        }
+
+        var keys = await query.OrderBy(k => k.Name).ToListAsync(ct).ConfigureAwait(false);
         return Results.Json(new { data = keys.Select(ToKeyDto) }, JsonOptions);
     }
 
@@ -729,7 +750,263 @@ public static class AdminEndpoints
         return Results.Json(new { restarting = true }, JsonOptions);
     }
 
+    private static async Task<IResult> ListAbTestsAsync(AppDbContext db, CancellationToken ct)
+    {
+        var tests = await db.AbTests.AsNoTracking().OrderByDescending(t => t.CreatedAt).ToListAsync(ct).ConfigureAwait(false);
+        return Results.Json(new { data = tests.Select(ToAbTestDto) }, JsonOptions);
+    }
+
+    private static async Task<IResult> GetAbTestAsync(Guid id, AppDbContext db, CancellationToken ct)
+    {
+        var test = await db.AbTests.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id, ct).ConfigureAwait(false);
+        if (test is null)
+        {
+            return Results.Json(
+                ErrorResponse.Create("A/B test not found", code: "ab_not_found"),
+                statusCode: StatusCodes.Status404NotFound);
+        }
+
+        return Results.Json(ToAbTestDto(test), JsonOptions);
+    }
+
+    private static async Task<IResult> CreateAbTestAsync(CreateAbTestRequest body, AppDbContext db, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(body.Name))
+        {
+            return Results.Json(
+                ErrorResponse.Create("name is required", code: "invalid_name"),
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        if (body.ModelAId == Guid.Empty || body.ModelBId == Guid.Empty)
+        {
+            return Results.Json(
+                ErrorResponse.Create("model_a_id and model_b_id are required", code: "invalid_models"),
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var aExists = await db.Models.AnyAsync(m => m.Id == body.ModelAId, ct).ConfigureAwait(false);
+        var bExists = await db.Models.AnyAsync(m => m.Id == body.ModelBId, ct).ConfigureAwait(false);
+        if (!aExists || !bExists)
+        {
+            return Results.Json(
+                ErrorResponse.Create("One or both models were not found in the library", code: "model_not_found"),
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var test = new AbTest
+        {
+            Name = body.Name.Trim(),
+            ModelAId = body.ModelAId,
+            ModelBId = body.ModelBId,
+            SplitRatio = Math.Clamp(body.SplitRatio ?? 0.5, 0, 1),
+            Active = body.Active ?? true,
+            TenantId = string.IsNullOrWhiteSpace(body.TenantId) ? "default" : body.TenantId.Trim(),
+            CreatedAt = DateTime.UtcNow,
+        };
+        db.AbTests.Add(test);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return Results.Json(ToAbTestDto(test), JsonOptions, statusCode: StatusCodes.Status201Created);
+    }
+
+    private static async Task<IResult> VoteAbTestAsync(
+        AbVoteRequest body,
+        AbTestRouter router,
+        AppDbContext db,
+        CancellationToken ct)
+    {
+        var test = await db.AbTests.AsNoTracking()
+            .FirstOrDefaultAsync(t => t.Id == body.AbTestId, ct)
+            .ConfigureAwait(false);
+        if (test is null)
+        {
+            return Results.Json(
+                ErrorResponse.Create("A/B test not found", code: "ab_not_found"),
+                statusCode: StatusCodes.Status404NotFound);
+        }
+
+        var requestId = string.IsNullOrWhiteSpace(body.RequestId)
+            ? Guid.NewGuid().ToString("N")
+            : body.RequestId.Trim();
+        var route = router.Route(test, requestId);
+
+        return Results.Json(new
+        {
+            ok = true,
+            ab_test_id = route.AbTestId,
+            request_id = requestId,
+            variant = route.Variant,
+            model_id = route.ModelId,
+            preferred = string.IsNullOrWhiteSpace(body.Preferred) ? null : body.Preferred.Trim(),
+        }, JsonOptions);
+    }
+
+    private static async Task<IResult> ListTenantsAsync(AppDbContext db, CancellationToken ct)
+    {
+        var tenants = await db.Tenants.AsNoTracking().OrderBy(t => t.Name).ToListAsync(ct).ConfigureAwait(false);
+        return Results.Json(new { data = tenants.Select(ToTenantDto) }, JsonOptions);
+    }
+
+    private static async Task<IResult> GetTenantAsync(string id, AppDbContext db, CancellationToken ct)
+    {
+        var tenant = await db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id, ct).ConfigureAwait(false);
+        if (tenant is null)
+        {
+            return Results.Json(
+                ErrorResponse.Create("Tenant not found", code: "tenant_not_found"),
+                statusCode: StatusCodes.Status404NotFound);
+        }
+
+        return Results.Json(ToTenantDto(tenant), JsonOptions);
+    }
+
+    private static async Task<IResult> CreateTenantAsync(CreateTenantRequest body, AppDbContext db, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(body.Id) || string.IsNullOrWhiteSpace(body.Name))
+        {
+            return Results.Json(
+                ErrorResponse.Create("id and name are required", code: "invalid_tenant"),
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var id = body.Id.Trim().ToLowerInvariant();
+        if (await db.Tenants.AnyAsync(t => t.Id == id, ct).ConfigureAwait(false))
+        {
+            return Results.Json(
+                ErrorResponse.Create("Tenant id already exists", code: "tenant_exists"),
+                statusCode: StatusCodes.Status409Conflict);
+        }
+
+        var tenant = new Tenant
+        {
+            Id = id,
+            Name = body.Name.Trim(),
+            Subdomain = string.IsNullOrWhiteSpace(body.Subdomain) ? null : body.Subdomain.Trim(),
+            Active = body.Active ?? true,
+            CreatedAt = DateTime.UtcNow,
+            Quota = new TenantQuota { TenantId = id },
+        };
+        db.Tenants.Add(tenant);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return Results.Json(ToTenantDto(tenant), JsonOptions, statusCode: StatusCodes.Status201Created);
+    }
+
+    private static async Task<IResult> ListAdaptersAsync(
+        HttpContext http,
+        LoraAdapterService adapters,
+        SettingsService settings,
+        string? tenant_id,
+        CancellationToken ct)
+    {
+        var filter = tenant_id ?? await TenantScope.EffectiveFilterAsync(http, settings, ct).ConfigureAwait(false);
+        var list = await adapters.ListAsync(filter, ct).ConfigureAwait(false);
+        return Results.Json(new { data = list.Select(ToAdapterDto) }, JsonOptions);
+    }
+
+    private static async Task<IResult> GetAdapterAsync(Guid id, LoraAdapterService adapters, CancellationToken ct)
+    {
+        var adapter = await adapters.GetAsync(id, ct).ConfigureAwait(false);
+        if (adapter is null)
+        {
+            return Results.Json(
+                ErrorResponse.Create("Adapter not found", code: "adapter_not_found"),
+                statusCode: StatusCodes.Status404NotFound);
+        }
+
+        return Results.Json(ToAdapterDto(adapter), JsonOptions);
+    }
+
+    private static async Task<IResult> CreateAdapterAsync(
+        CreateAdapterRequest body,
+        LoraAdapterService adapters,
+        AppDbContext db,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(body.Name))
+        {
+            return Results.Json(
+                ErrorResponse.Create("name is required", code: "invalid_name"),
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        if (body.BaseModelId == Guid.Empty
+            || !await db.Models.AnyAsync(m => m.Id == body.BaseModelId, ct).ConfigureAwait(false))
+        {
+            return Results.Json(
+                ErrorResponse.Create("base_model_id must reference an installed model", code: "model_not_found"),
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var path = string.IsNullOrWhiteSpace(body.Path)
+            ? Path.Combine(adapters.AdaptersDirectory, $"{Guid.NewGuid():N}_{SanitizeFileName(body.Name)}")
+            : body.Path.Trim();
+
+        var entity = await adapters.RegisterAsync(
+                body.BaseModelId,
+                body.Name,
+                path,
+                body.TenantId ?? "default",
+                body.Rank ?? 16,
+                body.Alpha ?? 32,
+                ct)
+            .ConfigureAwait(false);
+
+        return Results.Json(ToAdapterDto(entity), JsonOptions, statusCode: StatusCodes.Status201Created);
+    }
+
+    private static async Task<IResult> DeleteAdapterAsync(Guid id, LoraAdapterService adapters, CancellationToken ct)
+    {
+        var deleted = await adapters.DeleteAsync(id, ct).ConfigureAwait(false);
+        if (!deleted)
+        {
+            return Results.Json(
+                ErrorResponse.Create("Adapter not found", code: "adapter_not_found"),
+                statusCode: StatusCodes.Status404NotFound);
+        }
+
+        return Results.Json(new { deleted = true, id }, JsonOptions);
+    }
+
     // --- mapping helpers ---
+
+    private static string SanitizeFileName(string name)
+    {
+        var safe = string.Join("_", name.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries));
+        return string.IsNullOrWhiteSpace(safe) ? "adapter" : safe;
+    }
+
+    private static AbTestDto ToAbTestDto(AbTest t) => new()
+    {
+        Id = t.Id,
+        Name = t.Name,
+        ModelAId = t.ModelAId,
+        ModelBId = t.ModelBId,
+        SplitRatio = t.SplitRatio,
+        Active = t.Active,
+        TenantId = t.TenantId,
+        CreatedAt = t.CreatedAt,
+    };
+
+    private static TenantDto ToTenantDto(Tenant t) => new()
+    {
+        Id = t.Id,
+        Name = t.Name,
+        Subdomain = t.Subdomain,
+        Active = t.Active,
+        CreatedAt = t.CreatedAt,
+    };
+
+    private static AdapterDto ToAdapterDto(LoraAdapter a) => new()
+    {
+        Id = a.Id,
+        BaseModelId = a.BaseModelId,
+        Name = a.Name,
+        Path = a.Path,
+        Rank = a.Rank,
+        Alpha = a.Alpha,
+        TenantId = a.TenantId,
+        CreatedAt = a.CreatedAt,
+    };
 
     private static SettingsDto ToSettingsDto(AppSettings s) => new()
     {

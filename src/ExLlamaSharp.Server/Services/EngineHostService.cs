@@ -17,6 +17,7 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
     private readonly IConfiguration _configuration;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly object _gate = new();
+    private readonly SemaphoreSlim _loadLock = new(1, 1);
     private IInferenceEngine? _engine;
     private string? _loadedModelPath;
     private Guid? _loadedModelId;
@@ -136,60 +137,105 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
     public async Task LoadAsync(string modelPath, Guid? modelId = null, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(modelPath);
-
-        // Select / recreate engine for this path (mock vs worker vs native).
-        EnsureEngine(modelPath);
-
-        if (_engine!.IsLoaded)
-        {
-            await UnloadAsync(cancellationToken).ConfigureAwait(false);
-            EnsureEngine(modelPath);
-        }
-
+        await _loadLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_engine is ExLlamaV3WorkerEngine worker)
+            EnsureEngine(modelPath);
+
+            if (_engine!.IsLoaded)
             {
-                worker.Options = WorkerOptionsFromSettings();
+                await UnloadAsync(cancellationToken).ConfigureAwait(false);
+                EnsureEngine(modelPath);
             }
 
-            await _engine.LoadAsync(modelPath, cancellationToken).ConfigureAwait(false);
-            _engine.Start();
-        }
-        catch
-        {
+            var settings = await _settings.GetAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                await UnloadAsync(CancellationToken.None).ConfigureAwait(false);
+                _ = new MultiGpuPlanner().BuildPlan(settings);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"Multi-GPU settings invalid: {ex.Message}", ex);
+            }
+
+            var speculative = SpeculativeDecodingOptions.FromSettings(settings);
+            if (speculative.Enabled)
+            {
+                speculative.ValidateOrThrow();
+            }
+
+            try
+            {
+                if (_engine is ExLlamaV3WorkerEngine worker)
+                {
+                    worker.Options = await WorkerOptionsFromSettingsAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                await _engine.LoadAsync(modelPath, cancellationToken).ConfigureAwait(false);
+                _engine.Start();
             }
             catch
             {
-                // keep the original load error
+                try
+                {
+                    await UnloadAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // keep the original load error
+                }
+
+                throw;
             }
 
-            throw;
-        }
-
-        lock (_gate)
-        {
-            _loadedModelPath = modelPath;
-            _loadedModelId = modelId;
-            _restartAttempts = 0;
-        }
-
-        if (modelId is Guid id)
-        {
-            await _settings.UpdateAsync(s =>
+            lock (_gate)
             {
-                s.LastLoadedModelId = id;
-            }, cancellationToken).ConfigureAwait(false);
+                _loadedModelPath = modelPath;
+                _loadedModelId = modelId;
+                _restartAttempts = 0;
+            }
+
+            if (modelId is Guid id)
+            {
+                await _settings.UpdateAsync(s =>
+                {
+                    s.LastLoadedModelId = id;
+                }, cancellationToken).ConfigureAwait(false);
+            }
+
+            _logger.LogInformation(
+                "Loaded model from {Path} via {Engine} (IsMock={IsMock})",
+                modelPath,
+                _engine.GetType().Name,
+                _engine.IsMock);
+        }
+        finally
+        {
+            _loadLock.Release();
+        }
+    }
+
+    /// <summary>Load by library id when A/B routes to a different model than the one currently loaded.</summary>
+    public async Task EnsureModelIdLoadedAsync(Guid modelId, CancellationToken cancellationToken = default)
+    {
+        if (_loadedModelId == modelId && IsLoaded && IsRunning)
+        {
+            return;
         }
 
-        _logger.LogInformation(
-            "Loaded model from {Path} via {Engine} (IsMock={IsMock})",
-            modelPath,
-            _engine.GetType().Name,
-            _engine.IsMock);
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var rec = await db.Models.AsNoTracking()
+            .FirstOrDefaultAsync(m => m.Id == modelId, cancellationToken)
+            .ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Model {modelId} not found in library.");
+
+        if (!Directory.Exists(rec.Path) && !rec.Path.StartsWith("mock://", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"Model path missing: {rec.Path}");
+        }
+
+        await LoadAsync(rec.Path, rec.Id, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task UnloadAsync(CancellationToken cancellationToken = default)
@@ -295,14 +341,37 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
         _ => ExLlamaEngine.Create(_logger, forceMock: false),
     };
 
-    private WorkerEngineOptions WorkerOptionsFromSettings()
+    private WorkerEngineOptions WorkerOptionsFromSettings() =>
+        WorkerOptionsFromSettingsAsync(CancellationToken.None).GetAwaiter().GetResult();
+
+    private async Task<WorkerEngineOptions> WorkerOptionsFromSettingsAsync(CancellationToken cancellationToken)
     {
-        var s = _settings.PeekOrDefault();
+        var s = await _settings.GetAsync(cancellationToken).ConfigureAwait(false);
+        string? draftPath = null;
+        if (s.SpeculativeEnabled && s.DraftModelId is Guid draftId)
+        {
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var draft = await db.Models.AsNoTracking()
+                .FirstOrDefaultAsync(m => m.Id == draftId, cancellationToken)
+                .ConfigureAwait(false);
+            draftPath = draft?.Path;
+            if (string.IsNullOrWhiteSpace(draftPath))
+            {
+                _logger.LogWarning("Speculative decoding enabled but draft model {Id} has no path", draftId);
+            }
+        }
+
         return new WorkerEngineOptions
         {
             MaxNumSeqs = Math.Max(1, s.MaxNumSeqs),
             MaxChunkSize = Math.Max(1, s.MaxChunkSize),
             MaxBatchedTokens = Math.Max(256, s.MaxBatchedTokens),
+            CudaVisibleDevices = s.CudaVisibleDevices,
+            ParallelismMode = s.ParallelismMode ?? "none",
+            SpeculativeEnabled = s.SpeculativeEnabled,
+            DraftModelPath = draftPath,
+            DraftK = SpeculativeDecodingOptions.ClampDraftK(s.DraftK),
         };
     }
 

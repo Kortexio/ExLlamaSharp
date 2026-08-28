@@ -84,6 +84,11 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
             max_num_tokens = maxTokens,
             max_batch_size = maxSeqs,
             max_chunk_size = maxChunk,
+            cuda_visible_devices = _options.CudaVisibleDevices,
+            parallelism_mode = _options.ParallelismMode,
+            speculative_enabled = _options.SpeculativeEnabled,
+            draft_model_path = _options.DraftModelPath,
+            draft_k = _options.DraftK,
         }, cancellationToken).ConfigureAwait(false);
 
         if (!resp.GetProperty("ok").GetBoolean())
@@ -394,6 +399,50 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
         }
 
         return _fallbackTokenizer.Decode(tokens);
+    }
+
+    public async Task LoadAdapterAsync(
+        string path,
+        string? adapterId = null,
+        float scaling = 1f,
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        if (!_loaded)
+        {
+            throw new InvalidOperationException("Load a model before loading a LoRA adapter.");
+        }
+
+        var resp = await _client.SendControlAsync(new
+        {
+            cmd = "load_adapter",
+            path = Path.GetFullPath(path),
+            adapter_id = adapterId ?? Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar)),
+            scaling,
+        }, cancellationToken).ConfigureAwait(false);
+
+        if (!resp.GetProperty("ok").GetBoolean())
+        {
+            var err = resp.TryGetProperty("error", out var e) ? e.GetString() : "load_adapter failed";
+            throw new InvalidOperationException(err);
+        }
+    }
+
+    public async Task UnloadAdapterAsync(string? adapterId = null, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        var resp = await _client.SendControlAsync(new
+        {
+            cmd = "unload_adapter",
+            adapter_id = adapterId,
+        }, cancellationToken).ConfigureAwait(false);
+
+        if (!resp.GetProperty("ok").GetBoolean())
+        {
+            var err = resp.TryGetProperty("error", out var e) ? e.GetString() : "unload_adapter failed";
+            throw new InvalidOperationException(err);
+        }
     }
 
     public void Dispose()

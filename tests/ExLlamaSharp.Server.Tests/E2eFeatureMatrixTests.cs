@@ -294,16 +294,70 @@ public sealed class E2eFeatureMatrixTests
     }
 
     [Fact]
-    public async Task E_Stubs_contract()
+    public async Task E_Ab_tenants_adapters_crud()
     {
-        foreach (var path in new[] { "/api/v1/ab", "/api/v1/tenants", "/api/v1/adapters" })
-        {
-            var resp = await _admin.GetAsync(path);
-            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-            var body = await resp.Content.ReadAsStringAsync();
-            Assert.Contains("stub", body, StringComparison.OrdinalIgnoreCase);
-            Note("E" + path, "pass", "stub contract");
-        }
+        var tenants = await _admin.GetAsync("/api/v1/tenants");
+        Assert.Equal(HttpStatusCode.OK, tenants.StatusCode);
+        var tenantsBody = await tenants.Content.ReadAsStringAsync();
+        Assert.Contains("data", tenantsBody, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("stub", tenantsBody, StringComparison.OrdinalIgnoreCase);
+        Note("E.tenants_list", "pass", "real data");
+
+        var ab = await _admin.GetAsync("/api/v1/ab");
+        Assert.Equal(HttpStatusCode.OK, ab.StatusCode);
+        var abBody = await ab.Content.ReadAsStringAsync();
+        Assert.Contains("data", abBody, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("stub", abBody, StringComparison.OrdinalIgnoreCase);
+        Note("E.ab_list", "pass", "real data");
+
+        var adapters = await _admin.GetAsync("/api/v1/adapters");
+        Assert.Equal(HttpStatusCode.OK, adapters.StatusCode);
+        var adaptersBody = await adapters.Content.ReadAsStringAsync();
+        Assert.Contains("data", adaptersBody, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("stub", adaptersBody, StringComparison.OrdinalIgnoreCase);
+        Note("E.adapters_list", "pass", "real data");
+
+        using var createTenant = new StringContent(
+            """{"id":"e2e-tenant","name":"E2E Tenant"}""",
+            Encoding.UTF8,
+            "application/json");
+        var createdTenant = await _admin.PostAsync("/api/v1/tenants", createTenant);
+        Assert.Equal(HttpStatusCode.Created, createdTenant.StatusCode);
+        Note("E.tenants_create", "pass", "201");
+    }
+
+    [Fact]
+    public async Task E2_Moderation_blocks_when_enabled()
+    {
+        using var enable = new StringContent(
+            """{"content_moderation_enabled":true}""",
+            Encoding.UTF8,
+            "application/json");
+        var patch = await _admin.SendAsync(new HttpRequestMessage(HttpMethod.Patch, "/api/v1/settings") { Content = enable });
+        Assert.True(patch.IsSuccessStatusCode);
+
+        using var ruleBody = new StringContent(
+            """{"pattern":"forbiddenwordxyz","action":"block","category":"test","enabled":true}""",
+            Encoding.UTF8,
+            "application/json");
+        var rule = await _admin.PostAsync("/api/v1/moderation/rules", ruleBody);
+        Assert.Equal(HttpStatusCode.Created, rule.StatusCode);
+
+        using var chat = new StringContent(
+            """{"model":"default","messages":[{"role":"user","content":"please say forbiddenwordxyz now"}]}""",
+            Encoding.UTF8,
+            "application/json");
+        var resp = await _admin.PostAsync("/v1/chat/completions", chat);
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        var body = await resp.Content.ReadAsStringAsync();
+        Assert.Contains("content_filter", body, StringComparison.OrdinalIgnoreCase);
+        Note("E2.moderation", "pass", "400 content_filter");
+
+        using var disable = new StringContent(
+            """{"content_moderation_enabled":false}""",
+            Encoding.UTF8,
+            "application/json");
+        await _admin.SendAsync(new HttpRequestMessage(HttpMethod.Patch, "/api/v1/settings") { Content = disable });
     }
 
     [Fact]

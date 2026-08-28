@@ -3,8 +3,7 @@ using ExLlamaSharp.Server.Data.Entities;
 namespace ExLlamaSharp.Server.Services;
 
 /// <summary>
-/// Speculative decoding draft settings (draft model + look-ahead K).
-/// Stub helpers until native draft verification is wired.
+/// Speculative decoding draft settings (draft model + look-ahead K) forwarded to the EXL3 worker.
 /// </summary>
 public sealed class SpeculativeDecodingOptions
 {

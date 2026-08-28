@@ -34,6 +34,18 @@ public sealed class CompletionRequest
     /// </summary>
     public IReadOnlyList<ChatMessage>? Messages { get; init; }
 
+    /// <summary>Optional LoRA adapter directory (PEFT) applied globally on the worker model.</summary>
+    public string? AdapterPath { get; init; }
+
+    /// <summary>LoRA scaling multiplier.</summary>
+    public float AdapterScaling { get; init; } = 1f;
+
+    /// <summary>OpenAI-style tool definitions (JSON); worker injects into the system prompt.</summary>
+    public string? ToolsJson { get; init; }
+
+    /// <summary>When set, instruct the model to emit JSON matching this schema.</summary>
+    public string? JsonSchema { get; init; }
+
     /// <summary>Optional correlation id for cancel / logging.</summary>
     public Guid? JobId { get; init; }
 }

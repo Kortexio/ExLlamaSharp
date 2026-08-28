@@ -61,16 +61,18 @@ C ABI (`exllamasharp.h`) is the stability boundary — .NET uses source-generate
 5. Native scheduler batches; tokens stream back as SSE chunks if requested.
 6. Audit / webhooks / metrics updated asynchronously.
 
-## Multi-GPU & advanced (stubs → native)
+## Multi-GPU & advanced
 
 Server-side helpers prepare config for the engine:
 
-- `MultiGpuPlanner` — TP / PP / MP from `CudaVisibleDevices` + `ParallelismMode`
-- `SpeculativeDecodingOptions` — draft model + `DraftK`
+- `MultiGpuPlanner` — TP / PP / MP from `CudaVisibleDevices` + `ParallelismMode` (validated; worker receives `CUDA_VISIBLE_DEVICES`)
+- `SpeculativeDecodingOptions` — draft model + `DraftK` (forwarded to EXL3 worker)
 - `ArchitectureDetector` — llama / qwen / mixtral / llava from `config.json`
-- `QuantizationModes` — EXL3, EXL2, INT8, FP8, AWQ, GPTQ, Dynamic
-- `LoraAdapterService` — DB-backed adapter registry
-- `PythonModelTools` — optional convert/pull via external Python
+- `QuantizationModes` — EXL3 convert via `exllamav3.conversion.convert_model`
+- `LoraAdapterService` — DB registry + worker `load_adapter` / `X-Adapter-Id`
+- `AbTestRouter` — consistent-hash A/B + load-on-demand for the selected variant
+- `PythonModelTools` — HF pull + EXL3 convert
+- `EmbeddingService` — ONNX sentence embeddings when `model.onnx` is present
 
 ## Solution layout
 

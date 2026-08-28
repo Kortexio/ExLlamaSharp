@@ -4,7 +4,7 @@ namespace ExLlamaSharp.Server.Services;
 
 /// <summary>
 /// Helpers for tensor / pipeline / model parallelism configuration (TP / PP / MP).
-/// Stub: validates and maps settings; native NCCL wiring happens in exllamasharp.dll.
+/// Validates settings and maps device lists for the EXL3 worker (CUDA_VISIBLE_DEVICES).
 /// </summary>
 public sealed class MultiGpuPlanner
 {

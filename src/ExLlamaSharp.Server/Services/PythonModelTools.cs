@@ -5,7 +5,6 @@ namespace ExLlamaSharp.Server.Services;
 
 /// <summary>
 /// Spawns optional Python helpers for convert / pull workflows.
-/// Stub: builds <see cref="ProcessStartInfo"/> and can start a process when Python is available.
 /// </summary>
 public sealed class PythonModelTools
 {
@@ -68,16 +67,23 @@ public sealed class PythonModelTools
     public ProcessStartInfo CreateConvertStartInfo(
         string inputPath,
         string outputPath,
-        QuantizationMode mode = QuantizationMode.EXL3,
+        string workPath,
         double bits = 4.0)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(inputPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(outputPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workPath);
 
         var python = ResolvePython();
+        var bitsLit = bits.ToString(System.Globalization.CultureInfo.InvariantCulture);
         var args =
-            $"-m exllamasharp_tools.convert --input \"{inputPath}\" --output \"{outputPath}\" " +
-            $"--mode {QuantizationModes.ToWireName(mode)} --bits {bits.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+            $"-m exllamav3.conversion.convert_model -i \"{inputPath}\" -o \"{outputPath}\" -w \"{workPath}\" -b {bitsLit}";
+
+        var convertPy = FindConvertPy(python);
+        if (convertPy is not null)
+        {
+            args = $"\"{convertPy}\" -i \"{inputPath}\" -o \"{outputPath}\" -w \"{workPath}\" -b {bitsLit}";
+        }
 
         return new ProcessStartInfo
         {
@@ -88,6 +94,48 @@ public sealed class PythonModelTools
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+    }
+
+    private static string? FindConvertPy(string pythonExe)
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(pythonExe);
+            if (string.IsNullOrEmpty(dir))
+            {
+                return null;
+            }
+
+            foreach (var candidate in new[]
+                     {
+                         Path.Combine(dir, "convert.py"),
+                         Path.GetFullPath(Path.Combine(dir, "..", "Scripts", "convert.py")),
+                     })
+            {
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        return null;
+    }
+
+    public ProcessStartInfo CreateConvertStartInfo(
+        string inputPath,
+        string outputPath,
+        QuantizationMode mode = QuantizationMode.EXL3,
+        double bits = 4.0)
+    {
+        var work = Path.Combine(Path.GetTempPath(), "exllamasharp-quantize-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(work);
+        _ = mode;
+        return CreateConvertStartInfo(inputPath, outputPath, work, bits);
     }
 
     public ProcessStartInfo CreatePullStartInfo(string repoId, string destinationDir, string? revision = null)
@@ -125,13 +173,12 @@ print(snapshot_download(repo_id=repo, local_dir=dest, revision=rev, token=tok or
     }
 
     /// <summary>
-    /// Starts the process. Stub default: does not wait for completion; caller owns disposal.
-    /// Returns null if the OS cannot start the process.
+    /// Starts the process. Caller owns disposal. Returns null if the OS cannot start the process.
     /// </summary>
-    public Process? StartStub(ProcessStartInfo startInfo)
+    public Process? Start(ProcessStartInfo startInfo)
     {
         ArgumentNullException.ThrowIfNull(startInfo);
-        _logger.LogInformation("Python stub spawn: {File} {Args}", startInfo.FileName, startInfo.Arguments);
+        _logger.LogInformation("Python spawn: {File} {Args}", startInfo.FileName, startInfo.Arguments);
         try
         {
             return Process.Start(startInfo);
@@ -143,7 +190,7 @@ print(snapshot_download(repo_id=repo, local_dir=dest, revision=rev, token=tok or
         }
     }
 
-    public async Task<(int ExitCode, string StdOut, string StdErr)> RunStubAsync(
+    public async Task<(int ExitCode, string StdOut, string StdErr)> RunAsync(
         ProcessStartInfo startInfo,
         CancellationToken cancellationToken = default)
     {

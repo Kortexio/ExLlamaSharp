@@ -8,7 +8,7 @@ namespace ExLlamaSharp.Server.Services;
 
 /// <summary>
 /// LoRA adapter registry against <see cref="AppDbContext"/>.
-/// Upload currently records metadata + saves bytes under ProgramData adapters folder (stub load path).
+/// Metadata + file storage are real; applying adapters at inference time is not wired yet.
 /// </summary>
 public sealed class LoraAdapterService
 {
@@ -59,7 +59,40 @@ public sealed class LoraAdapterService
         return await db.LoraAdapters.AsNoTracking().FirstOrDefaultAsync(a => a.Id == id, cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task<LoraAdapter> UploadStubAsync(
+    public async Task<LoraAdapter> RegisterAsync(
+        Guid baseModelId,
+        string name,
+        string path,
+        string tenantId = "default",
+        int rank = 16,
+        double alpha = 32,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+
+        var entity = new LoraAdapter
+        {
+            Id = Guid.NewGuid(),
+            BaseModelId = baseModelId,
+            Name = name.Trim(),
+            Path = path.Trim(),
+            Rank = rank,
+            Alpha = alpha,
+            TenantId = string.IsNullOrWhiteSpace(tenantId) ? "default" : tenantId,
+            CreatedAt = DateTime.UtcNow,
+        };
+
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        db.LoraAdapters.Add(entity);
+        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        _logger.LogInformation("LoRA adapter registered {Id} → {Path}", entity.Id, entity.Path);
+        return entity;
+    }
+
+    public async Task<LoraAdapter> UploadAsync(
         Guid baseModelId,
         string name,
         Stream content,
@@ -102,7 +135,7 @@ public sealed class LoraAdapterService
         db.LoraAdapters.Add(entity);
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
-        _logger.LogInformation("LoRA adapter stub registered {Id} → {Path}", entity.Id, entity.Path);
+        _logger.LogInformation("LoRA adapter uploaded {Id} → {Path}", entity.Id, entity.Path);
         return entity;
     }
 

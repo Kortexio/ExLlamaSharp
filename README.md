@@ -11,7 +11,7 @@ Inspired by:
 - **ExLlamaV3** — fast EXL3 inference on NVIDIA
 - **Open WebUI** — browser-based administration
 
-**Current release: 1.1.1** (stable). **Beta: 1.2.0-beta** — continuous batching via the ExLlamaV3 worker (GitHub pre-release; not `latest`). Setup.exe bundles the ExLlamaV3 CUDA `.pyd`, worker deps, Python installer and VC++. PyTorch CUDA is downloaded during install. Admin → Models shows a VRAM fit badge (Fits / Tight / Too large).
+**Current release: 1.1.1** (stable). **Beta: 1.2.1-beta** — zero-gaps (A/B, LoRA worker, embeddings ONNX, quantize/import jobs, tools, multi-GPU settings, continuous batching). GitHub pre-release; not `latest`. Setup.exe bundles the ExLlamaV3 CUDA `.pyd`, worker deps, Python installer and VC++. PyTorch CUDA is downloaded during install. Admin → Models shows a VRAM fit badge (Fits / Tight / Too large).
 
 Default after install: **http://127.0.0.1:14563**
 
@@ -70,9 +70,9 @@ Search Hugging Face for `exl3` (many IDs end in `-exl3`). Admin → **Models** s
 | GGUF / llama.cpp | Ollama blobs, LM Studio GGUF, `*.gguf` |
 | Unquantized Hugging Face | FP16 / BF16 / FP32 `.safetensors` without EXL3 |
 | Other quant formats | EXL2, AWQ, GPTQ, bitsandbytes, INT8/FP8 packs that are not EXL3 |
-| Convert-in-place | **Models → Quantize** is simulated only — there is no EXL3 quantizer in this product yet |
+| Convert-in-place | **Models → Quantize** runs ExLlamaV3 `convert.py` when Python/exllamav3 is available |
 
-LoRA adapters can be registered in the UI as **metadata**; they are not applied at generation time.
+LoRA adapters can be registered in the UI/API and applied at generation time via the EXL3 worker (`X-Adapter-Id` or worker `load_adapter`).
 
 Chat uses the tokenizer’s Hugging Face chat template when present (Llama 3 / ChatML fallbacks otherwise).
 
@@ -114,7 +114,7 @@ Firewall rule and Start Menu icon are created by the installer. The service list
 | Backend | When it is used | Notes |
 |---------|-----------------|--------|
 | **ExLlamaV3 worker** | Folder looks like EXL3 (`config.json` + `.safetensors` + tokenizer) and a Python venv is available | Real CUDA path: `tools/exl3_worker/worker.py` → ExLlamaV3. Chat uses the model’s Hugging Face chat template when possible |
-| **Native `exllamasharp_native.dll`** | Optional CUDA/stub build | Scheduler / page table; validates EXL3 directories. Generation still uses the worker for real models |
+| **Native `exllamasharp_native.dll`** | Optional CUDA/stub build | Scheduler / page table / CI. Production text generation is **worker-only** |
 | **Mock engine** | `mock://…`, `ForceMockEngine`, or no worker/DLL | Deterministic fake tokens for CI and UI smoke tests |
 
 Python resolution order: `EXLLAMASHARP_PYTHON`, `exl3-runtime.json`, the app `venv`, or a repo `.venv-exl3`. Set `EXL3_BC_DSA=0` for current ExLlamaV3 workers.
@@ -132,8 +132,8 @@ Use any OpenAI SDK. Point `base_url` at `http://127.0.0.1:14563/v1` and send `Au
 | `GET /v1/models`, `GET /v1/models/{id}` | **Working** |
 | `POST /v1/tokenize`, `POST /v1/detokenize` | **Working** |
 | `GET /v1/metrics` | **Working** (JSON) |
-| `POST /v1/embeddings` | **Stub** — deterministic vectors for client wiring only |
-| Other OpenAI routes (images, audio, …) | **501** OpenAI-shaped error |
+| `POST /v1/embeddings` | **Working** — ONNX sentence-transformers when model present; local fallback otherwise |
+| Other OpenAI routes (images, audio, …) | **501** by design (Media version is separate) |
 
 Auth: API keys with scopes (`chat`, `completions`, `embeddings`, `admin`). Per-key RPM/TPM limits return **429**.
 
@@ -151,10 +151,10 @@ Auth: API keys with scopes (`chat`, `completions`, `embeddings`, `admin`). Per-k
 | Backup / restore | POST | Working (SQLite + settings) |
 | Soft restart | POST `/restart` | Working |
 | About | `GET /about` (public) | Working |
-| A/B tests | `/ab*` | **Stub JSON** |
-| HTTP tenants | `/tenants*` | **Stub** (UI can still write DB tenants) |
-| HTTP LoRA adapters | `/adapters*` | **Stub** (metadata UI only) |
-| Quantize job | `POST /models/quantize` | **Simulated progress** — no real quantizer yet |
+| A/B tests | `/ab*` | Working — CRUD + vote routes via `AbTestRouter` |
+| HTTP tenants | `/tenants*` | Working — SQLite CRUD (request isolation still partial) |
+| HTTP LoRA adapters | `/adapters*` | Working — metadata registry (inference apply not shipped) |
+| Quantize job | `POST /models/quantize` | Working — ExLlamaV3 convert.py when runtime available |
 
 Ops (no API key): `GET /health`, `GET /ready`, `GET /metrics` (Prometheus).
 
@@ -194,7 +194,7 @@ Lists users who can manage the server (username, role, tenant, last active). Cre
 #### Advanced (sidebar toggle)
 
 **Adapters (`/adapters`)**  
-Table of registered LoRA adapters (name, path, rank, alpha). **Metadata only** — applying a LoRA at inference time is not shipped yet.
+Table of registered LoRA adapters (name, path, rank, alpha). Apply at inference with header `X-Adapter-Id` on chat completions (worker loads PEFT LoRA globally).
 
 **Metrics (`/dashboard/metrics`)**  
 Live tokens/sec and job counts. Chart placeholders for TPS / latency. **A/B** tab is UI scaffolding only.
@@ -206,7 +206,7 @@ Live in-memory tail (start/stop), min level, text filter, plus refresh of persis
 Runs `/health` and `/ready`. Component cards (database, engine, inference, disk, …) and a short list of common fixes (no model loaded, missing `nvidia-smi`, port in use, API 401).
 
 **Tenants (`/admin/tenants`)**  
-Create/list tenants in SQLite (id, name, subdomain). HTTP `/api/v1/tenants` remains a stub; isolation at the request layer is not complete.
+Create/list tenants in SQLite (id, name, subdomain). HTTP `/api/v1/tenants` is wired to the same DB; isolation at the request layer is not complete.
 
 #### System
 
@@ -217,8 +217,8 @@ Persisted server settings:
 |-----|----------|
 | Network | Bind address, port, CORS, TLS cert path |
 | Performance | Max sequences, chunk size, batched tokens, GPU memory util, request timeout |
-| Multi-GPU | `CUDA_VISIBLE_DEVICES`, parallelism mode (UI only today) |
-| Speculative | Enable + draft K (UI only today) |
+| Multi-GPU | `CUDA_VISIBLE_DEVICES`, parallelism mode (validated; worker gets device list) |
+| Speculative | Enable + draft model + draft K (forwarded to worker) |
 | Startup | Load last model on startup, models path |
 | Hugging Face | Optional `hf_…` token (also reads `HF_TOKEN`) |
 | Backup | Auto backup schedule (disabled / daily / weekly) |
@@ -253,18 +253,12 @@ Username/password for the Admin UI. Default seed on a fresh database: `admin` / 
 
 ### Still stub / partial
 
-These exist in the UI or HTTP surface but are **not** full production features:
+None for the core EXL3 text product after the zero-gaps initiative. By design (not stubs):
 
-- HTTP A/B testing (`/api/v1/ab*`)
-- HTTP tenants (`/api/v1/tenants*`) — DB rows exist; request isolation is incomplete
-- HTTP LoRA adapters (`/api/v1/adapters*`) — list/register metadata only
-- Quantize jobs — simulated progress (no EXL3 quantizer pipeline)
-- Multi-GPU tensor/pipeline parallelism and speculative decoding — settings only
-- Tools / JSON-schema tool calling — not end-to-end
-- Embeddings — deterministic stub vectors
-- Metrics charts — placeholders
-- OpenAI extras (images, audio, …) — **501**
+- **OpenAI images / audio** — **501**; see the separate Media version plan
+- **Native DLL generate** — worker-only for production text; DLL remains CI / scheduler ABI
 
+A/B tests: create via `/api/v1/ab`, then send `X-Ab-Test-Id` (or `model: "ab:<guid>"`) on chat/completions. The server assigns A/B via consistent hash, may load the selected model when it differs from the one currently on the GPU, tags audit, and returns `X-Ab-Variant`.
 ---
 
 ## Quick start

@@ -22,4 +22,14 @@ public sealed class WorkerEngineOptions
 
     /// <summary>Override Python executable.</summary>
     public string? PythonPath { get; init; }
+
+    /// <summary>Comma-separated CUDA device ids (sets CUDA_VISIBLE_DEVICES for the worker).</summary>
+    public string? CudaVisibleDevices { get; init; }
+
+    /// <summary>Parallelism mode label for logging / worker hints (none|tp|pp|mp).</summary>
+    public string ParallelismMode { get; init; } = "none";
+
+    public bool SpeculativeEnabled { get; init; }
+    public string? DraftModelPath { get; init; }
+    public int DraftK { get; init; } = 5;
 }

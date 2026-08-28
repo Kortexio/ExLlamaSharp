@@ -108,15 +108,15 @@ Requires API key (except `GET /api/v1/about`, which is public for version/GPU di
 | `POST` | `/api/v1/backup/restore` | Restore from ZIP |
 | `POST` | `/api/v1/restart` | Request process restart |
 
-### Stubs (shape reserved)
+| `GET`/`POST` | `/api/v1/ab` | List / create A/B tests |
+| `GET` | `/api/v1/ab/{id}` | Get A/B test |
+| `POST` | `/api/v1/ab/vote` | Preview route assignment (`request_id` + optional `preferred`) |
+| `GET`/`POST` | `/api/v1/tenants` | List / create tenants |
+| `GET` | `/api/v1/tenants/{id}` | Get tenant |
+| `GET`/`POST` | `/api/v1/adapters` | List / register LoRA adapter metadata |
+| `GET`/`DELETE` | `/api/v1/adapters/{id}` | Get / delete adapter |
 
-| Area | Paths |
-|------|--------|
-| A/B tests | `/api/v1/ab`, `/api/v1/ab/{id}`, `/api/v1/ab/vote` |
-| Tenants | `/api/v1/tenants`, `/api/v1/tenants/{id}` |
-| LoRA adapters | `/api/v1/adapters`, `/api/v1/adapters/{id}` |
-
-These return JSON placeholders until fully wired to `AbTestRouter` / tenant services / `LoraAdapterService`.
+OpenAI chat/completions accept `X-Ab-Test-Id` or `model: "ab:<guid>"` to assign a variant (headers `X-Ab-Variant` / `X-Ab-Test-Id` on the response; audit stores `AbTestId`). GPU weights are not swapped automatically.
 
 ---
 

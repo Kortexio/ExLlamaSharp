@@ -176,7 +176,7 @@
         }
         catch (Exception ex)
         {
-            assistant.Text = $"[offline stub] {userText}";
+            assistant.Text = "(stream failed)";
             _error = $"Stream failed: {ex.Message}";
         }
         finally

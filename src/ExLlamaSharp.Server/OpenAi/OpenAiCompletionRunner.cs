@@ -15,6 +15,8 @@ internal sealed class OpenAiRunContext
     public required string CompletionId { get; init; }
     public required OpenAiSseKind SseKind { get; init; }
     public required Func<CompletionResult, long, object> ToJson { get; init; }
+    public Guid? AbTestId { get; init; }
+    public string? AbVariant { get; init; }
 }
 
 /// <summary>Shared stream / non-stream execution for OpenAI completion endpoints.</summary>
@@ -85,7 +87,7 @@ internal static class OpenAiCompletionRunner
 
                     if (usage is not null)
                     {
-                        RecordUsage(http, rateLimiter, audit, run.Endpoint, usage, started);
+                        RecordUsage(http, rateLimiter, audit, run, usage, started);
                     }
                 }
             }, "text/event-stream");
@@ -112,7 +114,7 @@ internal static class OpenAiCompletionRunner
                 return JsonError(completed.Error ?? "Inference failed.", "server_error", "inference_failed", StatusCodes.Status502BadGateway);
             }
 
-            RecordUsage(http, rateLimiter, audit, run.Endpoint, completed, started);
+            RecordUsage(http, rateLimiter, audit, run, completed, started);
             return Results.Json(run.ToJson(completed, created), OpenAiSseWriter.JsonOptions);
         }
         finally
@@ -128,7 +130,7 @@ internal static class OpenAiCompletionRunner
         HttpContext http,
         RateLimiter rateLimiter,
         AuditService audit,
-        string endpoint,
+        OpenAiRunContext run,
         CompletionResult result,
         DateTime started)
     {
@@ -141,7 +143,7 @@ internal static class OpenAiCompletionRunner
         audit.Enqueue(new AuditLog
         {
             Timestamp = DateTime.UtcNow,
-            Endpoint = endpoint,
+            Endpoint = run.Endpoint,
             KeyId = keyId,
             TenantId = http.GetTenantId(),
             PromptTokens = result.PromptTokens,
@@ -149,6 +151,7 @@ internal static class OpenAiCompletionRunner
             StatusCode = 200,
             DurationMs = (long)(DateTime.UtcNow - started).TotalMilliseconds,
             Error = result.Failed ? result.Error : null,
+            AbTestId = run.AbTestId,
         });
     }
 }

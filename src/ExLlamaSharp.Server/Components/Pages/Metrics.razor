@@ -1,7 +1,12 @@
 @page "/dashboard/metrics"
 @inject EngineHostService Engine
 @inject AppDbContext Db
+@inject MetricsHistoryService History
+@inject IHttpClientFactory HttpFactory
+@inject NavigationManager Nav
 @using Microsoft.EntityFrameworkCore
+@using System.Net.Http.Json
+@implements IDisposable
 
 <PageTitle>Metrics — ExLlamaSharp</PageTitle>
 
@@ -21,45 +26,99 @@
         <div class="card"><div class="card-body"><div class="stat-label">Tokens/sec</div><div class="stat-value">@_tps.ToString("0.0")</div></div></div>
         <div class="card"><div class="card-body"><div class="stat-label">Waiting</div><div class="stat-value">@_wait</div></div></div>
         <div class="card"><div class="card-body"><div class="stat-label">Running</div><div class="stat-value">@_run</div></div></div>
+        <div class="card"><div class="card-body"><div class="stat-label">Latency p50 / p95</div><div class="stat-value">@_p50.ToString("0") / @_p95.ToString("0") ms</div></div></div>
     </div>
     <div class="card mb-3">
         <div class="card-body">
-            <h5 class="card-title">Tokens / second (placeholder)</h5>
-            <div class="chart-placeholder">Chart: TPS over time</div>
+            <h5 class="card-title">Tokens / second</h5>
+            <svg viewBox="0 0 400 120" class="chart-svg" role="img" aria-label="TPS chart">
+                @((MarkupString)Sparkline(_tpsSeries, 400, 120, "#0d9488"))
+            </svg>
         </div>
     </div>
     <div class="card">
         <div class="card-body">
-            <h5 class="card-title">Latency (placeholder)</h5>
-            <div class="chart-placeholder">Chart: p50 / p95 latency</div>
+            <h5 class="card-title">Latency (ms)</h5>
+            <svg viewBox="0 0 400 120" class="chart-svg" role="img" aria-label="Latency chart">
+                @((MarkupString)Sparkline(_latSeries, 400, 120, "#0369a1"))
+            </svg>
         </div>
     </div>
 }
 else
 {
+    <div class="card mb-3">
+        <div class="card-body">
+            <h5 class="card-title">Create A/B test</h5>
+            @if (!string.IsNullOrEmpty(_abError))
+            {
+                <p class="text-danger">@_abError</p>
+            }
+            <div class="row g-2 align-items-end">
+                <div class="col-md-3">
+                    <label class="form-label">Name</label>
+                    <input class="form-control" @bind="_abName" />
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Model A</label>
+                    <select class="form-select" @bind="_abModelA">
+                        <option value="">—</option>
+                        @foreach (var m in _models)
+                        {
+                            <option value="@m.Id">@(m.Alias ?? m.Path)</option>
+                        }
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Model B</label>
+                    <select class="form-select" @bind="_abModelB">
+                        <option value="">—</option>
+                        @foreach (var m in _models)
+                        {
+                            <option value="@m.Id">@(m.Alias ?? m.Path)</option>
+                        }
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Split % A</label>
+                    <input class="form-control" type="number" min="0" max="100" @bind="_abSplitPct" />
+                </div>
+                <div class="col-md-1">
+                    <button class="btn btn-primary w-100" @onclick="CreateAbAsync">Add</button>
+                </div>
+            </div>
+        </div>
+    </div>
     <div class="card">
         <div class="card-body p-0">
             <table class="table-clean">
                 <thead>
-                    <tr><th>Name</th><th>Model A</th><th>Model B</th><th>Split</th><th>Active</th></tr>
+                    <tr><th>Name</th><th>Model A</th><th>Model B</th><th>Split</th><th>Active</th><th></th></tr>
                 </thead>
                 <tbody>
                     @if (_tests.Count == 0)
                     {
-                        <tr><td colspan="5" class="text-muted">No A/B tests configured.</td></tr>
+                        <tr><td colspan="6" class="text-muted">No A/B tests configured.</td></tr>
                     }
                     @foreach (var t in _tests)
                     {
                         <tr>
                             <td>@t.Name</td>
-                            <td><code>@t.ModelAId.ToString()[..8]</code></td>
-                            <td><code>@t.ModelBId.ToString()[..8]</code></td>
+                            <td><code>@Short(t.ModelAId)</code></td>
+                            <td><code>@Short(t.ModelBId)</code></td>
                             <td>@((t.SplitRatio * 100).ToString("0"))% A</td>
                             <td>@(t.Active ? "yes" : "no")</td>
+                            <td>
+                                <button class="btn btn-sm btn-outline-secondary" @onclick="() => VoteAsync(t.Id)">Preview route</button>
+                            </td>
                         </tr>
                     }
                 </tbody>
             </table>
+            @if (!string.IsNullOrEmpty(_voteInfo))
+            {
+                <p class="p-3 text-muted mb-0">@_voteInfo</p>
+            }
         </div>
     </div>
 }
@@ -69,9 +128,44 @@ else
     private double _tps;
     private int _wait;
     private int _run;
+    private double _p50;
+    private double _p95;
+    private double[] _tpsSeries = [];
+    private double[] _latSeries = [];
     private List<AbTest> _tests = [];
+    private List<ModelRecord> _models = [];
+    private string _abName = "";
+    private string _abModelA = "";
+    private string _abModelB = "";
+    private int _abSplitPct = 50;
+    private string? _abError;
+    private string? _voteInfo;
+    private PeriodicTimer? _timer;
+    private CancellationTokenSource? _cts;
 
     protected override async Task OnInitializedAsync()
+    {
+        await RefreshAsync();
+        _cts = new CancellationTokenSource();
+        _timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+        _ = PumpAsync(_cts.Token);
+    }
+
+    private async Task PumpAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (_timer is not null && await _timer.WaitForNextTickAsync(ct))
+            {
+                await InvokeAsync(RefreshAsync);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private async Task RefreshAsync()
     {
         try
         {
@@ -82,16 +176,120 @@ else
                 _wait = (int)m.NumJobsWaiting;
                 _run = (int)m.NumJobsRunning;
             }
+
+            History.RecordTps(_tps);
+            _tpsSeries = History.TpsSeries.ToArray();
+            _latSeries = History.LatencySeries.ToArray();
+            _p50 = History.LatencyP50Ms;
+            _p95 = History.LatencyP95Ms;
         }
         catch { }
 
         try
         {
-            _tests = await Db.AbTests.AsNoTracking().OrderByDescending(t => t.Id).Take(50).ToListAsync();
+            _tests = await Db.AbTests.AsNoTracking().OrderByDescending(t => t.CreatedAt).Take(50).ToListAsync();
+            _models = await Db.Models.AsNoTracking().OrderBy(m => m.Alias ?? m.Path).Take(200).ToListAsync();
         }
         catch
         {
             _tests = [];
+            _models = [];
         }
+
+        StateHasChanged();
+    }
+
+    private async Task CreateAbAsync()
+    {
+        _abError = null;
+        if (string.IsNullOrWhiteSpace(_abName) || !Guid.TryParse(_abModelA, out var a) || !Guid.TryParse(_abModelB, out var b))
+        {
+            _abError = "Name and both models are required.";
+            return;
+        }
+
+        try
+        {
+            var client = CreateAdminClient();
+            var resp = await client.PostAsJsonAsync("/api/v1/ab", new
+            {
+                name = _abName.Trim(),
+                model_a_id = a,
+                model_b_id = b,
+                split_ratio = Math.Clamp(_abSplitPct, 0, 100) / 100.0,
+                active = true,
+            });
+            if (!resp.IsSuccessStatusCode)
+            {
+                _abError = await resp.Content.ReadAsStringAsync();
+                return;
+            }
+
+            _abName = "";
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            _abError = ex.Message;
+        }
+    }
+
+    private async Task VoteAsync(Guid id)
+    {
+        try
+        {
+            var client = CreateAdminClient();
+            var resp = await client.PostAsJsonAsync("/api/v1/ab/vote", new { ab_test_id = id, request_id = Guid.NewGuid().ToString("N") });
+            var body = await resp.Content.ReadAsStringAsync();
+            _voteInfo = resp.IsSuccessStatusCode ? body : $"Vote failed: {body}";
+        }
+        catch (Exception ex)
+        {
+            _voteInfo = ex.Message;
+        }
+    }
+
+    private HttpClient CreateAdminClient()
+    {
+        var client = HttpFactory.CreateClient();
+        client.BaseAddress = new Uri(Nav.BaseUri);
+        client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "sk-exllamasharp-dev");
+        return client;
+    }
+
+    private static string Short(Guid id) => id.ToString("N")[..8];
+
+    private static string Sparkline(IReadOnlyList<double> series, int w, int h, string color)
+    {
+        if (series.Count < 2)
+        {
+            return $"<text x='8' y='60' fill='#64748b' font-size='12'>Collecting samples…</text>";
+        }
+
+        var max = Math.Max(1e-6, series.Max());
+        var min = series.Min();
+        var range = Math.Max(1e-6, max - min);
+        var step = (double)(w - 8) / (series.Count - 1);
+        var pts = new System.Text.StringBuilder();
+        for (var i = 0; i < series.Count; i++)
+        {
+            var x = 4 + i * step;
+            var y = h - 8 - (series[i] - min) / range * (h - 16);
+            pts.Append(i == 0 ? "M" : "L");
+            pts.Append(x.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture));
+            pts.Append(' ');
+            pts.Append(y.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture));
+            pts.Append(' ');
+        }
+
+        return $"<path d='{pts}' fill='none' stroke='{color}' stroke-width='2'/>";
+    }
+
+    public void Dispose()
+    {
+        _cts?.Cancel();
+        _timer?.Dispose();
+        _cts?.Dispose();
     }
 }

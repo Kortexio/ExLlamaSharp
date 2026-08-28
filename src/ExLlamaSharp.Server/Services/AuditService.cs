@@ -19,16 +19,26 @@ public sealed class AuditService : BackgroundService
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<AuditService> _logger;
+    private readonly MetricsHistoryService _metrics;
 
-    public AuditService(IServiceScopeFactory scopeFactory, ILogger<AuditService> logger)
+    public AuditService(
+        IServiceScopeFactory scopeFactory,
+        ILogger<AuditService> logger,
+        MetricsHistoryService metrics)
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
+        _metrics = metrics;
     }
 
     public void Enqueue(AuditLog entry)
     {
         ArgumentNullException.ThrowIfNull(entry);
+        if (entry.DurationMs > 0)
+        {
+            _metrics.RecordLatencyMs(entry.DurationMs);
+        }
+
         if (!_channel.Writer.TryWrite(entry))
         {
             _logger.LogWarning("Failed to enqueue audit entry for {Endpoint}", entry.Endpoint);
