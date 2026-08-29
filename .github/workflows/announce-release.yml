@@ -1,0 +1,73 @@
+name: announce-release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print posts without publishing"
+        required: false
+        default: "true"
+      release_tag:
+        description: "Tag for manual dispatch (optional)"
+        required: false
+        default: ""
+      release_body:
+        description: "Body for manual dispatch (optional)"
+        required: false
+        default: ""
+
+jobs:
+  linkedin:
+    if: github.repository == 'Kortexio/ExLlamaSharp'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - name: Publish LinkedIn
+        env:
+          LINKEDIN_CLIENT_ID: ${{ secrets.LINKEDIN_CLIENT_ID }}
+          LINKEDIN_CLIENT_SECRET: ${{ secrets.LINKEDIN_CLIENT_SECRET }}
+          LINKEDIN_REFRESH_TOKEN: ${{ secrets.LINKEDIN_REFRESH_TOKEN }}
+          LINKEDIN_ACCESS_TOKEN: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
+          LINKEDIN_PERSON_URN: ${{ secrets.LINKEDIN_PERSON_URN }}
+          LINKEDIN_ORG_URN: ${{ secrets.LINKEDIN_ORG_URN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.release_tag }}
+          RELEASE_BODY: ${{ github.event.release.body || github.event.inputs.release_body }}
+          REPO_URL: ${{ github.event.repository.html_url }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        run: |
+          if [ -z "$LINKEDIN_PERSON_URN" ] || [ -z "$RELEASE_TAG" ]; then
+            echo "LINKEDIN_PERSON_URN or RELEASE_TAG missing — skipping."
+            exit 0
+          fi
+          if [ -z "$LINKEDIN_REFRESH_TOKEN" ] && [ -z "$LINKEDIN_ACCESS_TOKEN" ]; then
+            echo "LINKEDIN_REFRESH_TOKEN or LINKEDIN_ACCESS_TOKEN missing — skipping."
+            exit 0
+          fi
+          dotnet run --project tools/linkedin-announcer -- post
+
+  devto:
+    if: github.repository == 'Kortexio/ExLlamaSharp'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - name: Publish dev.to
+        env:
+          DEVTO_API_KEY: ${{ secrets.DEVTO_API_KEY }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.release_tag }}
+          RELEASE_BODY: ${{ github.event.release.body || github.event.inputs.release_body }}
+          REPO_URL: ${{ github.event.repository.html_url }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        run: |
+          if [ -z "$DEVTO_API_KEY" ] || [ -z "$RELEASE_TAG" ]; then
+            echo "DEVTO_API_KEY or RELEASE_TAG missing — skipping."
+            exit 0
+          fi
+          dotnet run --project tools/devto-announcer -- post
