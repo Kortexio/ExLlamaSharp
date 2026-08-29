@@ -1,5 +1,5 @@
 @page "/"
-@implements IDisposable
+@implements IAsyncDisposable
 @inject EngineHostService Engine
 @inject SettingsService Settings
 @inject GpuInfoService GpuInfo
@@ -7,6 +7,9 @@
 @inject OnboardingState Onboarding
 @inject NavigationManager Nav
 @using Microsoft.EntityFrameworkCore
+@using Microsoft.AspNetCore.SignalR.Client
+@using System.Text.Json
+@using ExLlamaSharp.Server.Hubs
 
 <PageTitle>Dashboard — ExLlamaSharp</PageTitle>
 
@@ -81,9 +84,26 @@
     <div class="card">
         <div class="card-body">
             <h5 class="card-title">Live metrics (SignalR)</h5>
-            <p class="text-muted small mb-0">
-                Connect to <code>/hubs/dashboard</code> — broadcasts should be throttled (≈1–2s) via <code>DashboardHub</code>.
+            <p class="text-muted small mb-2">
+                Hub <code>/hubs/dashboard</code> · @_hubStatus
+                @if (_liveUtc is DateTime utc)
+                {
+                    <span>· last push @utc.ToLocalTime().ToString("HH:mm:ss")</span>
+                }
             </p>
+            @if (_activeJobs.Count > 0)
+            {
+                <ul class="mb-0 small">
+                    @foreach (var j in _activeJobs)
+                    {
+                        <li><code>@j</code></li>
+                    }
+                </ul>
+            }
+            else
+            {
+                <p class="text-muted small mb-0">No active jobs in last broadcast.</p>
+            }
         </div>
     </div>
 }
@@ -107,6 +127,10 @@
     private int _jobsWaiting;
     private int _jobsRunning;
     private string _vramLabel = "—";
+    private HubConnection? _hub;
+    private string _hubStatus = "connecting…";
+    private DateTime? _liveUtc;
+    private List<string> _activeJobs = [];
 
     protected override async Task OnInitializedAsync()
     {
@@ -125,39 +149,129 @@
         catch { }
 
         await RefreshAsync();
-        _refreshCts = new CancellationTokenSource();
-        _ = RefreshLoopAsync(_refreshCts.Token);
+        await ConnectHubAsync();
     }
 
-    private CancellationTokenSource? _refreshCts;
-
-    private async Task RefreshLoopAsync(CancellationToken ct)
+    private async Task ConnectHubAsync()
     {
         try
         {
-            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
-            while (await timer.WaitForNextTickAsync(ct))
+            _hub = new HubConnectionBuilder()
+                .WithUrl(Nav.ToAbsoluteUri("/hubs/dashboard"))
+                .WithAutomaticReconnect()
+                .Build();
+
+            _hub.On<JsonElement>(DashboardHub.MetricsMethod, payload =>
             {
-                await RefreshAsync();
-                await InvokeAsync(StateHasChanged);
-            }
+                _ = InvokeAsync(() =>
+                {
+                    ApplyLiveMetrics(payload);
+                    StateHasChanged();
+                });
+            });
+
+            _hub.Reconnecting += _ =>
+            {
+                _hubStatus = "reconnecting…";
+                return InvokeAsync(StateHasChanged);
+            };
+            _hub.Reconnected += _ =>
+            {
+                _hubStatus = "live";
+                return _hub.InvokeAsync("SubscribeAsync", "default");
+            };
+            _hub.Closed += _ =>
+            {
+                _hubStatus = "disconnected";
+                return InvokeAsync(StateHasChanged);
+            };
+
+            await _hub.StartAsync();
+            await _hub.InvokeAsync("SubscribeAsync", "default");
+            _hubStatus = "live";
         }
-        catch (OperationCanceledException)
+        catch (Exception ex)
         {
+            _hubStatus = $"unavailable ({ex.Message})";
         }
     }
 
-    public void Dispose()
+    private void ApplyLiveMetrics(JsonElement payload)
     {
-        _refreshCts?.Cancel();
-        _refreshCts?.Dispose();
+        if (payload.TryGetProperty("utc", out var utcEl)
+            && utcEl.ValueKind == JsonValueKind.String
+            && DateTime.TryParse(utcEl.GetString(), out var utc))
+        {
+            _liveUtc = DateTime.SpecifyKind(utc, DateTimeKind.Utc);
+        }
+
+        if (payload.TryGetProperty("tokens_per_second", out var tps))
+        {
+            _tps = tps.GetDouble();
+        }
+
+        if (payload.TryGetProperty("jobs_waiting", out var w))
+        {
+            _jobsWaiting = (int)w.GetInt64();
+        }
+
+        if (payload.TryGetProperty("jobs_running", out var r))
+        {
+            _jobsRunning = (int)r.GetInt64();
+        }
+
+        if (payload.TryGetProperty("model_loaded", out var loaded))
+        {
+            var isLoaded = loaded.GetBoolean();
+            if (isLoaded && Engine.IsRunning)
+            {
+                _statusEmoji = "🟢";
+                _statusText = Engine.Engine.IsMock ? "Running (mock engine)" : "Running";
+            }
+            else if (isLoaded)
+            {
+                _statusEmoji = "🟡";
+                _statusText = "Model loaded, not running";
+            }
+            else
+            {
+                _statusEmoji = "🔴";
+                _statusText = "No model loaded";
+            }
+        }
+
+        _activeJobs = [];
+        if (payload.TryGetProperty("active_jobs", out var jobs) && jobs.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var j in jobs.EnumerateArray())
+            {
+                var id = j.TryGetProperty("job_id", out var jid) ? jid.ToString() : "?";
+                var type = j.TryGetProperty("type", out var t) ? t.GetString() : "?";
+                var status = j.TryGetProperty("status", out var st) ? st.GetString() : "?";
+                var pct = j.TryGetProperty("progress_pct", out var p) ? p.GetDouble() : 0;
+                _activeJobs.Add($"{type} {id[..Math.Min(8, id.Length)]}… {status} {pct:0}%");
+            }
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_hub is not null)
+        {
+            try
+            {
+                await _hub.DisposeAsync();
+            }
+            catch
+            {
+            }
+        }
     }
 
     private async Task<bool> IsFirstRunAsync()
     {
         try
         {
-            // Check if admin user exists
             var admin = await Db.Users.FirstOrDefaultAsync(u => u.Role == "admin");
             if (admin is null)
                 return true;
@@ -173,7 +287,6 @@
         }
         catch
         {
-            // If DB not ready, assume first run
             return true;
         }
     }

@@ -33,6 +33,7 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
     private long _generatedTokens;
     private long _finished;
     private double _lastTps;
+    private bool _visionCapable;
 
     public ExLlamaV3WorkerEngine(ILogger? logger = null, WorkerEngineOptions? options = null)
     {
@@ -57,6 +58,7 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
     public bool IsLoaded => _loaded;
     public bool IsRunning => _running;
     public bool SupportsStreaming => true;
+    public bool SupportsVision => _loaded && _visionCapable;
 
     public static bool IsAvailable(string? repoRoot = null) =>
         WorkerRuntimeLocator.IsAvailable(repoRoot);
@@ -97,18 +99,22 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
             throw new InvalidOperationException(err);
         }
 
+        var visionCapable = resp.TryGetProperty("vision_capable", out var vc) && vc.ValueKind == JsonValueKind.True;
+
         lock (_gate)
         {
             _modelPath = modelPath;
             _loaded = true;
+            _visionCapable = visionCapable;
         }
 
         _logger.LogInformation(
-            "ExLlamaV3WorkerEngine loaded {Path} (max_num_tokens={MaxTokens} max_batch_size={MaxSeqs} max_chunk_size={MaxChunk})",
+            "ExLlamaV3WorkerEngine loaded {Path} (max_num_tokens={MaxTokens} max_batch_size={MaxSeqs} max_chunk_size={MaxChunk} vision_capable={Vision})",
             modelPath,
             maxTokens,
             maxSeqs,
-            maxChunk);
+            maxChunk,
+            visionCapable);
     }
 
     public async Task UnloadAsync(CancellationToken cancellationToken = default)
@@ -119,6 +125,7 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
         {
             _loaded = false;
             _modelPath = null;
+            _visionCapable = false;
             return;
         }
 
@@ -133,6 +140,7 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
 
         _loaded = false;
         _modelPath = null;
+        _visionCapable = false;
     }
 
     public void Start()
@@ -355,7 +363,7 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
     {
         if (!_loaded || !_client.IsAlive)
         {
-            return _fallbackTokenizer.Encode(text);
+            throw new InvalidOperationException("Model/worker not loaded; cannot tokenize with a real tokenizer.");
         }
 
         try
@@ -367,20 +375,25 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
             {
                 return WorkerEvent.ReadIntArray(resp, "tokens");
             }
+
+            var err = resp.TryGetProperty("error", out var e) ? e.GetString() : "tokenize failed";
+            throw new InvalidOperationException(err ?? "tokenize failed");
+        }
+        catch (InvalidOperationException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Worker tokenize failed; using fallback");
+            throw new InvalidOperationException($"Worker tokenize failed: {ex.Message}", ex);
         }
-
-        return _fallbackTokenizer.Encode(text);
     }
 
     public string Detokenize(ReadOnlySpan<int> tokens)
     {
         if (!_loaded || !_client.IsAlive)
         {
-            return _fallbackTokenizer.Decode(tokens);
+            throw new InvalidOperationException("Model/worker not loaded; cannot detokenize with a real tokenizer.");
         }
 
         try
@@ -392,13 +405,18 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
             {
                 return t.GetString() ?? "";
             }
+
+            var err = resp.TryGetProperty("error", out var e) ? e.GetString() : "detokenize failed";
+            throw new InvalidOperationException(err ?? "detokenize failed");
+        }
+        catch (InvalidOperationException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Worker detokenize failed; using fallback");
+            throw new InvalidOperationException($"Worker detokenize failed: {ex.Message}", ex);
         }
-
-        return _fallbackTokenizer.Decode(tokens);
     }
 
     public async Task LoadAdapterAsync(

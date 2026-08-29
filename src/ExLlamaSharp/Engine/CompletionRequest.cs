@@ -19,6 +19,14 @@ public sealed class CompletionRequest
 
     public int TopK { get; init; } = 40;
 
+    public float MinP { get; init; }
+
+    public float PresencePenalty { get; init; }
+
+    public float FrequencyPenalty { get; init; }
+
+    public long? Seed { get; init; }
+
     /// <summary>Higher values are scheduled sooner. Default 0.</summary>
     public int Priority { get; init; }
 
@@ -45,6 +53,12 @@ public sealed class CompletionRequest
 
     /// <summary>When set, instruct the model to emit JSON matching this schema.</summary>
     public string? JsonSchema { get; init; }
+
+    /// <summary>OpenAI tool_choice hint (none|auto|required:name).</summary>
+    public string? ToolChoiceHint { get; init; }
+
+    /// <summary>Data URLs or http(s) image URLs for multimodal chat (vision).</summary>
+    public IReadOnlyList<string>? ImageDataUrls { get; init; }
 
     /// <summary>Optional correlation id for cancel / logging.</summary>
     public Guid? JobId { get; init; }

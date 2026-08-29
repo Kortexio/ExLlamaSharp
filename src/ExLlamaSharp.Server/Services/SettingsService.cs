@@ -99,5 +99,6 @@ public sealed class SettingsService
         DraftModelId = s.DraftModelId,
         DraftK = s.DraftK,
         ModelsPath = s.ModelsPath,
+        EstimatedCostPerMillionTokens = s.EstimatedCostPerMillionTokens,
     };
 }

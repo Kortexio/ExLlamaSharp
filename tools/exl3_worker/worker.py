@@ -145,6 +145,8 @@ class WorkerState:
         self.loras: dict[str, Any] = {}
         self.draft_model_path: str | None = None
         self.draft_k: int = 5
+        self.vision_model = None
+        self.vision_capable: bool = False
 
     @property
     def loaded(self) -> bool:
@@ -179,6 +181,13 @@ def _unload() -> None:
     STATE.sanitizers.clear()
     STATE.prompt_lens.clear()
     STATE.t0.clear()
+    if STATE.vision_model is not None:
+        try:
+            STATE.vision_model.unload()
+        except Exception as ex:
+            _log(f"vision unload: {ex}")
+    STATE.vision_model = None
+    STATE.vision_capable = False
     if STATE.model is not None:
         try:
             STATE.model.unload()
@@ -191,6 +200,7 @@ def _unload() -> None:
     STATE.generator = None
     STATE.model_path = None
     STATE.load_ts = None
+    STATE.draft_model_path = None
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
@@ -232,10 +242,15 @@ def _load(
     max_batch_size = max(1, int(max_batch_size))
     max_chunk_size = max(1, int(max_chunk_size))
 
+    speculative = bool(STATE.draft_model_path)
+    draft_path = STATE.draft_model_path
+    draft_k = max(1, int(STATE.draft_k or 5))
+
     _log(
         f"Loading EXL3 model from {path} "
         f"(max_num_tokens={max_num_tokens} max_batch_size={max_batch_size} "
-        f"max_chunk_size={max_chunk_size})"
+        f"max_chunk_size={max_chunk_size}"
+        f"{f' speculative draft={draft_path} k={draft_k}' if speculative else ''})"
     )
     t0 = time.perf_counter()
     config = Config.from_directory(path)
@@ -243,7 +258,20 @@ def _load(
     cache = Cache(model, max_num_tokens=max_num_tokens)
     model.load()
     tokenizer = Tokenizer.from_config(config)
-    generator = Generator(
+
+    draft_model = None
+    draft_cache = None
+    if speculative and draft_path:
+        draft_path = str(Path(draft_path).resolve())
+        if not Path(draft_path).is_dir():
+            raise FileNotFoundError(f"Draft model directory not found: {draft_path}")
+        _log(f"Loading draft model from {draft_path}")
+        draft_config = Config.from_directory(draft_path)
+        draft_model = Model.from_config(draft_config)
+        draft_cache = Cache(draft_model, max_num_tokens=max_num_tokens)
+        draft_model.load()
+
+    gen_kwargs = dict(
         model=model,
         cache=cache,
         tokenizer=tokenizer,
@@ -251,31 +279,158 @@ def _load(
         max_chunk_size=max_chunk_size,
     )
 
+    if draft_model is not None:
+        # Probe Generator signature — draft kwargs vary across exllamav3 versions.
+        draft_attempts = [
+            dict(draft_model=draft_model, draft_cache=draft_cache, draft_k=draft_k),
+            dict(draft_model=draft_model, draft_cache=draft_cache, num_draft_tokens=draft_k),
+            dict(draft_model=draft_model, draft_cache=draft_cache),
+        ]
+        last_type_error: TypeError | None = None
+        generator = None
+        for extra in draft_attempts:
+            try:
+                generator = Generator(**gen_kwargs, **extra)
+                _log(f"Generator accepted speculative kwargs: {list(extra.keys())}")
+                break
+            except TypeError as te:
+                last_type_error = te
+                continue
+        if generator is None:
+            raise RuntimeError(
+                "speculative_enabled but exllamav3 Generator does not accept draft model kwargs "
+                f"(tried draft_model/draft_cache/draft_k). Last TypeError: {last_type_error}"
+            )
+    else:
+        generator = Generator(**gen_kwargs)
+
+    # Optional vision tower (VLM). Failure keeps text-only load honest.
+    vision_model = None
+    vision_capable = False
+    try:
+        vision_model = Model.from_config(config, component="vision")
+        vision_model.load()
+        vision_capable = True
+        _log("Vision component loaded (multimodal capable)")
+    except Exception as ex:
+        vision_model = None
+        vision_capable = False
+        _log(f"No vision component (text-only): {ex}")
+
     STATE.config = config
     STATE.model = model
     STATE.cache = cache
     STATE.tokenizer = tokenizer
     STATE.generator = generator
+    STATE.vision_model = vision_model
+    STATE.vision_capable = vision_capable
     STATE.model_path = path
     STATE.max_num_tokens = max_num_tokens
     STATE.max_batch_size = max_batch_size
     STATE.max_chunk_size = max_chunk_size
     STATE.load_ts = time.time()
-    _log(f"Loaded in {time.perf_counter() - t0:.2f}s")
+    _log(f"Loaded in {time.perf_counter() - t0:.2f}s vision_capable={vision_capable}")
 
 
-def _make_sampler(temperature: float, top_p: float, top_k: int = 0):
+_MAX_IMAGE_BYTES = 16 * 1024 * 1024
+
+
+def _load_pil_image(url_or_data: str):
+    """Decode data: URL or fetch http(s) into a PIL Image."""
+    import base64
+    import io
+    import urllib.request
+
+    from PIL import Image
+
+    s = (url_or_data or "").strip()
+    if not s:
+        raise ValueError("empty image url")
+
+    if s.startswith("data:"):
+        # data:image/png;base64,....
+        comma = s.find(",")
+        if comma < 0:
+            raise ValueError("invalid data URL")
+        header = s[:comma]
+        payload = s[comma + 1 :]
+        if ";base64" not in header:
+            raise ValueError("only base64 data URLs are supported")
+        raw = base64.b64decode(payload, validate=False)
+        if len(raw) > _MAX_IMAGE_BYTES:
+            raise ValueError(f"image exceeds {_MAX_IMAGE_BYTES} bytes")
+        return Image.open(io.BytesIO(raw)).convert("RGB")
+
+    if s.startswith("http://") or s.startswith("https://"):
+        req = urllib.request.Request(s, headers={"User-Agent": "ExLlamaSharp-exl3-worker/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read(_MAX_IMAGE_BYTES + 1)
+        if len(raw) > _MAX_IMAGE_BYTES:
+            raise ValueError(f"image exceeds {_MAX_IMAGE_BYTES} bytes")
+        return Image.open(io.BytesIO(raw)).convert("RGB")
+
+    # Local filesystem path
+    p = Path(s)
+    if p.is_file():
+        return Image.open(p).convert("RGB")
+
+    raise ValueError(f"unsupported image reference (need data:/http(s):/path): {s[:80]}")
+
+
+def _encode_images(urls: list[str]) -> list[Any]:
+    if not STATE.vision_capable or STATE.vision_model is None or STATE.tokenizer is None:
+        raise RuntimeError(
+            "vision_not_supported: model has no loaded vision component. "
+            "Load an EXL3 VLM (e.g. Qwen3-VL / Gemma VL)."
+        )
+    embeddings = []
+    for u in urls:
+        pil = _load_pil_image(str(u))
+        ie = STATE.vision_model.get_image_embeddings(tokenizer=STATE.tokenizer, image=pil)
+        embeddings.append(ie)
+    return embeddings
+
+
+def _make_sampler(
+    temperature: float,
+    top_p: float,
+    top_k: int = 0,
+    min_p: float = 0.0,
+    presence_penalty: float = 0.0,
+    frequency_penalty: float = 0.0,
+    seed: int | None = None,
+):
     from exllamav3.generator.sampler import ComboSampler
 
     temp = float(temperature)
     if temp <= 0:
         return ComboSampler(temperature=0.0, top_k=1, top_p=1.0)
-    return ComboSampler(
+    kwargs = dict(
         temperature=temp,
         top_p=float(top_p) if top_p > 0 else 1.0,
         top_k=int(top_k) if top_k else 0,
-        min_p=0.0,
+        min_p=float(min_p) if min_p else 0.0,
     )
+    want_penalties = abs(float(presence_penalty or 0.0)) > 1e-9 or abs(float(frequency_penalty or 0.0)) > 1e-9
+    want_seed = seed is not None
+    try:
+        full = dict(kwargs)
+        if want_penalties:
+            full["presence_penalty"] = float(presence_penalty or 0.0)
+            full["frequency_penalty"] = float(frequency_penalty or 0.0)
+        if want_seed:
+            full["seed"] = int(seed)
+        return ComboSampler(**full)
+    except TypeError as te:
+        if want_penalties or want_seed:
+            raise RuntimeError(
+                "Sampler rejected presence_penalty/frequency_penalty/seed "
+                f"(this exllamav3 ComboSampler build does not support them): {te}"
+            ) from te
+        return ComboSampler(**kwargs)
+
+
+_ADAPTER_LOCK = threading.Lock()
 
 
 def _stop_conditions(stop: Any) -> list:
@@ -452,15 +607,40 @@ def _enqueue(req_id: Any, prompt: str, msg: dict[str, Any]) -> None:
     if not STATE.loaded or STATE.generator is None or STATE.tokenizer is None:
         raise RuntimeError("No model loaded")
 
+    images = msg.get("images")
+    image_embeddings: list[Any] = []
+    if isinstance(images, list) and len(images) > 0:
+        image_embeddings = _encode_images([str(u) for u in images if u])
+        placeholders = "\n".join(ie.text_alias for ie in image_embeddings) + "\n"
+        prompt = placeholders + str(prompt)
+
+    seed_raw = msg.get("seed")
+    seed = int(seed_raw) if seed_raw is not None else None
     sampler = _make_sampler(
         float(msg.get("temperature", 0.7)),
         float(msg.get("top_p", 0.9)),
         int(msg.get("top_k") or 0),
+        float(msg.get("min_p") or 0.0),
+        float(msg.get("presence_penalty") or 0.0),
+        float(msg.get("frequency_penalty") or 0.0),
+        seed,
     )
     stops = _stop_conditions(msg.get("stop"))
-    input_ids = STATE.tokenizer.encode(prompt, encode_special_tokens=True)
+    encode_kwargs: dict[str, Any] = dict(encode_special_tokens=True)
+    if image_embeddings:
+        encode_kwargs["embeddings"] = image_embeddings
+    try:
+        input_ids = STATE.tokenizer.encode(prompt, **encode_kwargs)
+    except TypeError:
+        if image_embeddings:
+            raise RuntimeError(
+                "vision_not_supported: tokenizer.encode does not accept embeddings= "
+                "(upgrade exllamav3 multimodal build)"
+            )
+        input_ids = STATE.tokenizer.encode(prompt, encode_special_tokens=True)
+
     n_prompt = _prompt_len(input_ids)
-    kwargs = dict(
+    kwargs: dict[str, Any] = dict(
         input_ids=input_ids,
         max_new_tokens=int(msg.get("max_new_tokens") or 256),
         sampler=sampler,
@@ -468,10 +648,21 @@ def _enqueue(req_id: Any, prompt: str, msg: dict[str, Any]) -> None:
         decode_special_tokens=False,
         identifier=req_id,
     )
+    if image_embeddings:
+        kwargs["embeddings"] = image_embeddings
     try:
         job = Job(**kwargs, stop_on_loop=(16, 3))
     except TypeError:
-        job = Job(**kwargs)
+        try:
+            job = Job(**kwargs)
+        except TypeError as te:
+            if image_embeddings:
+                raise RuntimeError(
+                    f"vision_not_supported: Job rejected embeddings= ({te})"
+                ) from te
+            # strip embeddings and retry text-only only if we somehow got here without images
+            kwargs.pop("embeddings", None)
+            job = Job(**kwargs)
 
     STATE.jobs[req_id] = job
     STATE.sanitizers[req_id] = _StreamSanitizer()
@@ -640,6 +831,7 @@ def handle(msg: dict[str, Any]) -> None:
                 finished=STATE.finished,
                 load_ts=STATE.load_ts,
                 is_mock=False,
+                vision_capable=bool(STATE.vision_capable),
                 **st,
             )
             return
@@ -662,20 +854,15 @@ def handle(msg: dict[str, Any]) -> None:
             if msg.get("speculative_enabled"):
                 draft = msg.get("draft_model_path")
                 draft_k = int(msg.get("draft_k") or 5)
-                if draft:
-                    _log(
-                        f"Speculative decoding requested draft={draft} k={draft_k} — "
-                        "applied when ExLlamaV3 Generator supports draft; otherwise ignored with warning"
-                    )
-                    try:
-                        # Best-effort: stash for future Generator kwargs; current ExLlamaV3 Job API may not expose draft.
-                        STATE.draft_model_path = str(draft)
-                        STATE.draft_k = draft_k
-                    except Exception:
-                        pass
-                else:
+                if not draft:
                     _err("speculative_enabled requires draft_model_path", req_id)
                     return
+                STATE.draft_model_path = str(draft)
+                STATE.draft_k = draft_k
+                _log(f"Speculative decoding enabled draft={draft} k={draft_k}")
+            else:
+                STATE.draft_model_path = None
+                STATE.draft_k = 5
             _load(path, max_tok, max_batch, max_chunk)
             _ok(
                 req_id,
@@ -684,6 +871,8 @@ def handle(msg: dict[str, Any]) -> None:
                 max_num_tokens=STATE.max_num_tokens,
                 max_batch_size=STATE.max_batch_size,
                 max_chunk_size=STATE.max_chunk_size,
+                speculative=bool(STATE.draft_model_path),
+                vision_capable=bool(STATE.vision_capable),
             )
             return
 
@@ -768,40 +957,54 @@ def handle(msg: dict[str, Any]) -> None:
             if not STATE.loaded:
                 _err("No model loaded", req_id)
                 return
-            adapter_path = msg.get("adapter_path")
-            if adapter_path:
+            images = msg.get("images")
+            if isinstance(images, list) and len(images) > 0 and not STATE.vision_capable:
+                _err(
+                    "vision_not_supported: loaded model has no vision component. "
+                    "Load an EXL3 VLM (Qwen3-VL, Gemma VL, etc.).",
+                    req_id,
+                    type="vision_not_supported",
+                )
+                return
+            # LoRA: ExLlamaV3 applies adapters globally — serialize swaps vs concurrent submits.
+            with _ADAPTER_LOCK:
+                adapter_path = msg.get("adapter_path")
                 try:
                     from exllamav3.model.lora import LoRA
-                    aid = str(msg.get("adapter_id") or Path(adapter_path).name)
-                    scaling = float(msg.get("adapter_scaling") or msg.get("scaling") or 1.0)
-                    if aid not in STATE.loras:
-                        STATE.loras[aid] = LoRA.from_directory(
-                            STATE.model, str(Path(adapter_path).resolve()), lora_scaling=scaling
-                        )
+
+                    if adapter_path:
+                        aid = str(msg.get("adapter_id") or Path(adapter_path).name)
+                        scaling = float(msg.get("adapter_scaling") or msg.get("scaling") or 1.0)
+                        for key in list(STATE.loras.keys()):
+                            if key != aid:
+                                try:
+                                    STATE.loras[key].unload()
+                                except Exception as ex:
+                                    _log(f"unload previous lora {key}: {ex}")
+                                del STATE.loras[key]
+                        if aid not in STATE.loras:
+                            STATE.loras[aid] = LoRA.from_directory(
+                                STATE.model, str(Path(adapter_path).resolve()), lora_scaling=scaling
+                            )
+                    else:
+                        _unload_loras()
                 except Exception as ex:
                     _err(f"adapter load failed: {ex}", req_id)
                     return
-            schema = msg.get("json_schema")
-            messages = _normalize_messages(msg.get("messages"))
-            prompt = msg.get("prompt")
-            if messages:
-                if schema:
-                    messages = list(messages)
-                    messages.insert(
-                        0,
-                        {
-                            "role": "system",
-                            "content": "Respond with JSON only matching this schema:\n" + str(schema),
-                        },
-                    )
-                prompt = _format_messages(messages)
-            elif prompt is not None and schema:
-                prompt = "Respond with JSON only matching this schema:\n" + str(schema) + "\n\n" + str(prompt)
-            if prompt is None:
-                _err("prompt or messages required", req_id)
-                return
-            _enqueue(req_id, str(prompt), msg)
-            _ok(req_id, accepted=True, streaming=True)
+                messages = _normalize_messages(msg.get("messages"))
+                prompt = msg.get("prompt")
+                if messages:
+                    prompt = _format_messages(messages)
+                if prompt is None:
+                    _err("prompt or messages required", req_id)
+                    return
+                try:
+                    _enqueue(req_id, str(prompt), msg)
+                except Exception as ex:
+                    err_type = "vision_not_supported" if "vision_not_supported" in str(ex) else type(ex).__name__
+                    _err(str(ex), req_id, type=err_type)
+                    return
+                _ok(req_id, accepted=True, streaming=True)
             return
 
         _err(f"unknown cmd: {cmd}", req_id)

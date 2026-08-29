@@ -1,5 +1,7 @@
 @page "/adapters"
 @inject AppDbContext Db
+@inject IHttpClientFactory HttpClientFactory
+@inject NavigationManager Nav
 @using Microsoft.EntityFrameworkCore
 
 <PageTitle>Adapters — ExLlamaSharp</PageTitle>
@@ -9,16 +11,55 @@
     <p>Registered adapters for fine-tuned inference.</p>
 </div>
 
+<div class="card mb-3">
+    <div class="card-body">
+        <h5 class="card-title">Register adapter</h5>
+        <div class="form-grid">
+            <div>
+                <label class="form-label">Name</label>
+                <input class="form-control" @bind="_name" />
+            </div>
+            <div>
+                <label class="form-label">Path</label>
+                <input class="form-control" @bind="_path" placeholder="D:\adapters\my-lora" />
+            </div>
+            <div>
+                <label class="form-label">Base model</label>
+                <select class="form-select" @bind="_baseModelId">
+                    <option value="">—</option>
+                    @foreach (var m in _models)
+                    {
+                        <option value="@m.Id">@(m.Alias ?? m.Path)</option>
+                    }
+                </select>
+            </div>
+            <div>
+                <label class="form-label">Rank</label>
+                <input type="number" class="form-control" @bind="_rank" />
+            </div>
+            <div>
+                <label class="form-label">Alpha</label>
+                <input type="number" step="0.1" class="form-control" @bind="_alpha" />
+            </div>
+            <button class="btn btn-primary" disabled="@_busy" @onclick="RegisterAsync">Register</button>
+        </div>
+        @if (!string.IsNullOrEmpty(_msg))
+        {
+            <div class="alert-soft mt-3">@_msg</div>
+        }
+    </div>
+</div>
+
 <div class="card">
     <div class="card-body p-0">
         <table class="table-clean">
             <thead>
-                <tr><th>Name</th><th>Path</th><th>Rank</th><th>Alpha</th><th>Created</th></tr>
+                <tr><th>Name</th><th>Path</th><th>Rank</th><th>Alpha</th><th>Created</th><th></th></tr>
             </thead>
             <tbody>
                 @if (_items.Count == 0)
                 {
-                    <tr><td colspan="5" class="text-muted">No adapters yet.</td></tr>
+                    <tr><td colspan="6" class="text-muted">No adapters yet.</td></tr>
                 }
                 @foreach (var a in _items)
                 {
@@ -28,6 +69,9 @@
                         <td>@a.Rank</td>
                         <td>@a.Alpha</td>
                         <td>@a.CreatedAt.ToLocalTime().ToString("g")</td>
+                        <td>
+                            <button class="btn btn-sm btn-outline-danger" disabled="@_busy" @onclick="() => DeleteAsync(a.Id)">Delete</button>
+                        </td>
                     </tr>
                 }
             </tbody>
@@ -37,16 +81,106 @@
 
 @code {
     private List<LoraAdapter> _items = [];
+    private List<ModelRecord> _models = [];
+    private string _name = "";
+    private string _path = "";
+    private string _baseModelId = "";
+    private int _rank = 16;
+    private double _alpha = 32;
+    private bool _busy;
+    private string? _msg;
 
-    protected override async Task OnInitializedAsync()
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private HttpClient CreateApi()
+    {
+        var client = HttpClientFactory.CreateClient("local-api");
+        client.BaseAddress ??= new Uri(Nav.BaseUri);
+        return client;
+    }
+
+    private async Task ReloadAsync()
     {
         try
         {
             _items = await Db.LoraAdapters.AsNoTracking().OrderByDescending(x => x.CreatedAt).Take(100).ToListAsync();
+            _models = await Db.Models.AsNoTracking().OrderBy(m => m.Alias ?? m.Path).Take(200).ToListAsync();
         }
         catch
         {
             _items = [];
+            _models = [];
+        }
+    }
+
+    private async Task RegisterAsync()
+    {
+        _busy = true;
+        _msg = null;
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_name) || !Guid.TryParse(_baseModelId, out var baseId))
+            {
+                _msg = "Name and base model are required.";
+                return;
+            }
+
+            var client = CreateApi();
+            var resp = await client.PostAsJsonAsync("/api/v1/adapters", new
+            {
+                name = _name.Trim(),
+                path = string.IsNullOrWhiteSpace(_path) ? null : _path.Trim(),
+                base_model_id = baseId,
+                rank = _rank,
+                alpha = _alpha,
+            });
+            var body = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode)
+            {
+                _msg = body;
+                return;
+            }
+
+            _name = "";
+            _path = "";
+            _msg = "Adapter registered.";
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _msg = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task DeleteAsync(Guid id)
+    {
+        _busy = true;
+        _msg = null;
+        try
+        {
+            var client = CreateApi();
+            var resp = await client.DeleteAsync($"/api/v1/adapters/{id}");
+            var body = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode)
+            {
+                _msg = body;
+                return;
+            }
+
+            _msg = "Deleted.";
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _msg = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
         }
     }
 }

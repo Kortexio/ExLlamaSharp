@@ -27,10 +27,12 @@ public sealed class E2eHostFixture : IDisposable
         DataRoot = Path.Combine(Path.GetTempPath(), "ExLlamaSharp-e2e-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(DataRoot);
         Environment.SetEnvironmentVariable("EXLLAMASHARP_DATA_ROOT", DataRoot);
+        Environment.SetEnvironmentVariable("EXLLAMASHARP_ALLOW_EMBEDDING_FALLBACK", "1");
 
         Factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseSetting("ExLlamaSharp:ForceMockEngine", "true");
+            Environment.SetEnvironmentVariable("EXLLAMASHARP_ALLOW_EMBEDDING_FALLBACK", "1");
         });
         // Force host start so DbInitializer seeds before tests run.
         using var warmup = Factory.CreateClient();
@@ -63,6 +65,7 @@ public sealed class E2eHostFixture : IDisposable
         }
 
         Environment.SetEnvironmentVariable("EXLLAMASHARP_DATA_ROOT", null);
+        Environment.SetEnvironmentVariable("EXLLAMASHARP_ALLOW_EMBEDDING_FALLBACK", null);
     }
 }
 

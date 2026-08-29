@@ -11,7 +11,7 @@ Inspired by:
 - **ExLlamaV3** — fast EXL3 inference on NVIDIA
 - **Open WebUI** — browser-based administration
 
-**Current release: 1.1.1** (stable). **Beta: 1.2.1-beta** — zero-gaps (A/B, LoRA worker, embeddings ONNX, quantize/import jobs, tools, multi-GPU settings, continuous batching). GitHub pre-release; not `latest`. Setup.exe bundles the ExLlamaV3 CUDA `.pyd`, worker deps, Python installer and VC++. PyTorch CUDA is downloaded during install. Admin → Models shows a VRAM fit badge (Fits / Tight / Too large).
+**Current release: 1.2.1** — product-final (4 bars at 100%): Core EXL3 OpenAI chat, Models/Jobs/Keys, Admin avançado (LoRA, speculative, multi-GPU honesty, webhooks, tenants), Agentic tools + vision multimodal chat. OpenAI **images/audio generation** remain **501** (separate media track). Setup.exe bundles the ExLlamaV3 CUDA `.pyd`, worker deps, Python installer and VC++. PyTorch CUDA is downloaded during install. Admin → Models shows a VRAM fit badge (Fits / Tight / Too large; estimate only).
 
 Default after install: **http://127.0.0.1:14563**
 
@@ -132,7 +132,7 @@ Use any OpenAI SDK. Point `base_url` at `http://127.0.0.1:14563/v1` and send `Au
 | `GET /v1/models`, `GET /v1/models/{id}` | **Working** |
 | `POST /v1/tokenize`, `POST /v1/detokenize` | **Working** |
 | `GET /v1/metrics` | **Working** (JSON) |
-| `POST /v1/embeddings` | **Working** — ONNX sentence-transformers when model present; local fallback otherwise |
+| `POST /v1/embeddings` | **Working** — ONNX required; **503** if missing (CI: `EXLLAMASHARP_ALLOW_EMBEDDING_FALLBACK=1`) |
 | Other OpenAI routes (images, audio, …) | **501** by design (Media version is separate) |
 
 Auth: API keys with scopes (`chat`, `completions`, `embeddings`, `admin`). Per-key RPM/TPM limits return **429**.
@@ -152,9 +152,9 @@ Auth: API keys with scopes (`chat`, `completions`, `embeddings`, `admin`). Per-k
 | Soft restart | POST `/restart` | Working |
 | About | `GET /about` (public) | Working |
 | A/B tests | `/ab*` | Working — CRUD + vote routes via `AbTestRouter` |
-| HTTP tenants | `/tenants*` | Working — SQLite CRUD (request isolation still partial) |
-| HTTP LoRA adapters | `/adapters*` | Working — metadata registry (inference apply not shipped) |
-| Quantize job | `POST /models/quantize` | Working — ExLlamaV3 convert.py when runtime available |
+| HTTP tenants | `/tenants*` | Working — SQLite CRUD; with MultiTenancy on, models/keys/adapters/inference are tenant-scoped |
+| HTTP LoRA adapters | `/adapters*` | Working — registry + apply via `X-Adapter-Id` (one active adapter globally on the loaded model) |
+| Quantize job | `POST /models/quantize` | Working — ExLlamaV3 convert.py when runtime available; also **Models → Quantize** in Admin UI |
 
 Ops (no API key): `GET /health`, `GET /ready`, `GET /metrics` (Prometheus).
 
@@ -194,10 +194,13 @@ Lists users who can manage the server (username, role, tenant, last active). Cre
 #### Advanced (sidebar toggle)
 
 **Adapters (`/adapters`)**  
-Table of registered LoRA adapters (name, path, rank, alpha). Apply at inference with header `X-Adapter-Id` on chat completions (worker loads PEFT LoRA globally).
+Register/delete LoRA adapters (name, path). Apply at inference with header `X-Adapter-Id` on chat completions (worker loads one PEFT LoRA globally on the model).
 
 **Metrics (`/dashboard/metrics`)**  
-Live tokens/sec and job counts. Chart placeholders for TPS / latency. **A/B** tab is UI scaffolding only.
+Live tokens/sec and job counts. **A/B** tab creates tests and records votes; traffic is tagged on audit.
+
+**API Guide (`/api`)**  
+Quick reference for `/v1` and `/api/v1` endpoints.
 
 **Logs (`/logs`)**  
 Live in-memory tail (start/stop), min level, text filter, plus refresh of persisted audit rows.
@@ -253,13 +256,20 @@ Username/password for the Admin UI. Default seed on a fresh database: `admin` / 
 
 ### Still stub / partial
 
-None for the core EXL3 text product after the zero-gaps initiative. By design (not stubs):
+By design (not product gaps for the EXL3 text + vision chat product):
 
-- **OpenAI images / audio** — **501**; see the separate Media version plan
+- **OpenAI images / audio generation** — **501**; separate Media track
 - **Native DLL generate** — worker-only for production text; DLL remains CI / scheduler ABI
+- **MCP / hosted ReAct agent** — not embedded; use OpenAI `tools` / `tool_calls` with your own agent loop
+- **Multi-GPU TP/PP/MP** — not supported by the EXL3 worker; Settings reject those modes. Multi-GPU visibility via `CUDA_VISIBLE_DEVICES` only
 
 A/B tests: create via `/api/v1/ab`, then send `X-Ab-Test-Id` (or `model: "ab:<guid>"`) on chat/completions. The server assigns A/B via consistent hash, may load the selected model when it differs from the one currently on the GPU, tags audit, and returns `X-Ab-Variant`.
----
+
+**Embeddings:** require ONNX under `%ProgramData%\ExLlamaSharp\embeddings\all-MiniLM-L6-v2\model.onnx` (dim 384). Without it, `/v1/embeddings` returns **503** unless `EXLLAMASHARP_ALLOW_EMBEDDING_FALLBACK=1` (CI only).
+
+**Tools:** request `tools` → response may include `message.tool_calls` and `finish_reason: "tool_calls"`. Clients run the tool and send role `tool` turns.
+
+**Vision:** with an EXL3 **VLM** loaded (vision component present — e.g. Qwen3-VL, Gemma VL), `image_url` / data URLs are encoded via `get_image_embeddings` and injected into the Job. Text-only models return **400** `vision_not_supported`.
 
 ## Quick start
 

@@ -42,6 +42,30 @@ public sealed class ChatCompletionResponseMessage
 
     [JsonPropertyName("content")]
     public string? Content { get; init; }
+
+    [JsonPropertyName("tool_calls")]
+    public List<ChatToolCall>? ToolCalls { get; init; }
+}
+
+public sealed class ChatToolCall
+{
+    [JsonPropertyName("id")]
+    public required string Id { get; init; }
+
+    [JsonPropertyName("type")]
+    public string Type { get; init; } = "function";
+
+    [JsonPropertyName("function")]
+    public required ChatToolCallFunction Function { get; init; }
+}
+
+public sealed class ChatToolCallFunction
+{
+    [JsonPropertyName("name")]
+    public required string Name { get; init; }
+
+    [JsonPropertyName("arguments")]
+    public required string Arguments { get; init; }
 }
 
 public sealed class UsageInfo

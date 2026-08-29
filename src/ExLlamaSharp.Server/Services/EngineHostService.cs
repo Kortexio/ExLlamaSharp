@@ -16,6 +16,7 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
     private readonly SettingsService _settings;
     private readonly IConfiguration _configuration;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ArchitectureDetector _architectureDetector;
     private readonly object _gate = new();
     private readonly SemaphoreSlim _loadLock = new(1, 1);
     private IInferenceEngine? _engine;
@@ -31,12 +32,14 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
         ILogger<EngineHostService> logger,
         SettingsService settings,
         IConfiguration configuration,
-        IServiceScopeFactory scopeFactory)
+        IServiceScopeFactory scopeFactory,
+        ArchitectureDetector architectureDetector)
     {
         _logger = logger;
         _settings = settings;
         _configuration = configuration;
         _scopeFactory = scopeFactory;
+        _architectureDetector = architectureDetector;
         _forceMock = configuration.GetValue("ExLlamaSharp:ForceMockEngine", false);
     }
 
@@ -53,6 +56,11 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
     public bool IsRunning => _engine?.IsRunning == true;
     public Guid? LoadedModelId => _loadedModelId;
     public string? LoadedModelPath => _loadedModelPath;
+
+    /// <summary>
+    /// True when the loaded EXL3 worker reported a working vision component.
+    /// </summary>
+    public bool SupportsVision => _engine?.SupportsVision == true;
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {

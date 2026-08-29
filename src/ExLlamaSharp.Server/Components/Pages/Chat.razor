@@ -2,6 +2,8 @@
 @inject IHttpClientFactory HttpClientFactory
 @inject EngineHostService Engine
 @inject NavigationManager Nav
+@using System.Text.Json
+@using Microsoft.AspNetCore.Components.Forms
 
 <PageTitle>Chat — ExLlamaSharp</PageTitle>
 
@@ -11,11 +13,60 @@
     <p class="small mb-0 @(_modelReady ? "text-success" : "text-danger")">@_modelStatus</p>
 </div>
 
+<div class="card mb-3">
+    <div class="card-body">
+        <div class="form-grid">
+            <div>
+                <label class="form-label">Model</label>
+                <select class="form-select" @bind="_selectedModel">
+                    @if (_models.Count == 0)
+                    {
+                        <option value="">(no models — load one first)</option>
+                    }
+                    @foreach (var m in _models)
+                    {
+                        <option value="@m">@m</option>
+                    }
+                </select>
+            </div>
+            <div>
+                <label class="form-label">Image (vision)</label>
+                @if (_visionReady)
+                {
+                    <InputFile OnChange="OnImageSelected" accept="image/*" class="form-control" />
+                    @if (!string.IsNullOrEmpty(_imageDataUrl))
+                    {
+                        <div class="form-text">Attached · <button type="button" class="btn btn-link btn-sm p-0" @onclick="ClearImage">Clear</button></div>
+                    }
+                }
+                else
+                {
+                    <p class="form-text mb-0">
+                        Load an EXL3 VLM (Qwen3-VL / Gemma VL, etc.) to enable <code>image_url</code>.
+                        Text-only models return <code>400 vision_not_supported</code>.
+                    </p>
+                }
+            </div>
+            <div style="grid-column:1/-1">
+                <label class="form-label">Tools JSON (optional)</label>
+                <textarea class="form-control font-monospace" rows="3" @bind="_toolsJson"
+                          placeholder='[{"type":"function","function":{"name":"…","parameters":{}}}]'></textarea>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div class="card chat-layout">
     <div class="chat-messages" @ref="_scroll">
         @foreach (var m in _messages)
         {
-            <div class="bubble @m.Role">@m.Text</div>
+            <div class="bubble @m.Role">
+                @m.Text
+                @if (!string.IsNullOrEmpty(m.ToolCallsJson))
+                {
+                    <pre class="small mt-2 mb-0">@m.ToolCallsJson</pre>
+                }
+            </div>
         }
     </div>
     <div class="chat-input">
@@ -39,33 +90,112 @@
     private bool _streaming;
     private string? _error;
     private bool _modelReady;
+    private bool _visionReady;
     private string _modelStatus = "Checking model…";
     private ElementReference _scroll;
+    private List<string> _models = [];
+    private string _selectedModel = "";
+    private string _toolsJson = "";
+    private string? _imageDataUrl;
 
-    protected override void OnInitialized()
+    protected override async Task OnInitializedAsync()
     {
         RefreshModelStatus();
+        await LoadModelsAsync();
     }
 
     private void RefreshModelStatus()
     {
-        _modelReady = Engine.IsLoaded && Engine.IsRunning;
+        _visionReady = Engine.SupportsVision;
+        _modelReady = Engine.IsLoaded && Engine.IsRunning && !Engine.Engine.IsMock;
         if (_modelReady)
         {
             var name = Engine.LoadedModelPath is { } p
                 ? Path.GetFileName(p.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
                 : "loaded";
-            _modelStatus = $"Using {name}";
+            _modelStatus = _visionReady
+                ? $"Using {name} (EXL3 worker + vision)"
+                : $"Using {name} (EXL3 worker, text-only)";
         }
         else if (Engine.IsLoaded && Engine.Engine.IsMock)
         {
-            _modelStatus = "Mock engine — replies are not from a local GPU model.";
+            _modelStatus = "MOCK engine — replies are fake deterministic tokens, not a GPU model.";
+            _visionReady = false;
         }
         else
         {
             _modelStatus = "No model loaded. Open Models → My Models and click Load.";
+            _visionReady = false;
         }
     }
+
+    private async Task LoadModelsAsync()
+    {
+        try
+        {
+            var client = HttpClientFactory.CreateClient("local-api");
+            client.BaseAddress ??= new Uri(Nav.BaseUri);
+            var resp = await client.GetAsync("v1/models");
+            if (!resp.IsSuccessStatusCode)
+            {
+                return;
+            }
+
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+            if (!doc.RootElement.TryGetProperty("data", out var data))
+            {
+                return;
+            }
+
+            _models = data.EnumerateArray()
+                .Select(e => e.TryGetProperty("id", out var id) ? id.GetString() : null)
+                .Where(s => !string.IsNullOrWhiteSpace(s))
+                .Cast<string>()
+                .ToList();
+
+            if (string.IsNullOrEmpty(_selectedModel))
+            {
+                _selectedModel = Engine.LoadedModelId?.ToString("N")
+                    ?? _models.FirstOrDefault()
+                    ?? "default";
+            }
+        }
+        catch
+        {
+            _models = [];
+            if (string.IsNullOrEmpty(_selectedModel))
+            {
+                _selectedModel = Engine.LoadedModelId?.ToString("N") ?? "default";
+            }
+        }
+    }
+
+    private async Task OnImageSelected(InputFileChangeEventArgs e)
+    {
+        _error = null;
+        try
+        {
+            var file = e.File;
+            if (file is null)
+            {
+                return;
+            }
+
+            await using var stream = file.OpenReadStream(maxAllowedSize: 8 * 1024 * 1024);
+            using var ms = new MemoryStream();
+            await stream.CopyToAsync(ms);
+            var b64 = Convert.ToBase64String(ms.ToArray());
+            var mime = string.IsNullOrWhiteSpace(file.ContentType) ? "image/png" : file.ContentType;
+            _imageDataUrl = $"data:{mime};base64,{b64}";
+        }
+        catch (Exception ex)
+        {
+            _error = $"Image attach failed: {ex.Message}";
+            _imageDataUrl = null;
+        }
+    }
+
+    private void ClearImage() => _imageDataUrl = null;
 
     private async Task OnKey(KeyboardEventArgs e)
     {
@@ -85,8 +215,11 @@
         _error = null;
         RefreshModelStatus();
         var userText = _input.Trim();
+        var imageForTurn = _visionReady ? _imageDataUrl : null;
+        _imageDataUrl = null;
         _input = "";
-        _messages.Add(new UiMsg("user", userText));
+        var userMsg = new UiMsg("user", userText);
+        _messages.Add(userMsg);
         var assistant = new UiMsg("assistant", "");
         _messages.Add(assistant);
         _streaming = true;
@@ -96,15 +229,37 @@
             var client = HttpClientFactory.CreateClient("local-api");
             client.BaseAddress ??= new Uri(Nav.BaseUri);
 
-            var payload = new
+            var history = _messages
+                .Where(m => m.Role is "user" or "assistant" or "system")
+                .Where(m => !(m.Role == "assistant" && ReferenceEquals(m, assistant)))
+                .Select(m => BuildMessagePayload(m, ReferenceEquals(m, userMsg) ? imageForTurn : null))
+                .ToList();
+
+            object? tools = null;
+            if (!string.IsNullOrWhiteSpace(_toolsJson))
             {
-                model = Engine.LoadedModelId?.ToString() ?? "default",
-                stream = true,
-                messages = new[]
+                try
                 {
-                    new { role = "user", content = userText },
-                },
+                    tools = JsonSerializer.Deserialize<JsonElement>(_toolsJson);
+                }
+                catch (Exception ex)
+                {
+                    _error = $"Invalid tools JSON: {ex.Message}";
+                    assistant.Text = "(invalid tools)";
+                    return;
+                }
+            }
+
+            var payload = new Dictionary<string, object?>
+            {
+                ["model"] = string.IsNullOrWhiteSpace(_selectedModel) ? "default" : _selectedModel,
+                ["stream"] = true,
+                ["messages"] = history,
             };
+            if (tools is not null)
+            {
+                payload["tools"] = tools;
+            }
 
             using var req = new HttpRequestMessage(HttpMethod.Post, "v1/chat/completions")
             {
@@ -118,7 +273,7 @@
                 assistant.Text = $"API {(int)res.StatusCode}: {(string.IsNullOrWhiteSpace(body) ? res.ReasonPhrase : body)}";
                 if ((int)res.StatusCode == 401)
                 {
-                    _error = "Unauthorized — sign in on Login or check API Keys. The playground should send the admin key automatically.";
+                    _error = "Unauthorized — sign in on Login or check API Keys.";
                 }
                 else if (!_modelReady)
                 {
@@ -128,17 +283,19 @@
                 return;
             }
 
+            if (res.Headers.TryGetValues("X-ExLlamaSharp-Engine", out var eng)
+                && string.Equals(eng.FirstOrDefault(), "mock", StringComparison.OrdinalIgnoreCase))
+            {
+                _error = "Warning: response came from the MOCK engine (not GPU EXL3).";
+            }
+
+            var toolCallsAcc = new List<string>();
             await using var stream = await res.Content.ReadAsStreamAsync();
             using var reader = new StreamReader(stream);
             while (!reader.EndOfStream)
             {
                 var line = await reader.ReadLineAsync();
-                if (string.IsNullOrWhiteSpace(line))
-                {
-                    continue;
-                }
-
-                if (!line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
@@ -151,25 +308,47 @@
 
                 try
                 {
-                    using var doc = System.Text.Json.JsonDocument.Parse(data);
-                    if (doc.RootElement.TryGetProperty("choices", out var choices)
-                        && choices.GetArrayLength() > 0)
+                    using var doc = JsonDocument.Parse(data);
+                    if (!doc.RootElement.TryGetProperty("choices", out var choices) || choices.GetArrayLength() == 0)
                     {
-                        var delta = choices[0].GetProperty("delta");
+                        continue;
+                    }
+
+                    var choice = choices[0];
+                    if (choice.TryGetProperty("delta", out var delta))
+                    {
                         if (delta.TryGetProperty("content", out var content))
                         {
                             assistant.Text += content.GetString() ?? "";
                             await InvokeAsync(StateHasChanged);
                         }
+
+                        if (delta.TryGetProperty("tool_calls", out var deltaTools))
+                        {
+                            toolCallsAcc.Add(deltaTools.GetRawText());
+                        }
+                    }
+
+                    if (choice.TryGetProperty("message", out var message)
+                        && message.TryGetProperty("tool_calls", out var msgTools))
+                    {
+                        assistant.ToolCallsJson = JsonSerializer.Serialize(
+                            msgTools,
+                            new JsonSerializerOptions { WriteIndented = true });
                     }
                 }
-                catch
+                catch (JsonException)
                 {
                     // ignore partial JSON
                 }
             }
 
-            if (string.IsNullOrEmpty(assistant.Text))
+            if (string.IsNullOrEmpty(assistant.ToolCallsJson) && toolCallsAcc.Count > 0)
+            {
+                assistant.ToolCallsJson = string.Join("\n", toolCallsAcc);
+            }
+
+            if (string.IsNullOrEmpty(assistant.Text) && string.IsNullOrEmpty(assistant.ToolCallsJson))
             {
                 assistant.Text = "(empty response)";
             }
@@ -185,9 +364,28 @@
         }
     }
 
+    private static object BuildMessagePayload(UiMsg m, string? imageDataUrl)
+    {
+        if (m.Role == "user" && !string.IsNullOrEmpty(imageDataUrl))
+        {
+            return new
+            {
+                role = m.Role,
+                content = new object[]
+                {
+                    new { type = "text", text = m.Text },
+                    new { type = "image_url", image_url = new { url = imageDataUrl } },
+                },
+            };
+        }
+
+        return new { role = m.Role, content = m.Text };
+    }
+
     private sealed class UiMsg(string role, string text)
     {
         public string Role { get; } = role;
         public string Text { get; set; } = text;
+        public string? ToolCallsJson { get; set; }
     }
 }

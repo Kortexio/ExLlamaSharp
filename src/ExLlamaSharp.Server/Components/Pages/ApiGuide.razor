@@ -1,82 +1,103 @@
 @page "/api"
-@inject SettingsService Settings
 
 <PageTitle>API Guide — ExLlamaSharp</PageTitle>
 
 <div class="page-header">
     <h1>API guide</h1>
-    <p>Copy-paste curl examples for the OpenAI-compatible API.</p>
+    <p>OpenAI-compatible <code>/v1</code> and admin <code>/api/v1</code>. Authenticate with <code>Authorization: Bearer &lt;api-key&gt;</code> (admin scope required for <code>/api/v1</code>).</p>
 </div>
 
 <div class="card mb-3">
     <div class="card-body">
-        <h5 class="card-title">Base URL</h5>
-        <p class="mb-2"><code>@_base</code></p>
+        <h5 class="card-title">OpenAI-compatible (<code>/v1</code>)</h5>
+        <table class="table-clean">
+            <thead>
+                <tr><th>Method</th><th>Path</th><th>Notes</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>POST</td><td><code>/v1/chat/completions</code></td><td>Chat; supports <code>stream</code>, tools, multimodal content</td></tr>
+                <tr><td>POST</td><td><code>/v1/completions</code></td><td>Text completions</td></tr>
+                <tr><td>POST</td><td><code>/v1/embeddings</code></td><td>Embeddings</td></tr>
+                <tr><td>POST</td><td><code>/v1/tokenize</code></td><td>Tokenize text</td></tr>
+                <tr><td>POST</td><td><code>/v1/detokenize</code></td><td>Detokenize ids</td></tr>
+                <tr><td>GET</td><td><code>/v1/models</code></td><td>List models</td></tr>
+                <tr><td>GET</td><td><code>/v1/models/{id}</code></td><td>Model details</td></tr>
+                <tr><td>GET</td><td><code>/v1/metrics</code></td><td>JSON engine metrics</td></tr>
+            </tbody>
+        </table>
     </div>
 </div>
 
-@foreach (var ex in _examples)
-{
-    var body = ex.Body.Replace("{BASE}", _base);
-    <div class="card mb-3">
-        <div class="card-body">
-            <h5 class="card-title">@ex.Title</h5>
-            <pre class="code-block">@body</pre>
-            <button class="btn btn-sm btn-outline-primary" @onclick="() => Select(body)">Show for copy</button>
-        </div>
+<div class="card mb-3">
+    <div class="card-body">
+        <h5 class="card-title">Admin (<code>/api/v1</code>)</h5>
+        <table class="table-clean">
+            <thead>
+                <tr><th>Area</th><th>Endpoints</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Settings</td>
+                    <td><code>GET/POST/PATCH /settings</code></td>
+                </tr>
+                <tr>
+                    <td>Models</td>
+                    <td>
+                        <code>GET /models/library</code>, <code>GET /models/library/search</code>,
+                        <code>POST /models/load|unload|pull|quantize|import|alias</code>,
+                        <code>GET/PUT /models/{id}/modelfile</code>,
+                        <code>GET /models/jobs/{job_id}</code>
+                    </td>
+                </tr>
+                <tr>
+                    <td>Jobs</td>
+                    <td><code>GET /jobs</code>, <code>POST /jobs/{id}/cancel</code></td>
+                </tr>
+                <tr>
+                    <td>Keys</td>
+                    <td><code>GET/POST /keys</code>, <code>DELETE /keys/{id}</code></td>
+                </tr>
+                <tr>
+                    <td>Users</td>
+                    <td><code>GET/POST /users</code>, <code>PATCH/DELETE /users/{id}</code></td>
+                </tr>
+                <tr>
+                    <td>Moderation</td>
+                    <td><code>GET/POST /moderation/rules</code>, <code>DELETE /moderation/rules/{id}</code></td>
+                </tr>
+                <tr>
+                    <td>Backup</td>
+                    <td><code>POST /backup</code>, <code>POST /backup/restore</code>, <code>POST /restart</code></td>
+                </tr>
+                <tr>
+                    <td>A/B</td>
+                    <td><code>GET/POST /ab</code>, <code>GET /ab/{id}</code>, <code>POST /ab/vote</code></td>
+                </tr>
+                <tr>
+                    <td>Tenants</td>
+                    <td><code>GET/POST /tenants</code>, <code>GET /tenants/{id}</code></td>
+                </tr>
+                <tr>
+                    <td>Adapters</td>
+                    <td><code>GET/POST /adapters</code>, <code>GET/DELETE /adapters/{id}</code></td>
+                </tr>
+                <tr>
+                    <td>Other</td>
+                    <td><code>GET /about</code>, <code>GET /logs/stream</code> (SSE)</td>
+                </tr>
+            </tbody>
+        </table>
     </div>
-}
+</div>
 
-@if (!string.IsNullOrEmpty(_selected))
-{
-    <div class="alert-soft">
-        <strong>Selected snippet:</strong>
-        <pre class="code-block mt-2 mb-0">@_selected</pre>
+<div class="card">
+    <div class="card-body">
+        <h5 class="card-title">Ops (no API key)</h5>
+        <ul class="mb-0">
+            <li><code>GET /health</code> — liveness</li>
+            <li><code>GET /ready</code> — readiness (model / engine)</li>
+            <li><code>GET /metrics</code> — Prometheus text</li>
+        </ul>
+        <p class="form-text mt-3 mb-0">Live dashboard metrics: SignalR hub <code>/hubs/dashboard</code> (method <code>metrics</code>).</p>
     </div>
-}
-
-@code {
-    private string _base = "http://127.0.0.1:14563";
-    private string? _selected;
-
-    private readonly (string Title, string Body)[] _examples =
-    [
-        ("List models", """
-curl "{BASE}/v1/models" \
-  -H "Authorization: Bearer YOUR_API_KEY"
-"""),
-        ("Chat completion", """
-curl "{BASE}/v1/chat/completions" \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d "{\"model\":\"default\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]}"
-"""),
-        ("Streaming chat", """
-curl -N "{BASE}/v1/chat/completions" \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d "{\"model\":\"default\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]}"
-"""),
-        ("Embeddings", """
-curl "{BASE}/v1/embeddings" \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d "{\"model\":\"default\",\"input\":\"hello world\"}"
-"""),
-        ("Health", """
-curl "{BASE}/health"
-"""),
-    ];
-
-    protected override async Task OnInitializedAsync()
-    {
-        try
-        {
-            var s = await Settings.GetAsync();
-            _base = $"http://{s.BindAddress}:{s.Port}";
-        }
-        catch { }
-    }
-
-    private void Select(string body) => _selected = body;
-}
+</div>

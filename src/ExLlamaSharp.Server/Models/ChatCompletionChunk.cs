@@ -39,4 +39,31 @@ public sealed class ChatCompletionDelta
 
     [JsonPropertyName("content")]
     public string? Content { get; init; }
+
+    [JsonPropertyName("tool_calls")]
+    public List<ChatToolCallDelta>? ToolCalls { get; init; }
+}
+
+public sealed class ChatToolCallDelta
+{
+    [JsonPropertyName("index")]
+    public int Index { get; init; }
+
+    [JsonPropertyName("id")]
+    public string? Id { get; init; }
+
+    [JsonPropertyName("type")]
+    public string? Type { get; init; }
+
+    [JsonPropertyName("function")]
+    public ChatToolCallFunctionDelta? Function { get; init; }
+}
+
+public sealed class ChatToolCallFunctionDelta
+{
+    [JsonPropertyName("name")]
+    public string? Name { get; init; }
+
+    [JsonPropertyName("arguments")]
+    public string? Arguments { get; init; }
 }

@@ -52,6 +52,13 @@ public sealed class MultiGpuPlanner
         var devices = ParseDeviceIds(settings.CudaVisibleDevices);
         var kind = ParseMode(settings.ParallelismMode);
 
+        if (kind is ParallelismKind.Tensor or ParallelismKind.Pipeline or ParallelismKind.Model)
+        {
+            throw new InvalidOperationException(
+                "EXL3 worker does not support tensor/pipeline/model parallelism (TP/PP/MP). " +
+                "Use ParallelismMode 'none' with CUDA_VISIBLE_DEVICES listing multiple GPUs for multi-visibility only.");
+        }
+
         if (kind != ParallelismKind.None && devices.Count < 2)
         {
             throw new InvalidOperationException(

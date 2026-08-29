@@ -85,6 +85,14 @@ public static class AdminEndpoints
         api.MapPost("/adapters", CreateAdapterAsync);
         api.MapDelete("/adapters/{id:guid}", DeleteAdapterAsync);
 
+        api.MapPost("/webhooks/test", TestWebhookAsync);
+
+        api.MapGet("/conversations", ListConversationsAsync);
+        api.MapPost("/conversations", CreateConversationAsync);
+        api.MapGet("/conversations/{id:guid}", GetConversationAsync);
+        api.MapDelete("/conversations/{id:guid}", DeleteConversationAsync);
+        api.MapPost("/conversations/{id:guid}/messages", AddConversationMessageAsync);
+
         return app;
     }
 
@@ -153,16 +161,50 @@ public static class AdminEndpoints
         return Results.Json(ToSettingsDto(s), JsonOptions);
     }
 
-    private static async Task<IResult> PostSettingsAsync(SettingsDto body, SettingsService settings, CancellationToken ct)
+    private static async Task<IResult> PostSettingsAsync(
+        SettingsDto body,
+        SettingsService settings,
+        MultiGpuPlanner planner,
+        CancellationToken ct)
     {
-        var updated = await settings.UpdateAsync(s => ApplySettings(s, body, replace: true), ct).ConfigureAwait(false);
-        return Results.Json(ToSettingsDto(updated), JsonOptions);
+        try
+        {
+            var updated = await settings.UpdateAsync(s =>
+            {
+                ApplySettings(s, body, replace: true);
+                planner.BuildPlan(s);
+            }, ct).ConfigureAwait(false);
+            return Results.Json(ToSettingsDto(updated), JsonOptions);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
+        {
+            return Results.Json(
+                ErrorResponse.Create(ex.Message, "invalid_request_error", "invalid_settings"),
+                statusCode: StatusCodes.Status400BadRequest);
+        }
     }
 
-    private static async Task<IResult> PatchSettingsAsync(SettingsDto body, SettingsService settings, CancellationToken ct)
+    private static async Task<IResult> PatchSettingsAsync(
+        SettingsDto body,
+        SettingsService settings,
+        MultiGpuPlanner planner,
+        CancellationToken ct)
     {
-        var updated = await settings.UpdateAsync(s => ApplySettings(s, body, replace: false), ct).ConfigureAwait(false);
-        return Results.Json(ToSettingsDto(updated), JsonOptions);
+        try
+        {
+            var updated = await settings.UpdateAsync(s =>
+            {
+                ApplySettings(s, body, replace: false);
+                planner.BuildPlan(s);
+            }, ct).ConfigureAwait(false);
+            return Results.Json(ToSettingsDto(updated), JsonOptions);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
+        {
+            return Results.Json(
+                ErrorResponse.Create(ex.Message, "invalid_request_error", "invalid_settings"),
+                statusCode: StatusCodes.Status400BadRequest);
+        }
     }
 
     private static async Task<IResult> SearchLibraryAsync(
@@ -330,9 +372,36 @@ public static class AdminEndpoints
         return Results.Json(new JobCreatedResponse { JobId = job.JobId }, JsonOptions, statusCode: StatusCodes.Status202Accepted);
     }
 
-    private static async Task<IResult> QuantizeModelAsync(ModelQuantizeRequest body, ModelJobsService jobs, CancellationToken ct)
+    private static async Task<IResult> QuantizeModelAsync(
+        ModelQuantizeRequest body,
+        ModelJobsService jobs,
+        AppDbContext db,
+        ModelInventoryService inventory,
+        CancellationToken ct)
     {
-        var job = await jobs.EnqueueQuantizeAsync(body.ModelId, body.Bits ?? 4.0, ct).ConfigureAwait(false);
+        Guid modelId;
+        if (body.ModelId is Guid id && id != Guid.Empty)
+        {
+            modelId = id;
+        }
+        else if (!string.IsNullOrWhiteSpace(body.SourcePath))
+        {
+            var path = body.SourcePath.Trim();
+            var record = await db.Models.AsNoTracking()
+                .FirstOrDefaultAsync(m => m.Path == path, ct)
+                .ConfigureAwait(false);
+            record ??= await inventory.EnsureRecordAsync(path, Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar)), ct)
+                .ConfigureAwait(false);
+            modelId = record.Id;
+        }
+        else
+        {
+            return Results.Json(
+                ErrorResponse.Create("model_id or source_path is required", code: "invalid_model"),
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var job = await jobs.EnqueueQuantizeAsync(modelId, body.Bits ?? 4.0, ct).ConfigureAwait(false);
         return Results.Json(new JobCreatedResponse { JobId = job.JobId }, JsonOptions, statusCode: StatusCodes.Status202Accepted);
     }
 
@@ -1033,6 +1102,7 @@ public static class AdminEndpoints
         DraftModelId = s.DraftModelId,
         DraftK = s.DraftK,
         ModelsPath = s.ModelsPath,
+        EstimatedCostPerMillionTokens = s.EstimatedCostPerMillionTokens,
     };
 
     private static void ApplySettings(AppSettings s, SettingsDto body, bool replace)
@@ -1060,6 +1130,7 @@ public static class AdminEndpoints
         if (body.DraftModelId is not null || replace) s.DraftModelId = body.DraftModelId;
         if (body.DraftK is int dk) s.DraftK = dk;
         if (body.ModelsPath is not null) s.ModelsPath = body.ModelsPath;
+        if (body.EstimatedCostPerMillionTokens is decimal cost) s.EstimatedCostPerMillionTokens = cost;
     }
 
     private static ModelLibraryEntryDto ToLibraryDto(ModelLibraryEntry e) => new()
@@ -1160,5 +1231,218 @@ public static class AdminEndpoints
         CreatedAt = r.CreatedAt,
     };
 
+    private static async Task<IResult> TestWebhookAsync(WebhookService webhooks, CancellationToken ct)
+    {
+        var ok = await webhooks.SendAsync("webhook.test", new
+        {
+            message = "ExLlamaSharp webhook test",
+            sent_at = DateTime.UtcNow,
+        }, ct).ConfigureAwait(false);
+
+        if (!ok)
+        {
+            return Results.Json(
+                ErrorResponse.Create(
+                    "Webhook not delivered. Configure webhook_url in settings and ensure the endpoint is reachable.",
+                    "server_error",
+                    "webhook_failed"),
+                statusCode: StatusCodes.Status502BadGateway);
+        }
+
+        return Results.Json(new { ok = true, @event = "webhook.test" }, JsonOptions);
+    }
+
+    private static async Task<IResult> ListConversationsAsync(
+        HttpContext http,
+        AppDbContext db,
+        SettingsService settings,
+        CancellationToken ct)
+    {
+        var filter = await TenantScope.EffectiveFilterAsync(http, settings, ct).ConfigureAwait(false);
+        var query = db.Conversations.AsNoTracking().AsQueryable();
+        if (filter is not null)
+        {
+            query = query.Where(c => c.TenantId == filter);
+        }
+
+        var list = await query
+            .OrderByDescending(c => c.UpdatedAt)
+            .Take(200)
+            .Select(c => new
+            {
+                id = c.Id,
+                title = c.Title,
+                user_id = c.UserId,
+                tenant_id = c.TenantId,
+                model_id = c.ModelId,
+                created_at = c.CreatedAt,
+                updated_at = c.UpdatedAt,
+                message_count = c.Messages.Count,
+            })
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        return Results.Json(new { conversations = list }, JsonOptions);
+    }
+
+    private static async Task<IResult> CreateConversationAsync(
+        HttpContext http,
+        CreateConversationRequest? body,
+        AppDbContext db,
+        CancellationToken ct)
+    {
+        var conv = new Conversation
+        {
+            Id = Guid.NewGuid(),
+            Title = string.IsNullOrWhiteSpace(body?.Title) ? "New chat" : body!.Title!.Trim(),
+            ModelId = body?.ModelId,
+            TenantId = http.GetTenantId(),
+            UserId = body?.UserId,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+
+        db.Conversations.Add(conv);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return Results.Json(ToConversationDto(conv, includeMessages: false), JsonOptions, statusCode: StatusCodes.Status201Created);
+    }
+
+    private static async Task<IResult> GetConversationAsync(Guid id, AppDbContext db, CancellationToken ct)
+    {
+        var conv = await db.Conversations.AsNoTracking()
+            .Include(c => c.Messages)
+            .FirstOrDefaultAsync(c => c.Id == id, ct)
+            .ConfigureAwait(false);
+
+        if (conv is null)
+        {
+            return Results.Json(
+                ErrorResponse.Create("Conversation not found.", code: "not_found"),
+                statusCode: StatusCodes.Status404NotFound);
+        }
+
+        conv.Messages = conv.Messages.OrderBy(m => m.CreatedAt).ToList();
+        return Results.Json(ToConversationDto(conv, includeMessages: true), JsonOptions);
+    }
+
+    private static async Task<IResult> DeleteConversationAsync(Guid id, AppDbContext db, CancellationToken ct)
+    {
+        var conv = await db.Conversations
+            .Include(c => c.Messages)
+            .FirstOrDefaultAsync(c => c.Id == id, ct)
+            .ConfigureAwait(false);
+
+        if (conv is null)
+        {
+            return Results.Json(
+                ErrorResponse.Create("Conversation not found.", code: "not_found"),
+                statusCode: StatusCodes.Status404NotFound);
+        }
+
+        db.ConversationMessages.RemoveRange(conv.Messages);
+        db.Conversations.Remove(conv);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return Results.Json(new { ok = true, id }, JsonOptions);
+    }
+
+    private static async Task<IResult> AddConversationMessageAsync(
+        Guid id,
+        AddConversationMessageRequest body,
+        AppDbContext db,
+        CancellationToken ct)
+    {
+        if (body is null || string.IsNullOrWhiteSpace(body.Content))
+        {
+            return Results.Json(
+                ErrorResponse.Create("content is required", code: "invalid_message"),
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var conv = await db.Conversations.FirstOrDefaultAsync(c => c.Id == id, ct).ConfigureAwait(false);
+        if (conv is null)
+        {
+            return Results.Json(
+                ErrorResponse.Create("Conversation not found.", code: "not_found"),
+                statusCode: StatusCodes.Status404NotFound);
+        }
+
+        var role = string.IsNullOrWhiteSpace(body.Role) ? "user" : body.Role.Trim().ToLowerInvariant();
+        if (role is not ("system" or "user" or "assistant" or "tool"))
+        {
+            return Results.Json(
+                ErrorResponse.Create("role must be system|user|assistant|tool", code: "invalid_role"),
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var msg = new ConversationMessage
+        {
+            Id = Guid.NewGuid(),
+            ConversationId = id,
+            Role = role,
+            Content = body.Content,
+            PromptTokens = body.PromptTokens,
+            CompletionTokens = body.CompletionTokens,
+            CreatedAt = DateTime.UtcNow,
+        };
+
+        conv.UpdatedAt = DateTime.UtcNow;
+        if (!string.IsNullOrWhiteSpace(body.Title))
+        {
+            conv.Title = body.Title.Trim();
+        }
+
+        db.ConversationMessages.Add(msg);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+        return Results.Json(new
+        {
+            id = msg.Id,
+            conversation_id = msg.ConversationId,
+            role = msg.Role,
+            content = msg.Content,
+            prompt_tokens = msg.PromptTokens,
+            completion_tokens = msg.CompletionTokens,
+            created_at = msg.CreatedAt,
+        }, JsonOptions, statusCode: StatusCodes.Status201Created);
+    }
+
+    private static object ToConversationDto(Conversation c, bool includeMessages) => new
+    {
+        id = c.Id,
+        title = c.Title,
+        user_id = c.UserId,
+        tenant_id = c.TenantId,
+        model_id = c.ModelId,
+        created_at = c.CreatedAt,
+        updated_at = c.UpdatedAt,
+        messages = includeMessages
+            ? c.Messages.Select(m => new
+            {
+                id = m.Id,
+                role = m.Role,
+                content = m.Content,
+                prompt_tokens = m.PromptTokens,
+                completion_tokens = m.CompletionTokens,
+                created_at = m.CreatedAt,
+            })
+            : null,
+    };
+
     private static string HashPassword(string password) => PasswordHasher.Hash(password);
+}
+
+internal sealed class CreateConversationRequest
+{
+    public string? Title { get; set; }
+    public Guid? ModelId { get; set; }
+    public Guid? UserId { get; set; }
+}
+
+internal sealed class AddConversationMessageRequest
+{
+    public string? Role { get; set; }
+    public string Content { get; set; } = string.Empty;
+    public int? PromptTokens { get; set; }
+    public int? CompletionTokens { get; set; }
+    public string? Title { get; set; }
 }

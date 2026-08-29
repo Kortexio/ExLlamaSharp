@@ -1,5 +1,6 @@
 using ExLlamaSharp.Chat;
 using ExLlamaSharp.Engine;
+using Microsoft.Extensions.Logging.Abstractions;
 
 if (args.Length == 0 || args is ["--help"] or ["-h"])
 {
@@ -28,7 +29,11 @@ static void PrintHelp()
           exllamasharp bench [--n N] [--mock]
           exllamasharp tokenize <text>
 
-        Without a native CUDA build, the mock engine is used automatically.
+        Engine selection for chat:
+          --mock              Force the mock engine
+          --model <dir>       Prefer ExLlamaV3WorkerEngine when the path is an EXL3
+                              directory and the Python worker runtime is available;
+                              otherwise fall back to the native/mock engine.
         """);
 }
 
@@ -76,7 +81,7 @@ static async Task<int> RunChatAsync(string[] args)
     };
     var prompt = ChatTemplate.Format(messages);
 
-    await using var engine = ExLlamaEngine.Create(forceMock: forceMock);
+    await using var engine = CreateEngine(model, forceMock);
     await engine.LoadAsync(model);
     engine.Start();
 
@@ -91,6 +96,22 @@ static async Task<int> RunChatAsync(string[] args)
     var result = await engine.SubmitAsync(request);
     Console.WriteLine(result.Text);
     return result.Failed ? 1 : 0;
+}
+
+static IInferenceEngine CreateEngine(string model, bool forceMock)
+{
+    if (forceMock || model.StartsWith("mock://", StringComparison.OrdinalIgnoreCase))
+    {
+        return ExLlamaEngine.Create(forceMock: true);
+    }
+
+    if (ExLlamaV3WorkerEngine.LooksLikeExl3Directory(model) && ExLlamaV3WorkerEngine.IsAvailable())
+    {
+        Console.Error.WriteLine("Using ExLlamaV3WorkerEngine (EXL3 Python worker).");
+        return new ExLlamaV3WorkerEngine(NullLogger.Instance);
+    }
+
+    return ExLlamaEngine.Create(forceMock: false);
 }
 
 static async Task<int> RunBenchAsync(string[] args)

@@ -7,6 +7,8 @@
 @inject GpuInfoService GpuInfo
 @inject SettingsService Settings
 @inject VramFitService VramFit
+@inject IHttpClientFactory HttpClientFactory
+@inject NavigationManager Nav
 @using Microsoft.EntityFrameworkCore
 @using ExLlamaSharp.Server.Services.Ui
 
@@ -14,7 +16,7 @@
 
 <div class="page-header">
     <h1>Models</h1>
-    <p>Library, installed models, and import.</p>
+    <p>Library, installed models, import, and quantize.</p>
 </div>
 
 <p class="form-text mb-3">@_gpuCaption</p>
@@ -23,6 +25,7 @@
     <button class="tab-btn @(Tab == "library" ? "active" : "")" @onclick='() => Tab = "library"'>Library</button>
     <button class="tab-btn @(Tab == "mine" ? "active" : "")" @onclick='() => Tab = "mine"'>My Models</button>
     <button class="tab-btn @(Tab == "import" ? "active" : "")" @onclick='() => Tab = "import"'>Import</button>
+    <button class="tab-btn @(Tab == "quantize" ? "active" : "")" @onclick='() => Tab = "quantize"'>Quantize</button>
 </div>
 
 @if (Tab == "library")
@@ -79,8 +82,9 @@ else if (Tab == "mine")
 {
     @if (Engine.IsLoaded && Engine.LoadedModelPath is { } loadedPath)
     {
-        <div class="alert-soft mb-3">
-            Loaded now: <code>@Path.GetFileName(loadedPath.TrimEnd(Path.DirectorySeparatorChar))</code>
+        <div class="alert-soft mb-3 d-flex flex-wrap gap-2 align-items-center justify-content-between">
+            <span>Loaded now: <code>@Path.GetFileName(loadedPath.TrimEnd(Path.DirectorySeparatorChar))</code></span>
+            <button class="btn btn-sm btn-outline-danger" disabled="@_busy" @onclick="UnloadAsync">Unload</button>
         </div>
     }
     <div class="card">
@@ -117,6 +121,39 @@ else if (Tab == "mine")
         <div class="alert-soft mt-3">@_msg</div>
     }
 }
+else if (Tab == "quantize")
+{
+    <div class="card">
+        <div class="card-body">
+            <h5 class="card-title">Quantize to EXL3</h5>
+            <div class="form-grid">
+                <div>
+                    <label class="form-label">Source model</label>
+                    <select class="form-select" @bind="_quantizeModelId">
+                        <option value="">— select installed —</option>
+                        @foreach (var m in _mine)
+                        {
+                            <option value="@m.Id">@(m.Alias ?? m.Path)</option>
+                        }
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">Or source path</label>
+                    <input class="form-control" @bind="_quantizePath" placeholder="D:\models\fp16-model" />
+                </div>
+                <div>
+                    <label class="form-label">Bits</label>
+                    <input type="number" step="0.25" class="form-control" @bind="_quantizeBits" />
+                </div>
+                <button class="btn btn-primary" disabled="@_busy" @onclick="QuantizeAsync">Start quantize</button>
+            </div>
+            @if (!string.IsNullOrEmpty(_msg))
+            {
+                <div class="alert-soft mt-3">@_msg</div>
+            }
+        </div>
+    </div>
+}
 else
 {
     <div class="card">
@@ -151,6 +188,10 @@ else
     private string? _msg;
     private bool _searching;
     private bool _pulling;
+    private bool _busy;
+    private string _quantizeModelId = "";
+    private string _quantizePath = "";
+    private double _quantizeBits = 4.0;
     private GpuSnapshot? _gpu;
     private double _gpuUtil = VramFitService.DefaultGpuUtilization;
     private string _gpuCaption = "Reading GPU VRAM…";
@@ -160,6 +201,13 @@ else
         await LoadGpuAsync();
         await ReloadAsync();
         await SearchHuggingFaceAsync();
+    }
+
+    private HttpClient CreateApi()
+    {
+        var client = HttpClientFactory.CreateClient("local-api");
+        client.BaseAddress ??= new Uri(Nav.BaseUri);
+        return client;
     }
 
     private async Task LoadGpuAsync()
@@ -279,6 +327,71 @@ else
         catch (Exception ex)
         {
             _msg = $"Load failed: {ex.Message}";
+        }
+    }
+
+    private async Task UnloadAsync()
+    {
+        _busy = true;
+        _msg = null;
+        try
+        {
+            var client = CreateApi();
+            var resp = await client.PostAsync("/api/v1/models/unload", null);
+            var body = await resp.Content.ReadAsStringAsync();
+            _msg = resp.IsSuccessStatusCode ? "Model unloaded." : body;
+        }
+        catch (Exception ex)
+        {
+            _msg = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task QuantizeAsync()
+    {
+        _busy = true;
+        _msg = null;
+        try
+        {
+            object payload;
+            if (Guid.TryParse(_quantizeModelId, out var mid) && mid != Guid.Empty)
+            {
+                payload = new { model_id = mid, bits = _quantizeBits };
+            }
+            else if (!string.IsNullOrWhiteSpace(_quantizePath))
+            {
+                payload = new { source_path = _quantizePath.Trim(), bits = _quantizeBits };
+            }
+            else
+            {
+                _msg = "Select a model or enter a source path.";
+                return;
+            }
+
+            var client = CreateApi();
+            var resp = await client.PostAsJsonAsync("/api/v1/models/quantize", payload);
+            var body = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode)
+            {
+                _msg = body;
+                return;
+            }
+
+            _msg = $"Quantize started. {body} — watch Jobs.";
+            Tab = "mine";
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _msg = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
         }
     }
 

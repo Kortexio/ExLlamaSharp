@@ -18,12 +18,14 @@ JSON for OpenAI routes uses **snake_case** field names where applicable.
 | `POST` | `/v1/completions` | Text completions |
 | `GET` | `/v1/models` | List models known to the server |
 | `GET` | `/v1/models/{id}` | Model detail |
-| `POST` | `/v1/embeddings` | Embeddings |
+| `POST` | `/v1/embeddings` | Embeddings (ONNX required; **503** if missing unless CI fallback env) |
 | `POST` | `/v1/tokenize` | Encode text → token ids |
 | `POST` | `/v1/detokenize` | Decode token ids → text |
 | `GET` | `/v1/metrics` | Engine metrics (JSON) |
 
-Unimplemented `/v1/**` paths return **501** with an OpenAI-shaped error object (`not_implemented_error`).
+Unimplemented `/v1/**` paths (including **images/audio generation**) return **501** with an OpenAI-shaped error object (`not_implemented_error`).
+
+Chat supports OpenAI `tools` / `tool_choice` (response may include `tool_calls` + `finish_reason: tool_calls`), `response_format` / JSON schema, and multimodal `image_url` when the loaded EXL3 model has a vision component (Qwen3-VL, Gemma VL, etc.). Text-only models return **400** `vision_not_supported`. Unsupported fields such as `logit_bias`, `logprobs`, and `n > 1` return **400**. Responses include header `X-ExLlamaSharp-Engine: worker|mock`.
 
 ### Chat completions (sketch)
 

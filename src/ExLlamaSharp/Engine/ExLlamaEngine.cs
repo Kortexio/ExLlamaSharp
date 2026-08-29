@@ -50,6 +50,7 @@ public sealed class ExLlamaEngine : IInferenceEngine
     public bool IsMock => _usingMock;
     public bool IsLoaded => _usingMock ? _mock!.IsLoaded : _loaded;
     public bool IsRunning => _usingMock ? _mock!.IsRunning : _running;
+    public bool SupportsVision => false;
 
     public Task LoadAsync(string modelPath, CancellationToken cancellationToken = default)
     {

@@ -29,6 +29,18 @@
                     <label class="form-label">Scopes</label>
                     <input class="form-control" @bind="_newScopes" />
                 </div>
+                <div>
+                    <label class="form-label">RPM</label>
+                    <input type="number" class="form-control" @bind="_newRpm" />
+                </div>
+                <div>
+                    <label class="form-label">TPM</label>
+                    <input type="number" class="form-control" @bind="_newTpm" />
+                </div>
+                <div>
+                    <label class="form-label">Priority (1–10)</label>
+                    <input type="number" min="1" max="10" class="form-control" @bind="_newPriority" />
+                </div>
                 <div class="d-flex gap-2">
                     <button class="btn btn-primary" @onclick="CreateAsync">Create</button>
                     <button class="btn btn-outline-secondary" @onclick="() => _showCreate = false">Cancel</button>
@@ -49,12 +61,12 @@
     <div class="card-body p-0">
         <table class="table-clean">
             <thead>
-                <tr><th>Name</th><th>Prefix</th><th>Scopes</th><th>RPM</th><th>Status</th><th></th></tr>
+                <tr><th>Name</th><th>Prefix</th><th>Scopes</th><th>RPM</th><th>TPM</th><th>Priority</th><th>Status</th><th></th></tr>
             </thead>
             <tbody>
                 @if (_keys.Count == 0)
                 {
-                    <tr><td colspan="6" class="text-muted">No keys yet.</td></tr>
+                    <tr><td colspan="8" class="text-muted">No keys yet.</td></tr>
                 }
                 @foreach (var k in _keys)
                 {
@@ -63,6 +75,8 @@
                         <td><code>@k.KeyPrefix…</code></td>
                         <td>@k.Scopes</td>
                         <td>@k.Rpm</td>
+                        <td>@k.Tpm</td>
+                        <td>@k.Priority</td>
                         <td>
                             @if (k.Revoked)
                             {
@@ -96,6 +110,9 @@
     private bool _showCreate;
     private string _newName = "App key";
     private string _newScopes = "chat,completions";
+    private int _newRpm = 60;
+    private int _newTpm = 100_000;
+    private int _newPriority = 5;
     private string? _createdPlain;
     private string? _error;
 
@@ -129,9 +146,9 @@
                 KeyPrefix = plain[..Math.Min(8, plain.Length)],
                 Scopes = _newScopes,
                 TenantId = "default",
-                Rpm = 60,
-                Tpm = 100_000,
-                Priority = 5,
+                Rpm = Math.Max(1, _newRpm),
+                Tpm = Math.Max(1, _newTpm),
+                Priority = Math.Clamp(_newPriority, 1, 10),
             };
             Db.ApiKeys.Add(entity);
             await Db.SaveChangesAsync();

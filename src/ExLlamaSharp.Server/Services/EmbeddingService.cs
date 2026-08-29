@@ -67,7 +67,12 @@ public sealed class EmbeddingService : IDisposable
         foreach (var text in texts)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            list.Add(Embed(text));
+            if (!TryEmbed(text, out var vector, out var error))
+            {
+                throw new InvalidOperationException(error ?? "Embedding backend unavailable.");
+            }
+
+            list.Add(vector!);
         }
 
         return Task.FromResult<IReadOnlyList<float[]>>(list);
@@ -76,7 +81,24 @@ public sealed class EmbeddingService : IDisposable
     public float[] Embed(string text)
     {
         ArgumentNullException.ThrowIfNull(text);
+        if (!TryEmbed(text, out var vector, out var error))
+        {
+            throw new InvalidOperationException(error ?? "Embedding backend unavailable.");
+        }
+
+        return vector!;
+    }
+
+    /// <summary>
+    /// Returns false when ONNX is required and unavailable (no silent hash fallback in release).
+    /// Set env <c>EXLLAMASHARP_ALLOW_EMBEDDING_FALLBACK=1</c> to permit deterministic hash vectors (CI).
+    /// </summary>
+    public bool TryEmbed(string text, out float[]? vector, out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(text);
         EnsureSession();
+        error = null;
+        vector = null;
 
         lock (_gate)
         {
@@ -84,17 +106,38 @@ public sealed class EmbeddingService : IDisposable
             {
                 try
                 {
-                    return EmbedOnnx(text, _session);
+                    vector = EmbedOnnx(text, _session);
+                    return true;
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "ONNX embed failed; using local fallback");
+                    _logger.LogWarning(ex, "ONNX embed failed");
+                    error = $"ONNX embedding failed: {ex.Message}";
+                    if (!AllowFallback)
+                    {
+                        return false;
+                    }
                 }
+            }
+            else if (!AllowFallback)
+            {
+                error =
+                    $"ONNX embedding model not found under {ModelDirectory}. Place model.onnx (dim {Dimensions}) or set EXLLAMASHARP_ALLOW_EMBEDDING_FALLBACK=1 for CI.";
+                return false;
             }
         }
 
-        return EmbedFallback(text);
+        vector = EmbedFallback(text);
+        return true;
     }
+
+    public bool AllowFallback =>
+        string.Equals(
+            Environment.GetEnvironmentVariable("EXLLAMASHARP_ALLOW_EMBEDDING_FALLBACK"),
+            "1",
+            StringComparison.OrdinalIgnoreCase);
+
+    public string BackendName => IsOnnxLoaded ? "onnx" : (AllowFallback ? "fallback" : "unavailable");
 
     private void EnsureSession()
     {

@@ -33,6 +33,7 @@ public sealed class MockEngine : IInferenceEngine
     public bool IsMock => true;
     public bool IsLoaded => _modelPath is not null;
     public bool IsRunning => _running;
+    public bool SupportsVision => false;
 
     public Task LoadAsync(string modelPath, CancellationToken cancellationToken = default)
     {

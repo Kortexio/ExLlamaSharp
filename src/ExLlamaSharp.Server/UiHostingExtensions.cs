@@ -1,10 +1,8 @@
-using System.Net.Http.Headers;
 using ExLlamaSharp.Server.Components;
 using ExLlamaSharp.Server.Hubs;
 using ExLlamaSharp.Server.Services;
 using ExLlamaSharp.Server.Services.Ui;
 using Microsoft.AspNetCore.Builder;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace ExLlamaSharp.Server;
@@ -25,22 +23,21 @@ public static class UiHostingExtensions
         services.AddRazorComponents()
             .AddInteractiveServerComponents();
 
+        services.AddHttpContextAccessor();
         services.AddSingleton<OnboardingState>();
         services.AddSingleton<GpuInfoService>();
         services.AddSingleton<VramFitService>();
         services.AddScoped<ModelInventoryService>();
+        services.AddScoped<AdminUiSession>();
+        services.AddTransient<LocalApiAuthHandler>();
         services.AddSingleton<HuggingFaceCatalogService>();
         services.AddHttpClient("huggingface", client =>
         {
             client.BaseAddress = new Uri("https://huggingface.co/");
             client.Timeout = TimeSpan.FromSeconds(60);
         });
-        services.AddHttpClient("local-api", (sp, client) =>
-        {
-            var cfg = sp.GetRequiredService<IConfiguration>();
-            var key = cfg["ExLlamaSharp:AdminApiKey"] ?? "sk-exllamasharp-dev";
-            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
-        });
+        services.AddHttpClient("local-api")
+            .AddHttpMessageHandler<LocalApiAuthHandler>();
         services.AddSignalR();
 
         return services;

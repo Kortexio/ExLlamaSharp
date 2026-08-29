@@ -30,6 +30,8 @@ public sealed class RateLimiter
                 return false;
             }
 
+            // Soft check against actual tokens already recorded (post-completion).
+            // Do not enqueue the estimate — RecordTokens settles real usage once.
             var tokensUsed = state.TokenEvents.Sum(e => e.Tokens);
             if (tpm > 0 && tokensUsed + Math.Max(0, estimatedTokens) > tpm)
             {
@@ -40,11 +42,6 @@ public sealed class RateLimiter
             }
 
             state.RequestTimestamps.Enqueue(now);
-            if (estimatedTokens > 0)
-            {
-                state.TokenEvents.Enqueue(new TokenEvent(now, estimatedTokens));
-            }
-
             return true;
         }
     }

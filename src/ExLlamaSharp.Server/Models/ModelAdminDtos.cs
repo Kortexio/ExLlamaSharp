@@ -50,10 +50,14 @@ public sealed class ModelPullRequest
 public sealed class ModelQuantizeRequest
 {
     [JsonPropertyName("model_id")]
-    public Guid ModelId { get; set; }
+    public Guid? ModelId { get; set; }
+
+    /// <summary>Optional local folder; resolved to a library record when model_id is omitted.</summary>
+    [JsonPropertyName("source_path")]
+    public string? SourcePath { get; set; }
 
     [JsonPropertyName("bits")]
-    public int? Bits { get; set; }
+    public double? Bits { get; set; }
 
     [JsonPropertyName("calibration_data")]
     public string? CalibrationData { get; set; }

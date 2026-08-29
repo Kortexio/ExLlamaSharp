@@ -17,6 +17,12 @@ public interface IInferenceEngine : IAsyncDisposable, IDisposable
     bool IsRunning { get; }
 
     /// <summary>
+    /// True when the loaded model has a working ExLlamaV3 vision component
+    /// (multimodal <c>image_url</c> chat).
+    /// </summary>
+    bool SupportsVision => false;
+
+    /// <summary>
     /// True when <see cref="SubmitStreamAsync"/> yields tokens as they are produced
     /// rather than a single terminal delta.
     /// </summary>

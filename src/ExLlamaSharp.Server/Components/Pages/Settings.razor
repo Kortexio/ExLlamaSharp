@@ -1,5 +1,10 @@
 @page "/settings"
 @inject SettingsService SettingsSvc
+@inject AppDbContext Db
+@inject IHttpClientFactory HttpClientFactory
+@inject NavigationManager Nav
+@using Microsoft.EntityFrameworkCore
+@using System.Text.Json
 
 <PageTitle>Settings — ExLlamaSharp</PageTitle>
 
@@ -11,7 +16,7 @@
 <div class="tabs">
     @foreach (var t in _tabs)
     {
-        <button class="tab-btn @(Tab == t ? "active" : "")" @onclick="() => Tab = t">@t</button>
+        <button class="tab-btn @(Tab == t ? "active" : "")" @onclick="() => OnTab(t)">@t</button>
     }
 </div>
 
@@ -31,6 +36,7 @@ else
                     <div><label class="form-label">CORS</label><input class="form-control" @bind="_s.Cors" /></div>
                     <div><label class="form-label">TLS cert path</label><input class="form-control" @bind="_s.TlsCertPath" /></div>
                 </div>
+                <p class="form-text mt-2 mb-0">Changing CORS or TLS requires a server restart to take effect.</p>
             }
             else if (Tab == "Performance")
             {
@@ -63,6 +69,16 @@ else
                     <div class="form-check">
                         <input class="form-check-input" type="checkbox" @bind="_s.SpeculativeEnabled" id="spec" />
                         <label class="form-check-label" for="spec">Enable speculative decoding</label>
+                    </div>
+                    <div>
+                        <label class="form-label">Draft model</label>
+                        <select class="form-select" @bind="_draftModelSelect">
+                            <option value="">— none —</option>
+                            @foreach (var m in _models)
+                            {
+                                <option value="@m.Id">@(m.Alias ?? m.Path)</option>
+                            }
+                        </select>
                     </div>
                     <div><label class="form-label">Draft K</label><input type="number" class="form-control" @bind="_s.DraftK" /></div>
                 </div>
@@ -98,21 +114,89 @@ else
                             <option value="weekly">weekly</option>
                         </select>
                     </div>
+                    <div>
+                        <label class="form-label">Restore from path</label>
+                        <input class="form-control" @bind="_restorePath" placeholder="C:\...\backup.zip" />
+                    </div>
+                    <div class="d-flex gap-2 flex-wrap">
+                        <button type="button" class="btn btn-outline-primary" disabled="@_busy" @onclick="BackupNowAsync">Backup now</button>
+                        <button type="button" class="btn btn-outline-secondary" disabled="@_busy" @onclick="RestoreAsync">Restore</button>
+                    </div>
                 </div>
+                @if (!string.IsNullOrEmpty(_backupMsg))
+                {
+                    <div class="alert-soft mt-3">@_backupMsg</div>
+                }
             }
             else if (Tab == "Webhooks")
             {
                 <div class="form-grid">
                     <div><label class="form-label">Webhook URL</label><input class="form-control" @bind="_s.WebhookUrl" /></div>
                     <div><label class="form-label">Webhook secret</label><input class="form-control" @bind="_s.WebhookSecret" /></div>
+                    <div>
+                        <button class="btn btn-secondary" type="button" @onclick="TestWebhookAsync" disabled="@_webhookTesting">
+                            @(_webhookTesting ? "Sending…" : "Test webhook")
+                        </button>
+                        @if (!string.IsNullOrEmpty(_webhookTestResult))
+                        {
+                            <div class="small mt-2">@_webhookTestResult</div>
+                        }
+                    </div>
                 </div>
+                <p class="form-text mt-2 mb-0">Events: completion.succeeded/failed, job.completed/failed. Save settings before testing.</p>
             }
             else if (Tab == "Moderation")
             {
-                <div class="form-check">
+                <div class="form-check mb-3">
                     <input class="form-check-input" type="checkbox" @bind="_s.ContentModerationEnabled" id="mod" />
                     <label class="form-check-label" for="mod">Enable content moderation</label>
                 </div>
+                <div class="form-grid mb-3">
+                    <div>
+                        <label class="form-label">Pattern (regex)</label>
+                        <input class="form-control" @bind="_rulePattern" />
+                    </div>
+                    <div>
+                        <label class="form-label">Action</label>
+                        <select class="form-select" @bind="_ruleAction">
+                            <option value="block">block</option>
+                            <option value="flag">flag</option>
+                            <option value="redact">redact</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="form-label">Category</label>
+                        <input class="form-control" @bind="_ruleCategory" />
+                    </div>
+                    <button type="button" class="btn btn-outline-primary" disabled="@_busy" @onclick="AddRuleAsync">Add rule</button>
+                </div>
+                <table class="table-clean">
+                    <thead>
+                        <tr><th>Pattern</th><th>Action</th><th>Category</th><th>Enabled</th><th></th></tr>
+                    </thead>
+                    <tbody>
+                        @if (_rules.Count == 0)
+                        {
+                            <tr><td colspan="5" class="text-muted">No rules.</td></tr>
+                        }
+                        @foreach (var r in _rules)
+                        {
+                            <tr>
+                                <td><code>@r.Pattern</code></td>
+                                <td>@r.Action</td>
+                                <td>@r.Category</td>
+                                <td>@(r.Enabled ? "yes" : "no")</td>
+                                <td>
+                                    <button type="button" class="btn btn-sm btn-outline-danger" disabled="@_busy" @onclick="() => DeleteRuleAsync(r.Id)">Delete</button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+                @if (!string.IsNullOrEmpty(_modMsg))
+                {
+                    <div class="alert-soft mt-3">@_modMsg</div>
+                }
             }
             else
             {
@@ -124,6 +208,10 @@ else
                     <div class="form-check">
                         <input class="form-check-input" type="checkbox" @bind="_s.ShowAdvancedMetrics" id="adv" />
                         <label class="form-check-label" for="adv">Show advanced metrics by default</label>
+                    </div>
+                    <div>
+                        <label class="form-label">Estimated cost per 1M tokens</label>
+                        <input class="form-control" type="number" step="0.0001" @bind="_s.EstimatedCostPerMillionTokens" />
                     </div>
                 </div>
             }
@@ -149,14 +237,36 @@ else
     private AppSettings? _s;
     private string? _loadError;
     private string? _msg;
+    private string? _backupMsg;
+    private string? _modMsg;
+    private string? _webhookTestResult;
+    private bool _webhookTesting;
     private bool _saving;
+    private bool _busy;
     private string _hfToken = "";
+    private string _restorePath = "";
+    private string _draftModelSelect = "";
+    private List<ModelRecord> _models = [];
+    private List<ModerationRuleRow> _rules = [];
+    private string _rulePattern = "";
+    private string _ruleAction = "block";
+    private string _ruleCategory = "offensive";
+
+    private sealed class ModerationRuleRow
+    {
+        public Guid Id { get; set; }
+        public string Pattern { get; set; } = "";
+        public string Action { get; set; } = "";
+        public string Category { get; set; } = "";
+        public bool Enabled { get; set; }
+    }
 
     protected override async Task OnInitializedAsync()
     {
         try
         {
             _s = await SettingsSvc.GetAsync();
+            _draftModelSelect = _s.DraftModelId?.ToString() ?? "";
             var tokenFile = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
                 "ExLlamaSharp", "hf-token.txt");
@@ -164,11 +274,206 @@ else
             {
                 _hfToken = File.ReadAllText(tokenFile).Trim();
             }
+
+            _models = await Db.Models.AsNoTracking().OrderBy(m => m.Alias ?? m.Path).Take(200).ToListAsync();
         }
         catch (Exception ex)
         {
             _s = new AppSettings();
             _loadError = $"Using defaults ({ex.Message})";
+        }
+    }
+
+    private async Task OnTab(string t)
+    {
+        Tab = t;
+        if (t == "Moderation")
+        {
+            await LoadRulesAsync();
+        }
+    }
+
+    private HttpClient CreateApi()
+    {
+        var client = HttpClientFactory.CreateClient("local-api");
+        client.BaseAddress ??= new Uri(Nav.BaseUri);
+        return client;
+    }
+
+    private async Task BackupNowAsync()
+    {
+        _busy = true;
+        _backupMsg = null;
+        try
+        {
+            var client = CreateApi();
+            var resp = await client.PostAsJsonAsync("/api/v1/backup", new { });
+            var body = await resp.Content.ReadAsStringAsync();
+            _backupMsg = resp.IsSuccessStatusCode ? $"Backup created: {body}" : body;
+        }
+        catch (Exception ex)
+        {
+            _backupMsg = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task RestoreAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_restorePath))
+        {
+            _backupMsg = "Enter a restore path.";
+            return;
+        }
+
+        _busy = true;
+        _backupMsg = null;
+        try
+        {
+            var client = CreateApi();
+            var resp = await client.PostAsJsonAsync("/api/v1/backup/restore", new { path = _restorePath.Trim() });
+            var body = await resp.Content.ReadAsStringAsync();
+            _backupMsg = resp.IsSuccessStatusCode ? "Restore completed." : body;
+        }
+        catch (Exception ex)
+        {
+            _backupMsg = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task LoadRulesAsync()
+    {
+        _modMsg = null;
+        try
+        {
+            var client = CreateApi();
+            var resp = await client.GetAsync("/api/v1/moderation/rules");
+            var json = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode)
+            {
+                _modMsg = json;
+                _rules = [];
+                return;
+            }
+
+            using var doc = JsonDocument.Parse(json);
+            _rules = [];
+            if (doc.RootElement.TryGetProperty("data", out var data))
+            {
+                foreach (var e in data.EnumerateArray())
+                {
+                    _rules.Add(new ModerationRuleRow
+                    {
+                        Id = e.GetProperty("id").GetGuid(),
+                        Pattern = e.GetProperty("pattern").GetString() ?? "",
+                        Action = e.GetProperty("action").GetString() ?? "",
+                        Category = e.GetProperty("category").GetString() ?? "",
+                        Enabled = e.TryGetProperty("enabled", out var en) && en.GetBoolean(),
+                    });
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _modMsg = ex.Message;
+            _rules = [];
+        }
+    }
+
+    private async Task AddRuleAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_rulePattern))
+        {
+            _modMsg = "Pattern required.";
+            return;
+        }
+
+        _busy = true;
+        _modMsg = null;
+        try
+        {
+            var client = CreateApi();
+            var resp = await client.PostAsJsonAsync("/api/v1/moderation/rules", new
+            {
+                pattern = _rulePattern.Trim(),
+                action = _ruleAction,
+                category = _ruleCategory,
+                enabled = true,
+            });
+            var body = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode)
+            {
+                _modMsg = body;
+                return;
+            }
+
+            _rulePattern = "";
+            await LoadRulesAsync();
+        }
+        catch (Exception ex)
+        {
+            _modMsg = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task DeleteRuleAsync(Guid id)
+    {
+        _busy = true;
+        _modMsg = null;
+        try
+        {
+            var client = CreateApi();
+            var resp = await client.DeleteAsync($"/api/v1/moderation/rules/{id}");
+            var body = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode)
+            {
+                _modMsg = body;
+                return;
+            }
+
+            await LoadRulesAsync();
+        }
+        catch (Exception ex)
+        {
+            _modMsg = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task TestWebhookAsync()
+    {
+        _webhookTesting = true;
+        _webhookTestResult = null;
+        try
+        {
+            var client = CreateApi();
+            var resp = await client.PostAsync("/api/v1/webhooks/test", null);
+            var body = await resp.Content.ReadAsStringAsync();
+            _webhookTestResult = resp.IsSuccessStatusCode
+                ? "Test event sent."
+                : $"Failed ({(int)resp.StatusCode}): {body}";
+        }
+        catch (Exception ex)
+        {
+            _webhookTestResult = ex.Message;
+        }
+        finally
+        {
+            _webhookTesting = false;
         }
     }
 
@@ -179,6 +484,15 @@ else
         _msg = null;
         try
         {
+            if (Guid.TryParse(_draftModelSelect, out var draftId))
+            {
+                _s.DraftModelId = draftId;
+            }
+            else
+            {
+                _s.DraftModelId = null;
+            }
+
             var snap = _s;
             await SettingsSvc.UpdateAsync(dest =>
             {
@@ -201,8 +515,10 @@ else
                 dest.CudaVisibleDevices = snap.CudaVisibleDevices;
                 dest.ParallelismMode = snap.ParallelismMode;
                 dest.SpeculativeEnabled = snap.SpeculativeEnabled;
+                dest.DraftModelId = snap.DraftModelId;
                 dest.DraftK = snap.DraftK;
                 dest.ModelsPath = snap.ModelsPath;
+                dest.EstimatedCostPerMillionTokens = snap.EstimatedCostPerMillionTokens;
             });
             var tokenFile = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
@@ -218,6 +534,7 @@ else
             }
             _msg = "Saved.";
             _s = await SettingsSvc.GetAsync();
+            _draftModelSelect = _s.DraftModelId?.ToString() ?? "";
         }
         catch (Exception ex)
         {

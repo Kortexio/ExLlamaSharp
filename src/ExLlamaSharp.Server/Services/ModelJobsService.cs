@@ -420,5 +420,27 @@ public sealed class ModelJobsService
 
         job.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync().ConfigureAwait(false);
+
+        if (status is "completed" or "failed")
+        {
+            try
+            {
+                var webhooks = scope.ServiceProvider.GetRequiredService<WebhookService>();
+                var eventName = status == "completed" ? "job.completed" : "job.failed";
+                await webhooks.SendAsync(eventName, new
+                {
+                    job_id = job.JobId,
+                    type = job.Type,
+                    status = job.Status,
+                    model_id = job.ModelId,
+                    progress_pct = job.ProgressPct,
+                    error = job.Error,
+                }).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to send {Status} webhook for job {JobId}", status, jobId);
+            }
+        }
     }
 }

@@ -8,6 +8,10 @@
     <p>Health checks and common fixes.</p>
 </div>
 
+<p class="text-muted small mb-3">
+    Soft restart (<code>POST /api/v1/restart</code>) stops the host process; the Windows Service recovery policy must be configured to bring the service back up.
+</p>
+
 <div class="d-flex gap-2 flex-wrap mb-3">
     <button class="btn btn-primary" disabled="@_busy" @onclick="RunHealth">Run health check</button>
     <button class="btn btn-outline-secondary" disabled="@_busy" @onclick="RunReady">Readiness probe</button>

@@ -1,0 +1,65 @@
+@inject NavigationManager Nav
+@inject IJSRuntime Js
+
+@if (_ready)
+{
+    @ChildContent
+}
+
+@code {
+    [Parameter]
+    public RenderFragment? ChildContent { get; set; }
+
+    private bool _ready;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+
+        var path = Nav.ToBaseRelativePath(Nav.Uri);
+        var q = path.IndexOf('?', StringComparison.Ordinal);
+        if (q >= 0)
+        {
+            path = path[..q];
+        }
+
+        var h = path.IndexOf('#', StringComparison.Ordinal);
+        if (h >= 0)
+        {
+            path = path[..h];
+        }
+
+        path = path.Trim('/');
+        var isPublic = path is "login" or "setup" or "about"
+            || path.StartsWith("login/", StringComparison.OrdinalIgnoreCase)
+            || path.StartsWith("setup/", StringComparison.OrdinalIgnoreCase)
+            || path.StartsWith("about/", StringComparison.OrdinalIgnoreCase);
+
+        if (isPublic)
+        {
+            _ready = true;
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+
+        try
+        {
+            var hasKey = await Js.InvokeAsync<bool>("exLlamaSharpAdmin.hasApiKeyCookie");
+            if (!hasKey)
+            {
+                Nav.NavigateTo("/login", forceLoad: false);
+                return;
+            }
+        }
+        catch (JSException)
+        {
+            // Cookie helper unavailable — allow page; API calls still enforce auth.
+        }
+
+        _ready = true;
+        await InvokeAsync(StateHasChanged);
+    }
+}

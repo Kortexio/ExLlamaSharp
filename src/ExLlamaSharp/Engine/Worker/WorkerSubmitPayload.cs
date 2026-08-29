@@ -14,11 +14,12 @@ internal static class WorkerSubmitPayload
             {
                 role = RoleWire(m.Role),
                 content = m.Content ?? "",
-            }).ToList();
+                tool_call_id = m.ToolCallId,
+            }).ToList<object>();
 
             if (!string.IsNullOrWhiteSpace(toolsHint))
             {
-                messages.Insert(0, new { role = "system", content = toolsHint });
+                messages.Insert(0, new { role = "system", content = toolsHint, tool_call_id = (string?)null });
             }
 
             return new
@@ -29,10 +30,14 @@ internal static class WorkerSubmitPayload
                 temperature = request.Temperature,
                 top_p = request.TopP,
                 top_k = request.TopK,
+                min_p = request.MinP,
+                presence_penalty = request.PresencePenalty,
+                frequency_penalty = request.FrequencyPenalty,
+                seed = request.Seed,
                 stop = stops,
                 adapter_path = request.AdapterPath,
                 adapter_scaling = request.AdapterScaling,
-                json_schema = request.JsonSchema,
+                images = request.ImageDataUrls,
             };
         }
 
@@ -50,10 +55,14 @@ internal static class WorkerSubmitPayload
             temperature = request.Temperature,
             top_p = request.TopP,
             top_k = request.TopK,
+            min_p = request.MinP,
+            presence_penalty = request.PresencePenalty,
+            frequency_penalty = request.FrequencyPenalty,
+            seed = request.Seed,
             stop = stops,
             adapter_path = request.AdapterPath,
             adapter_scaling = request.AdapterScaling,
-            json_schema = request.JsonSchema,
+            images = request.ImageDataUrls,
         };
     }
 
@@ -69,6 +78,23 @@ internal static class WorkerSubmitPayload
         {
             sb.AppendLine("You may call tools by replying with a JSON object:");
             sb.AppendLine("""{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"NAME","arguments":"{}"}}]}""");
+            if (!string.IsNullOrWhiteSpace(request.ToolChoiceHint))
+            {
+                var choice = request.ToolChoiceHint.Trim();
+                if (string.Equals(choice, "none", StringComparison.OrdinalIgnoreCase))
+                {
+                    sb.AppendLine("Do NOT call tools; answer the user directly.");
+                }
+                else if (choice.StartsWith("required:", StringComparison.OrdinalIgnoreCase))
+                {
+                    sb.AppendLine("You MUST call tool: " + choice["required:".Length..].Trim());
+                }
+                else
+                {
+                    sb.AppendLine("tool_choice=" + choice);
+                }
+            }
+
             sb.AppendLine("Available tools JSON:");
             sb.AppendLine(request.ToolsJson);
         }

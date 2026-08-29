@@ -37,4 +37,7 @@ public sealed class AppSettings
     public int DraftK { get; set; } = 5;
 
     public string ModelsPath { get; set; } = string.Empty;
+
+    /// <summary>USD (or local currency) per 1M tokens for Usage estimated cost.</summary>
+    public decimal EstimatedCostPerMillionTokens { get; set; }
 }

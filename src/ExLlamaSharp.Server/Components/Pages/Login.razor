@@ -3,10 +3,12 @@
 @inject AppDbContext Db
 @inject NavigationManager Nav
 @inject IJSRuntime Js
-@inject IConfiguration Config
+@inject AdminUiSession Session
+@inject KeyCacheService KeyCache
+@using System.Security.Cryptography
 @using Microsoft.EntityFrameworkCore
 @using ExLlamaSharp.Server.Auth
-@using Microsoft.Extensions.Configuration
+@using ExLlamaSharp.Server.Services.Ui
 
 <PageTitle>Login — ExLlamaSharp</PageTitle>
 
@@ -37,6 +39,7 @@
 </div>
 
 @code {
+    private const string AdminUiKeyName = "admin-ui";
     private string _user = "admin";
     private string _pass = "";
     private string? _error;
@@ -56,16 +59,46 @@
                 return;
             }
 
-            var key = Config["ExLlamaSharp:AdminApiKey"] ?? "sk-exllamasharp-dev";
+            // Revoke prior admin-ui session keys for this user, then mint a fresh plaintext key.
+            var prior = await Db.ApiKeys
+                .Where(k => k.Name == AdminUiKeyName && k.UserId == found.Id && !k.Revoked)
+                .ToListAsync();
+            foreach (var k in prior)
+            {
+                k.Revoked = true;
+                KeyCache.Invalidate(k.KeyHash);
+            }
+
+            var raw = "sk-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
+            var hash = ApiKeyHasher.Hash(raw);
+            var entity = new ApiKey
+            {
+                Name = AdminUiKeyName,
+                KeyHash = hash,
+                KeyPrefix = raw[..Math.Min(8, raw.Length)],
+                Scopes = "chat,completions,embeddings,admin",
+                Rpm = 600,
+                Tpm = 1_000_000,
+                Priority = 1,
+                CostPerMillionTokens = 0,
+                UserId = found.Id,
+                TenantId = found.TenantId,
+                ExpiresAt = DateTime.UtcNow.AddDays(7),
+            };
+            Db.ApiKeys.Add(entity);
+            await Db.SaveChangesAsync();
+            KeyCache.Invalidate(hash);
+
+            Session.ApiKey = raw;
             try
             {
-                await Js.InvokeVoidAsync("exLlamaSharpAdmin.setApiKeyCookie", key);
+                await Js.InvokeVoidAsync("exLlamaSharpAdmin.setApiKeyCookie", raw);
             }
             catch (JSException)
             {
             }
 
-            Nav.NavigateTo("/");
+            Nav.NavigateTo("/", forceLoad: true);
         }
         catch (Exception ex)
         {

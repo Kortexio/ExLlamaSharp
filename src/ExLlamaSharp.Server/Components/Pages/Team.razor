@@ -1,13 +1,54 @@
 @page "/team"
 @inject AppDbContext Db
+@inject IHttpClientFactory HttpClientFactory
+@inject NavigationManager Nav
 @using Microsoft.EntityFrameworkCore
 
 <PageTitle>Team — ExLlamaSharp</PageTitle>
 
-<div class="page-header">
-    <h1>Team</h1>
-    <p>People who can manage this server.</p>
+<div class="page-header d-flex justify-content-between align-items-start flex-wrap gap-2">
+    <div>
+        <h1>Team</h1>
+        <p>People who can manage this server.</p>
+    </div>
+    <button class="btn btn-primary" @onclick="() => _showCreate = true">Add user</button>
 </div>
+
+@if (_showCreate)
+{
+    <div class="card mb-3">
+        <div class="card-body">
+            <h5 class="card-title">Create user</h5>
+            <div class="form-grid">
+                <div>
+                    <label class="form-label">Username</label>
+                    <input class="form-control" @bind="_newUser" autocomplete="off" />
+                </div>
+                <div>
+                    <label class="form-label">Password</label>
+                    <input type="password" class="form-control" @bind="_newPass" autocomplete="new-password" />
+                </div>
+                <div>
+                    <label class="form-label">Role</label>
+                    <select class="form-select" @bind="_newRole">
+                        <option value="admin">admin</option>
+                        <option value="operator">operator</option>
+                        <option value="viewer">viewer</option>
+                    </select>
+                </div>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-primary" disabled="@_busy" @onclick="CreateAsync">Create</button>
+                    <button class="btn btn-outline-secondary" @onclick="() => _showCreate = false">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@if (!string.IsNullOrEmpty(_msg))
+{
+    <div class="alert-soft mb-3">@_msg</div>
+}
 
 <div class="member-grid">
     @if (_users.Count == 0)
@@ -32,6 +73,34 @@
                         <span>· Last active @la.ToLocalTime().ToString("g")</span>
                     }
                 </div>
+                @if (_editingId == u.Id)
+                {
+                    <div class="form-grid mt-3">
+                        <div>
+                            <label class="form-label">Role</label>
+                            <select class="form-select" @bind="_editRole">
+                                <option value="admin">admin</option>
+                                <option value="operator">operator</option>
+                                <option value="viewer">viewer</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="form-label">New password (optional)</label>
+                            <input type="password" class="form-control" @bind="_editPass" autocomplete="new-password" />
+                        </div>
+                        <div class="d-flex gap-2">
+                            <button class="btn btn-sm btn-primary" disabled="@_busy" @onclick="() => SaveEditAsync(u.Id)">Save</button>
+                            <button class="btn btn-sm btn-outline-secondary" @onclick="() => _editingId = null">Cancel</button>
+                        </div>
+                    </div>
+                }
+                else
+                {
+                    <div class="mt-3 d-flex gap-2">
+                        <button class="btn btn-sm btn-outline-secondary" @onclick="() => BeginEdit(u)">Edit</button>
+                        <button class="btn btn-sm btn-outline-danger" disabled="@_busy" @onclick="() => DeleteAsync(u.Id)">Delete</button>
+                    </div>
+                }
             </div>
         </div>
     }
@@ -39,8 +108,26 @@
 
 @code {
     private List<User> _users = [];
+    private bool _showCreate;
+    private bool _busy;
+    private string _newUser = "";
+    private string _newPass = "";
+    private string _newRole = "viewer";
+    private Guid? _editingId;
+    private string _editRole = "viewer";
+    private string _editPass = "";
+    private string? _msg;
 
-    protected override async Task OnInitializedAsync()
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private HttpClient CreateApi()
+    {
+        var client = HttpClientFactory.CreateClient("local-api");
+        client.BaseAddress ??= new Uri(Nav.BaseUri);
+        return client;
+    }
+
+    private async Task ReloadAsync()
     {
         try
         {
@@ -48,10 +135,114 @@
         }
         catch
         {
-            _users =
-            [
-                new User { Username = "admin", Role = "admin", TenantId = "default", CreatedAt = DateTime.UtcNow },
-            ];
+            _users = [];
+        }
+    }
+
+    private async Task CreateAsync()
+    {
+        _busy = true;
+        _msg = null;
+        try
+        {
+            var client = CreateApi();
+            var resp = await client.PostAsJsonAsync("/api/v1/users", new
+            {
+                username = _newUser.Trim(),
+                password = _newPass,
+                role = _newRole,
+            });
+            var body = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode)
+            {
+                _msg = body;
+                return;
+            }
+
+            _showCreate = false;
+            _newUser = "";
+            _newPass = "";
+            _newRole = "viewer";
+            _msg = "User created.";
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _msg = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private void BeginEdit(User u)
+    {
+        _editingId = u.Id;
+        _editRole = u.Role;
+        _editPass = "";
+    }
+
+    private async Task SaveEditAsync(Guid id)
+    {
+        _busy = true;
+        _msg = null;
+        try
+        {
+            var client = CreateApi();
+            var payload = new Dictionary<string, object?> { ["role"] = _editRole };
+            if (!string.IsNullOrWhiteSpace(_editPass))
+            {
+                payload["password"] = _editPass;
+            }
+
+            var resp = await client.PatchAsJsonAsync($"/api/v1/users/{id}", payload);
+            var body = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode)
+            {
+                _msg = body;
+                return;
+            }
+
+            _editingId = null;
+            _msg = "User updated.";
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _msg = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task DeleteAsync(Guid id)
+    {
+        _busy = true;
+        _msg = null;
+        try
+        {
+            var client = CreateApi();
+            var resp = await client.DeleteAsync($"/api/v1/users/{id}");
+            var body = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode)
+            {
+                _msg = body;
+                return;
+            }
+
+            _msg = "User deleted.";
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _msg = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
         }
     }
 }

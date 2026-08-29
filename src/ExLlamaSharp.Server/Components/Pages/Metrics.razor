@@ -251,10 +251,8 @@ else
 
     private HttpClient CreateAdminClient()
     {
-        var client = HttpFactory.CreateClient();
-        client.BaseAddress = new Uri(Nav.BaseUri);
-        client.DefaultRequestHeaders.Authorization =
-            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "sk-exllamasharp-dev");
+        var client = HttpFactory.CreateClient("local-api");
+        client.BaseAddress ??= new Uri(Nav.BaseUri);
         return client;
     }
 

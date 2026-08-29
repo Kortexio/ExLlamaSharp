@@ -72,6 +72,9 @@ public sealed class SettingsDto
 
     [JsonPropertyName("models_path")]
     public string? ModelsPath { get; set; }
+
+    [JsonPropertyName("estimated_cost_per_million_tokens")]
+    public decimal? EstimatedCostPerMillionTokens { get; set; }
 }
 
 public sealed class CreateApiKeyRequest

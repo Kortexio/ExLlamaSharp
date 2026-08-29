@@ -28,7 +28,8 @@ internal static class OpenAiSseWriter
         string model,
         OpenAiSseKind kind,
         IAsyncEnumerable<CompletionDelta> deltas,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool parseToolCalls = false)
     {
         await using var writer = new StreamWriter(stream, new UTF8Encoding(false), leaveOpen: true);
         if (kind == OpenAiSseKind.Chat)
@@ -39,6 +40,7 @@ internal static class OpenAiSseWriter
 
         var filter = new StreamingStopFilter();
         var acc = new StreamAccumulator();
+        var bufferTools = parseToolCalls && kind == OpenAiSseKind.Chat;
 
         await foreach (var delta in deltas.WithCancellation(ct).ConfigureAwait(false))
         {
@@ -47,7 +49,10 @@ internal static class OpenAiSseWriter
             if (piece.Length > 0)
             {
                 acc.Text.Append(piece);
-                await WriteContentAsync(writer, kind, id, created, model, piece, ct).ConfigureAwait(false);
+                if (!bufferTools)
+                {
+                    await WriteContentAsync(writer, kind, id, created, model, piece, ct).ConfigureAwait(false);
+                }
             }
 
             if (delta.Eos || delta.Failed || delta.Cancelled || filter.Stopped)
@@ -60,10 +65,57 @@ internal static class OpenAiSseWriter
         if (flushed.Length > 0)
         {
             acc.Text.Append(flushed);
-            await WriteContentAsync(writer, kind, id, created, model, flushed, ct).ConfigureAwait(false);
+            if (!bufferTools)
+            {
+                await WriteContentAsync(writer, kind, id, created, model, flushed, ct).ConfigureAwait(false);
+            }
         }
 
-        await WriteDoneAsync(writer, kind, id, created, model, acc.FinishReason, ct).ConfigureAwait(false);
+        var finish = acc.FinishReason;
+        if (bufferTools && ToolCallParser.TryParse(acc.Text.ToString(), out var toolCalls, out var residual))
+        {
+            finish = "tool_calls";
+            var deltasList = toolCalls.Select((t, i) => new ChatToolCallDelta
+            {
+                Index = i,
+                Id = t.Id,
+                Type = t.Type,
+                Function = new ChatToolCallFunctionDelta
+                {
+                    Name = t.Function.Name,
+                    Arguments = t.Function.Arguments,
+                },
+            }).ToList();
+            await WriteDataAsync(writer, new ChatCompletionChunk
+            {
+                Id = id,
+                Created = created,
+                Model = model,
+                Choices =
+                [
+                    new ChatCompletionChunkChoice
+                    {
+                        Index = 0,
+                        Delta = new ChatCompletionDelta { ToolCalls = deltasList },
+                        FinishReason = null,
+                    },
+                ],
+            }, ct).ConfigureAwait(false);
+            acc.Text.Clear();
+            if (!string.IsNullOrEmpty(residual))
+            {
+                acc.Text.Append(residual);
+            }
+        }
+        else if (bufferTools)
+        {
+            foreach (var piece in ChunkText(acc.Text.ToString(), 12))
+            {
+                await WriteContentAsync(writer, kind, id, created, model, piece, ct).ConfigureAwait(false);
+            }
+        }
+
+        await WriteDoneAsync(writer, kind, id, created, model, finish, ct).ConfigureAwait(false);
         return acc.ToResult();
     }
 
@@ -74,7 +126,8 @@ internal static class OpenAiSseWriter
         string model,
         OpenAiSseKind kind,
         string text,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool parseToolCalls = false)
     {
         await using var writer = new StreamWriter(stream, new UTF8Encoding(false), leaveOpen: true);
         if (kind == OpenAiSseKind.Chat)
@@ -83,13 +136,46 @@ internal static class OpenAiSseWriter
                 .ConfigureAwait(false);
         }
 
+        var finish = "stop";
+        if (parseToolCalls && kind == OpenAiSseKind.Chat && ToolCallParser.TryParse(text, out var toolCalls, out var residual))
+        {
+            finish = "tool_calls";
+            var deltasList = toolCalls.Select((t, i) => new ChatToolCallDelta
+            {
+                Index = i,
+                Id = t.Id,
+                Type = t.Type,
+                Function = new ChatToolCallFunctionDelta
+                {
+                    Name = t.Function.Name,
+                    Arguments = t.Function.Arguments,
+                },
+            }).ToList();
+            await WriteDataAsync(writer, new ChatCompletionChunk
+            {
+                Id = id,
+                Created = created,
+                Model = model,
+                Choices =
+                [
+                    new ChatCompletionChunkChoice
+                    {
+                        Index = 0,
+                        Delta = new ChatCompletionDelta { ToolCalls = deltasList },
+                        FinishReason = null,
+                    },
+                ],
+            }, ct).ConfigureAwait(false);
+            text = residual ?? "";
+        }
+
         foreach (var piece in ChunkText(text, 12))
         {
             ct.ThrowIfCancellationRequested();
             await WriteContentAsync(writer, kind, id, created, model, piece, ct).ConfigureAwait(false);
         }
 
-        await WriteDoneAsync(writer, kind, id, created, model, "stop", ct).ConfigureAwait(false);
+        await WriteDoneAsync(writer, kind, id, created, model, finish, ct).ConfigureAwait(false);
     }
 
     private static async Task WriteContentAsync(
