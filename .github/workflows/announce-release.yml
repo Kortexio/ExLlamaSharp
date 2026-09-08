@@ -13,10 +13,9 @@ on:
         description: "Tag for manual dispatch (optional)"
         required: false
         default: ""
-      release_body:
-        description: "Body for manual dispatch (optional)"
-        required: false
-        default: ""
+
+permissions:
+  contents: read
 
 jobs:
   linkedin:
@@ -27,6 +26,26 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 9.0.x
+      - name: Resolve release notes
+        id: notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ github.event.inputs.release_tag }}
+        run: |
+          TAG="${EVENT_TAG:-$INPUT_TAG}"
+          if [ -z "$TAG" ]; then
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          # Always fetch from the Releases API so multiline notes survive workflow_dispatch.
+          gh api "repos/${{ github.repository }}/releases/tags/${TAG}" --jq .body > /tmp/release-body.md
+          {
+            echo "body<<EOF"
+            cat /tmp/release-body.md
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
       - name: Publish LinkedIn
         env:
           LINKEDIN_CLIENT_ID: ${{ secrets.LINKEDIN_CLIENT_ID }}
@@ -35,8 +54,8 @@ jobs:
           LINKEDIN_ACCESS_TOKEN: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
           LINKEDIN_PERSON_URN: ${{ secrets.LINKEDIN_PERSON_URN }}
           LINKEDIN_ORG_URN: ${{ secrets.LINKEDIN_ORG_URN }}
-          RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.release_tag }}
-          RELEASE_BODY: ${{ github.event.release.body || github.event.inputs.release_body }}
+          RELEASE_TAG: ${{ steps.notes.outputs.tag }}
+          RELEASE_BODY: ${{ steps.notes.outputs.body }}
           REPO_URL: ${{ github.event.repository.html_url }}
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
         run: |
@@ -58,11 +77,30 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 9.0.x
+      - name: Resolve release notes
+        id: notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ github.event.inputs.release_tag }}
+        run: |
+          TAG="${EVENT_TAG:-$INPUT_TAG}"
+          if [ -z "$TAG" ]; then
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          gh api "repos/${{ github.repository }}/releases/tags/${TAG}" --jq .body > /tmp/release-body.md
+          {
+            echo "body<<EOF"
+            cat /tmp/release-body.md
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
       - name: Publish dev.to
         env:
           DEVTO_API_KEY: ${{ secrets.DEVTO_API_KEY }}
-          RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.release_tag }}
-          RELEASE_BODY: ${{ github.event.release.body || github.event.inputs.release_body }}
+          RELEASE_TAG: ${{ steps.notes.outputs.tag }}
+          RELEASE_BODY: ${{ steps.notes.outputs.body }}
           REPO_URL: ${{ github.event.repository.html_url }}
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
         run: |
