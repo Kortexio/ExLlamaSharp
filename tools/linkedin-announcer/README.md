@@ -19,4 +19,6 @@ export REPO_URL=https://github.com/Kortexio/ExLlamaSharp
 dotnet run --project tools/linkedin-announcer -- post
 ```
 
-Post format: short hook + summary + CTA. Optional `LINKEDIN_ORG_URN` posts as the company page.
+Post format: hook + up to 6 improvement bullets from the release body + repo URL + Setup.exe download URL + release notes URL + hashtags.
+
+Optional `LINKEDIN_ORG_URN` posts as the company page.

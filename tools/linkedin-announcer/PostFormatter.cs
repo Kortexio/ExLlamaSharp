@@ -6,6 +6,7 @@ namespace LinkedInAnnouncer;
 public static partial class PostFormatter
 {
     private const int MaxLength = 2800;
+    private const string SetupAssetName = "ExLlamaSharp-Setup-win-x64.exe";
 
     private static readonly string[] Hooks =
     [
@@ -19,24 +20,32 @@ public static partial class PostFormatter
     public static string FormatReleasePost(string tagName, string releaseBody, string repoUrl, string? hook = null)
     {
         hook ??= Hooks[Math.Abs(tagName.GetHashCode(StringComparison.Ordinal)) % Hooks.Length];
-        var notesUrl = $"{repoUrl.TrimEnd('/')}/releases/tag/{tagName}";
-        var why = SummarizeBody(releaseBody);
+        var baseUrl = repoUrl.TrimEnd('/');
+        var notesUrl = $"{baseUrl}/releases/tag/{tagName}";
+        var downloadUrl = $"{baseUrl}/releases/download/{tagName}/{SetupAssetName}";
+        var improvements = SummarizeImprovements(releaseBody);
         var hashtags = "#dotnet #LLM #opensource #NVIDIA #localAI #OpenAI";
 
         var sb = new StringBuilder();
         sb.AppendLine(hook);
         sb.AppendLine();
         sb.AppendLine($"ExLlamaSharp {tagName} is out.");
-        if (!string.IsNullOrWhiteSpace(why))
+        sb.AppendLine();
+        if (improvements.Count > 0)
         {
-            sb.AppendLine(why);
+            sb.AppendLine("What's new:");
+            foreach (var item in improvements)
+                sb.AppendLine("• " + item);
         }
         else
         {
             sb.AppendLine("Windows LLM server with EXL3, OpenAI /v1 API, and Blazor admin.");
         }
+
         sb.AppendLine();
-        sb.AppendLine($"Try it: {notesUrl}");
+        sb.AppendLine($"Repo: {baseUrl}");
+        sb.AppendLine($"Download: {downloadUrl}");
+        sb.AppendLine($"Release notes: {notesUrl}");
         sb.AppendLine();
         sb.Append(hashtags);
 
@@ -44,52 +53,75 @@ public static partial class PostFormatter
         if (text.Length <= MaxLength)
             return text;
 
-        var reserve = hashtags.Length + notesUrl.Length + 40;
-        var keep = Math.Max(0, MaxLength - reserve);
-        return text[..keep].TrimEnd() + "…\n\nTry it: " + notesUrl + "\n\n" + hashtags;
+        // Prefer keeping links + hashtags; trim improvement bullets from the end.
+        var footer = $"\n\nRepo: {baseUrl}\nDownload: {downloadUrl}\nRelease notes: {notesUrl}\n\n{hashtags}";
+        var head = hook + $"\n\nExLlamaSharp {tagName} is out.\n\nWhat's new:\n";
+        var budget = MaxLength - head.Length - footer.Length - 1;
+        var bullets = new StringBuilder();
+        foreach (var item in improvements)
+        {
+            var line = "• " + item + "\n";
+            if (bullets.Length + line.Length > budget)
+                break;
+            bullets.Append(line);
+        }
+
+        if (bullets.Length == 0)
+            return (hook + $"\n\nExLlamaSharp {tagName} is out.\n\nWindows LLM server with EXL3, OpenAI /v1 API, and Blazor admin." + footer)
+                .TrimEnd();
+
+        return (head + bullets.ToString().TrimEnd() + footer).TrimEnd();
     }
 
-    private static string SummarizeBody(string releaseBody)
+    private static List<string> SummarizeImprovements(string releaseBody)
     {
         if (string.IsNullOrWhiteSpace(releaseBody))
-            return string.Empty;
+            return [];
 
-        var lines = releaseBody
-            .Replace("\r\n", "\n")
-            .Split('\n')
-            .Select(l => l.TrimEnd())
-            .Where(l => !string.IsNullOrWhiteSpace(l))
-            .Select(CleanMarkdownLine)
-            .Where(l => !string.IsNullOrWhiteSpace(l))
-            .Where(l => !IsNoiseLine(l))
-            .Take(2)
-            .ToList();
+        var items = new List<string>();
+        foreach (var raw in releaseBody.Replace("\r\n", "\n").Split('\n'))
+        {
+            var line = CleanMarkdownLine(raw.TrimEnd());
+            if (string.IsNullOrWhiteSpace(line) || IsNoiseLine(line))
+                continue;
 
-        if (lines.Count == 0)
-            return string.Empty;
+            var text = line.TrimStart('•', '-', '*', ' ').Trim();
+            if (string.IsNullOrWhiteSpace(text) || IsNoiseLine(text))
+                continue;
 
-        var joined = string.Join(' ', lines.Select(l => l.TrimStart('•', ' ').Trim()));
-        if (joined.Length > 220)
-            joined = joined[..217].TrimEnd() + "…";
-        return joined;
+            if (text.Length > 180)
+                text = text[..177].TrimEnd() + "…";
+
+            items.Add(text);
+            if (items.Count >= 6)
+                break;
+        }
+
+        return items;
     }
 
     private static bool IsNoiseLine(string line)
     {
-        var lower = line.ToLowerInvariant();
+        var lower = line.ToLowerInvariant().Trim();
+        if (lower.Length == 0)
+            return true;
+        if (lower is "summary" or "what's new" or "whats new" or "what shipped" or "notes"
+            or "release notes" or "install" or "fixes" or "changes")
+            return true;
         if (lower.StartsWith("try it", StringComparison.Ordinal))
             return true;
         if (lower.StartsWith("repo:", StringComparison.Ordinal))
             return true;
+        if (lower.StartsWith("download:", StringComparison.Ordinal))
+            return true;
         if (lower.StartsWith("full notes", StringComparison.Ordinal))
             return true;
-        if (lower.Contains("http://", StringComparison.Ordinal) || lower.Contains("https://", StringComparison.Ordinal))
+        if (lower.StartsWith("download **", StringComparison.Ordinal) || lower.StartsWith("download ", StringComparison.Ordinal))
             return true;
-        if (lower is "what's in this beta" or "what shipped" or "notes" or "release notes")
+        if (lower.StartsWith("exllamasharp", StringComparison.Ordinal) && lower.Contains("is out", StringComparison.Ordinal))
             return true;
-        if (lower.StartsWith("exllamasharp", StringComparison.Ordinal))
-            return true;
-        if (line.StartsWith('•'))
+        // Pure URL lines (links go in the footer)
+        if (lower.StartsWith("http://", StringComparison.Ordinal) || lower.StartsWith("https://", StringComparison.Ordinal))
             return true;
         return false;
     }
