@@ -898,7 +898,9 @@ public static class OpenAiEndpoints
         OllamaStyleOptions? options,
         int defaultMaxTokens)
     {
-        var fallback = defaultMaxTokens > 0 ? defaultMaxTokens : 2048;
+        // Reply length (not KV/context). Default comes from Settings → Default max tokens.
+        // Worker still clamps to remaining context: max_ctx - prompt_tokens.
+        var fallback = defaultMaxTokens > 0 ? defaultMaxTokens : 4096;
         var value = maxTokens ?? maxCompletionTokens ?? options?.NumPredict ?? fallback;
         return Math.Clamp(value, 1, 128_000);
     }

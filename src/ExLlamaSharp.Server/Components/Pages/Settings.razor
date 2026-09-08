@@ -31,8 +31,44 @@ else
         <div class="card-body">
             @if (Tab == "Network")
             {
+                <div class="mb-3 p-3 border rounded">
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" id="lanAccess"
+                               checked="@_lanAccess" @onchange="OnLanAccessChanged" />
+                        <label class="form-check-label" for="lanAccess">
+                            <strong>Allow access from this network (LAN)</strong>
+                        </label>
+                    </div>
+                    <p class="form-text mb-2">
+                        When enabled, the API listens on all interfaces (<code>0.0.0.0</code>) so other devices can reach this PC.
+                        The Tray will prompt for Administrator once to open Windows Firewall on the API port.
+                    </p>
+                    @if (_lanAccess)
+                    {
+                        <div class="alert-soft mb-0">
+                            <div><strong>OpenAI base URL</strong> (clients):</div>
+                            @foreach (var ip in _lanIps)
+                            {
+                                <div><code>http://@(ip):@_s.Port/v1</code></div>
+                            }
+                            @if (_lanIps.Count == 0)
+                            {
+                                <div><code>http://&lt;this-pc-ip&gt;:@_s.Port/v1</code></div>
+                            }
+                            <div class="mt-1"><strong>Ollama-compatible base</strong>: same host without <code>/v1</code>.</div>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="form-text">Local only: <code>http://127.0.0.1:@_s.Port/v1</code></div>
+                    }
+                </div>
                 <div class="form-grid">
-                    <div><label class="form-label">Bind address</label><input class="form-control" @bind="_s.BindAddress" /></div>
+                    <div>
+                        <label class="form-label">Bind address</label>
+                        <input class="form-control" @bind="_s.BindAddress" @bind:after="SyncLanFromBind" />
+                        <div class="form-text">Advanced: <code>127.0.0.1</code> (local) or <code>0.0.0.0</code> (LAN).</div>
+                    </div>
                     <div><label class="form-label">Port</label><input type="number" class="form-control" @bind="_s.Port" /></div>
                     <div><label class="form-label">CORS</label><input class="form-control" @bind="_s.Cors" /></div>
                     <div><label class="form-label">TLS cert path</label><input class="form-control" @bind="_s.TlsCertPath" /></div>
@@ -45,9 +81,9 @@ else
                     <button class="btn btn-outline-warning" disabled="@(_saving || _restarting)" @onclick="RestartServerAsync">
                         @(_restarting ? "Restarting…" : "Restart server now")
                     </button>
-                    @if (_portChanged)
+                    @if (_portChanged || _bindChanged)
                     {
-                        <span class="badge-status badge-warn">Port changed — restart required</span>
+                        <span class="badge-status badge-warn">Network change — restart required</span>
                     }
                 </div>
             }
@@ -285,9 +321,14 @@ else
     private bool _busy;
     private bool _restarting;
     private int _savedPort;
+    private string _savedBind = "127.0.0.1";
+    private bool _lanAccess;
+    private IReadOnlyList<string> _lanIps = Array.Empty<string>();
     private string _hostMode = ProductionRuntime.ReadHostMode();
     private string _savedHostMode = "desktop";
     private bool _portChanged => _s is not null && _s.Port != _savedPort;
+    private bool _bindChanged => _s is not null
+        && !string.Equals(_s.BindAddress, _savedBind, StringComparison.OrdinalIgnoreCase);
     private string _hfToken = "";
     private string _restorePath = "";
     private string _draftModelSelect = "";
@@ -312,6 +353,9 @@ else
         {
             _s = await SettingsSvc.GetAsync();
             _savedPort = _s.Port;
+            _savedBind = _s.BindAddress;
+            _lanAccess = ProductionRuntime.IsLanBind(_s.BindAddress);
+            _lanIps = ProductionRuntime.GetLanIpv4Addresses();
             _hostMode = ProductionRuntime.ReadHostMode();
             _savedHostMode = _hostMode;
             _draftModelSelect = _s.DraftModelId?.ToString() ?? "";
@@ -329,9 +373,48 @@ else
         {
             _s = new AppSettings();
             _savedPort = _s.Port;
+            _savedBind = _s.BindAddress;
+            _lanAccess = ProductionRuntime.IsLanBind(_s.BindAddress);
+            _lanIps = ProductionRuntime.GetLanIpv4Addresses();
             _hostMode = ProductionRuntime.ReadHostMode();
             _savedHostMode = _hostMode;
             _loadError = $"Using defaults ({ex.Message})";
+        }
+    }
+
+    private void OnLanAccessChanged(ChangeEventArgs e)
+    {
+        if (_s is null) return;
+        _lanAccess = e.Value is bool b ? b : string.Equals(e.Value?.ToString(), "true", StringComparison.OrdinalIgnoreCase);
+        if (_lanAccess)
+        {
+            _s.BindAddress = "0.0.0.0";
+            if (string.IsNullOrWhiteSpace(_s.Cors)
+                || _s.Cors.Contains("127.0.0.1", StringComparison.OrdinalIgnoreCase)
+                || _s.Cors.Contains("localhost", StringComparison.OrdinalIgnoreCase))
+            {
+                _s.Cors = "*";
+            }
+
+            _lanIps = ProductionRuntime.GetLanIpv4Addresses();
+        }
+        else
+        {
+            _s.BindAddress = "127.0.0.1";
+            if (string.IsNullOrWhiteSpace(_s.Cors) || _s.Cors.Trim() == "*")
+            {
+                _s.Cors = $"http://127.0.0.1:{_s.Port},http://localhost:{_s.Port}";
+            }
+        }
+    }
+
+    private void SyncLanFromBind()
+    {
+        if (_s is null) return;
+        _lanAccess = ProductionRuntime.IsLanBind(_s.BindAddress);
+        if (_lanAccess)
+        {
+            _lanIps = ProductionRuntime.GetLanIpv4Addresses();
         }
     }
 
@@ -546,6 +629,9 @@ else
 
             var snap = _s;
             var portNeedsRestart = snap.Port != _savedPort;
+            var bindNeedsRestart = !string.Equals(snap.BindAddress, _savedBind, StringComparison.OrdinalIgnoreCase);
+            var wasLan = ProductionRuntime.IsLanBind(_savedBind);
+            var nowLan = ProductionRuntime.IsLanBind(snap.BindAddress);
             var hostModeChanged = !string.Equals(_hostMode, _savedHostMode, StringComparison.OrdinalIgnoreCase);
             await SettingsSvc.UpdateAsync(dest =>
             {
@@ -574,6 +660,11 @@ else
                 dest.ModelsPath = snap.ModelsPath;
                 dest.EstimatedCostPerMillionTokens = snap.EstimatedCostPerMillionTokens;
             });
+            if (nowLan != wasLan || (nowLan && snap.Port != _savedPort))
+            {
+                ProductionRuntime.RequestFirewallRule(nowLan, snap.Port);
+            }
+
             var tokenFile = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
                 "ExLlamaSharp", "hf-token.txt");
@@ -596,12 +687,28 @@ else
             _msg = "Saved.";
             _s = await SettingsSvc.GetAsync();
             _savedPort = _s.Port;
+            _savedBind = _s.BindAddress;
+            _lanAccess = ProductionRuntime.IsLanBind(_s.BindAddress);
+            _lanIps = ProductionRuntime.GetLanIpv4Addresses();
             _draftModelSelect = _s.DraftModelId?.ToString() ?? "";
-            if (portNeedsRestart || hostModeChanged)
+            if (portNeedsRestart || bindNeedsRestart || hostModeChanged)
             {
-                _msg = hostModeChanged
-                    ? $"Saved. Host mode is now {_hostMode} — Restart the server (button below or Tray). Headless still needs a GPU service account from Setup."
-                    : $"Saved. Port is now {_s.Port} — restart the server to apply (button below or Tray).";
+                if (hostModeChanged)
+                {
+                    _msg = $"Saved. Host mode is now {_hostMode} — Restart the server (button below or Tray). Headless still needs a GPU service account from Setup.";
+                }
+                else if (bindNeedsRestart && nowLan)
+                {
+                    _msg = "Saved. LAN access enabled — approve the Firewall UAC prompt if shown, then restart the server.";
+                }
+                else if (bindNeedsRestart)
+                {
+                    _msg = "Saved. Bind address changed — restart the server to apply.";
+                }
+                else
+                {
+                    _msg = $"Saved. Port is now {_s.Port} — restart the server to apply (button below or Tray).";
+                }
             }
         }
         catch (Exception ex)
@@ -627,7 +734,7 @@ else
             var resp = await client.PostAsync("/api/v1/restart", null);
             var body = await resp.Content.ReadAsStringAsync();
             _msg = resp.IsSuccessStatusCode
-                ? $"Restart signaled. Reopen http://{_s.BindAddress}:{_s.Port}/ when ready."
+                ? $"Restart signaled. Reopen http://127.0.0.1:{_s.Port}/ when ready."
                 : body;
         }
         catch (Exception ex)

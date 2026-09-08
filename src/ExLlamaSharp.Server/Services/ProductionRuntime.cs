@@ -9,9 +9,11 @@ namespace ExLlamaSharp.Server.Services;
 public static class ProductionRuntime
 {
     public const string RestartFileName = "restart.request";
+    public const string FirewallFileName = "firewall.request";
     public const string ListenFileName = "listen.json";
     public const string HostModeFileName = "host-mode.json";
     public const string ServerMutexName = @"Global\ExLlamaSharp.Server";
+    public const string FirewallRuleNamePrefix = "ExLlamaSharp HTTP ";
 
     public static string DataRoot
     {
@@ -30,6 +32,8 @@ public static class ProductionRuntime
     }
 
     public static string RestartRequestPath => Path.Combine(DataRoot, RestartFileName);
+
+    public static string FirewallRequestPath => Path.Combine(DataRoot, FirewallFileName);
 
     public static string ListenFilePath => Path.Combine(DataRoot, ListenFileName);
 
@@ -239,5 +243,76 @@ public static class ProductionRuntime
         {
             // ignore
         }
+    }
+
+    /// <summary>
+    /// Ask the Tray (elevated) to add or remove the inbound Windows Firewall rule for the API port.
+    /// </summary>
+    public static void RequestFirewallRule(bool enable, int port)
+    {
+        if (port is < 1 or > 65535)
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(DataRoot);
+        File.WriteAllText(FirewallRequestPath, JsonSerializer.Serialize(new
+        {
+            enable,
+            port,
+            rule_name = FirewallRuleNamePrefix + port,
+            written_utc = DateTime.UtcNow.ToString("o"),
+        }));
+    }
+
+    public static bool IsLanBind(string? bind) =>
+        bind is "0.0.0.0" or "*"
+        || (!string.IsNullOrWhiteSpace(bind)
+            && bind is not ("127.0.0.1" or "localhost" or "::1"));
+
+    /// <summary>IPv4 addresses on up, non-loopback NICs (for Admin LAN URL hints).</summary>
+    public static IReadOnlyList<string> GetLanIpv4Addresses()
+    {
+        var list = new List<string>();
+        try
+        {
+            foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (ni.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up)
+                {
+                    continue;
+                }
+
+                if (ni.NetworkInterfaceType is System.Net.NetworkInformation.NetworkInterfaceType.Loopback)
+                {
+                    continue;
+                }
+
+                foreach (var ua in ni.GetIPProperties().UnicastAddresses)
+                {
+                    if (ua.Address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
+                    {
+                        continue;
+                    }
+
+                    if (System.Net.IPAddress.IsLoopback(ua.Address))
+                    {
+                        continue;
+                    }
+
+                    var s = ua.Address.ToString();
+                    if (!list.Contains(s, StringComparer.Ordinal))
+                    {
+                        list.Add(s);
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // optional UI hint
+        }
+
+        return list;
     }
 }

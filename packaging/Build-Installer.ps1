@@ -256,7 +256,7 @@ Run Uninstall.bat as Administrator.
 Setup-Exl3Python.bat - reinstall PyTorch into %ProgramData%\ExLlamaSharp\venv
 "@ | Set-Content -Path (Join-Path $Stage "README.txt") -Encoding UTF8
 
-$version = "1.3.2"
+$version = "1.3.2.1"
 $info = @{
     product = "ExLlamaSharp"
     version = $version

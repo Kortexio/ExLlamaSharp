@@ -231,6 +231,7 @@ public static class AdminEndpoints
     {
         try
         {
+            var before = await settings.GetAsync(ct).ConfigureAwait(false);
             var updated = await settings.UpdateAsync(s =>
             {
                 ApplySettings(s, body, replace: true);
@@ -241,6 +242,7 @@ public static class AdminEndpoints
                 ProductionRuntime.WriteHostMode(body.HostMode);
             }
 
+            MaybeRequestFirewall(before, updated);
             return Results.Json(ToSettingsDto(updated), JsonOptions);
         }
         catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
@@ -259,6 +261,7 @@ public static class AdminEndpoints
     {
         try
         {
+            var before = await settings.GetAsync(ct).ConfigureAwait(false);
             var updated = await settings.UpdateAsync(s =>
             {
                 ApplySettings(s, body, replace: false);
@@ -269,6 +272,7 @@ public static class AdminEndpoints
                 ProductionRuntime.WriteHostMode(body.HostMode);
             }
 
+            MaybeRequestFirewall(before, updated);
             return Results.Json(ToSettingsDto(updated), JsonOptions);
         }
         catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
@@ -276,6 +280,16 @@ public static class AdminEndpoints
             return Results.Json(
                 ErrorResponse.Create(ex.Message, "invalid_request_error", "invalid_settings"),
                 statusCode: StatusCodes.Status400BadRequest);
+        }
+    }
+
+    private static void MaybeRequestFirewall(AppSettings before, AppSettings after)
+    {
+        var wasLan = ProductionRuntime.IsLanBind(before.BindAddress);
+        var nowLan = ProductionRuntime.IsLanBind(after.BindAddress);
+        if (nowLan != wasLan || (nowLan && before.Port != after.Port))
+        {
+            ProductionRuntime.RequestFirewallRule(nowLan, after.Port);
         }
     }
 

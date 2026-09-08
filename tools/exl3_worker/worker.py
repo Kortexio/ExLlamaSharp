@@ -362,8 +362,39 @@ def _load(
         STATE.load_ts = time.time()
         _progress("ready", 100)
         _log(f"Loaded in {time.perf_counter() - t0:.2f}s vision_capable={vision_capable}")
+        _warmup_generator()
     finally:
         hb_stop.set()
+
+
+def _warmup_generator() -> None:
+    """Compile Triton/CUDA kernels once so the first real chat is not a 5s+ silent stall."""
+    from exllamav3 import Job
+
+    gen = STATE.generator
+    tok = STATE.tokenizer
+    if gen is None or tok is None:
+        return
+    try:
+        t0 = time.perf_counter()
+        ids = tok.encode("Hi", encode_special_tokens=True)
+        try:
+            job = Job(input_ids=ids, max_new_tokens=1, decode_special_tokens=False, identifier="warmup")
+        except TypeError:
+            job = Job(input_ids=ids, max_new_tokens=1, identifier="warmup")
+        gen.enqueue(job)
+        deadline = time.perf_counter() + 60
+        while gen.num_remaining_jobs() > 0 and time.perf_counter() < deadline:
+            gen.iterate()
+        _log(f"warmup done in {time.perf_counter() - t0:.2f}s")
+    except Exception as ex:
+        _log(f"warmup skipped: {ex}")
+        try:
+            # Best-effort cancel leftover warmup job
+            while gen is not None and gen.num_remaining_jobs() > 0:
+                gen.iterate()
+        except Exception:
+            pass
 
 
 def _try_load_weights(model: Any, phase: str, base: int, span: int) -> None:
@@ -683,6 +714,28 @@ def _prompt_len(ids: Any) -> int:
         return 0
 
 
+def _page_size() -> int:
+    for obj in (getattr(STATE, "generator", None), getattr(STATE, "cache", None)):
+        if obj is None:
+            continue
+        for attr in ("page_size", "max_page_size"):
+            try:
+                v = int(getattr(obj, attr, 0) or 0)
+                if v > 0:
+                    return v
+            except Exception:
+                pass
+        try:
+            pt = getattr(obj, "pagetable", None)
+            if pt is not None:
+                v = int(getattr(pt, "page_size", 0) or 0)
+                if v > 0:
+                    return v
+        except Exception:
+            pass
+    return 256
+
+
 def _enqueue(req_id: Any, prompt: str, msg: dict[str, Any]) -> None:
     from exllamav3 import Job
 
@@ -711,6 +764,7 @@ def _enqueue(req_id: Any, prompt: str, msg: dict[str, Any]) -> None:
     encode_kwargs: dict[str, Any] = dict(encode_special_tokens=True)
     if image_embeddings:
         encode_kwargs["embeddings"] = image_embeddings
+    t_enc = time.perf_counter()
     try:
         input_ids = STATE.tokenizer.encode(prompt, **encode_kwargs)
     except TypeError:
@@ -720,11 +774,37 @@ def _enqueue(req_id: Any, prompt: str, msg: dict[str, Any]) -> None:
                 "(upgrade exllamav3 multimodal build)"
             )
         input_ids = STATE.tokenizer.encode(prompt, encode_special_tokens=True)
-
     n_prompt = _prompt_len(input_ids)
+    _log(f"encode id={req_id} prompt_tokens={n_prompt} encode_ms={int((time.perf_counter()-t_enc)*1000)}")
+
+    # Fail fast: oversized prompts used to block forever inside generator.enqueue → client 408.
+    max_ctx = max(256, int(STATE.max_num_tokens or 8192))
+    reserve = 64
+    if n_prompt >= max_ctx - reserve:
+        raise RuntimeError(
+            f"prompt_too_long: prompt_tokens={n_prompt} max_ctx={max_ctx}. "
+            "Start a new chat or raise Max batched tokens (num_ctx) and reload the model."
+        )
+
+    requested_new = int(msg.get("max_new_tokens") or 256)
+    max_new = max(1, min(requested_new, max_ctx - n_prompt - 8))
+    if max_new < requested_new:
+        _log(f"clamp max_new {requested_new} -> {max_new} (ctx={max_ctx} prompt={n_prompt})")
+
+    st = _stats()
+    page = _page_size()
+    pages_needed = max(1, (n_prompt + max_new + page - 1) // page)
+    free_pages = int(st.get("free_pages") or 0)
+    if free_pages > 0 and pages_needed > free_pages:
+        raise RuntimeError(
+            f"kv_cache_full: need ~{pages_needed} pages for prompt+reply "
+            f"(prompt_tokens={n_prompt} max_new={max_new}) but free_pages={free_pages}. "
+            "Wait for other jobs, start a new chat, or reload with larger Max batched tokens."
+        )
+
     kwargs: dict[str, Any] = dict(
         input_ids=input_ids,
-        max_new_tokens=int(msg.get("max_new_tokens") or 256),
+        max_new_tokens=max_new,
         sampler=sampler,
         stop_conditions=stops or None,
         decode_special_tokens=False,
@@ -751,11 +831,13 @@ def _enqueue(req_id: Any, prompt: str, msg: dict[str, Any]) -> None:
     STATE.prompt_lens[req_id] = n_prompt
     STATE.t0[req_id] = time.perf_counter()
     STATE.prompt_tokens += n_prompt
+    t_eq = time.perf_counter()
     STATE.generator.enqueue(job)
     st = _stats()
     _log(
         f"enqueue id={req_id} prompt_tokens={n_prompt} max_new={kwargs['max_new_tokens']} "
-        f"pending={st.get('pending')} active={st.get('active')} free_pages={st.get('free_pages')}"
+        f"pending={st.get('pending')} active={st.get('active')} free_pages={st.get('free_pages')} "
+        f"enqueue_ms={int((time.perf_counter()-t_eq)*1000)}"
     )
 
 

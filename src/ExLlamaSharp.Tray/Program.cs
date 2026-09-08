@@ -131,6 +131,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private DateTime _lastAutoRecoverUtc = DateTime.MinValue;
     private DateTime _lastStableUtc = DateTime.MinValue;
     private FileSystemWatcher? _restartWatcher;
+    private FileSystemWatcher? _firewallWatcher;
+    private int _firewallBusy;
 
     public TrayApplicationContext()
     {
@@ -138,6 +140,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             _ui = SynchronizationContext.Current ?? new SynchronizationContext();
             WatchRestartRequest();
+            WatchFirewallRequest();
+            TryProcessFirewallRequest();
 
             _bmpOk = CreateIconBitmap(Color.FromArgb(34, 197, 94));
             _bmpWarn = CreateIconBitmap(Color.FromArgb(234, 179, 8));
@@ -672,6 +676,155 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
+    private void WatchFirewallRequest()
+    {
+        try
+        {
+            Directory.CreateDirectory(TrayPaths.DataRoot);
+            _firewallWatcher = new FileSystemWatcher(TrayPaths.DataRoot, "firewall.request")
+            {
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite,
+                EnableRaisingEvents = true,
+            };
+            void OnFirewall(object sender, FileSystemEventArgs e) => TryProcessFirewallRequest();
+            _firewallWatcher.Created += OnFirewall;
+            _firewallWatcher.Changed += OnFirewall;
+        }
+        catch
+        {
+            // optional
+        }
+    }
+
+    private void TryProcessFirewallRequest()
+    {
+        if (Interlocked.Exchange(ref _firewallBusy, 1) == 1)
+        {
+            return;
+        }
+
+        try
+        {
+            var path = Path.Combine(TrayPaths.DataRoot, "firewall.request");
+            if (!File.Exists(path))
+            {
+                return;
+            }
+
+            // Brief settle so writers finish
+            Thread.Sleep(200);
+            string json;
+            try
+            {
+                json = File.ReadAllText(path);
+            }
+            catch
+            {
+                return;
+            }
+
+            bool enable = true;
+            var port = 14563;
+            var ruleName = "ExLlamaSharp HTTP 14563";
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(json);
+                if (doc.RootElement.TryGetProperty("enable", out var en))
+                {
+                    enable = en.GetBoolean();
+                }
+
+                if (doc.RootElement.TryGetProperty("port", out var p) && p.TryGetInt32(out var portVal)
+                    && portVal is > 0 and < 65536)
+                {
+                    port = portVal;
+                }
+
+                if (doc.RootElement.TryGetProperty("rule_name", out var rn)
+                    && rn.GetString() is { Length: > 0 } name)
+                {
+                    ruleName = name;
+                }
+                else
+                {
+                    ruleName = "ExLlamaSharp HTTP " + port;
+                }
+            }
+            catch
+            {
+                return;
+            }
+
+            var ok = ApplyFirewallRuleElevated(enable, port, ruleName);
+            try
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+            catch
+            {
+                // ignore
+            }
+
+            if (ok)
+            {
+                ShowBalloon(
+                    "ExLlamaSharp",
+                    enable
+                        ? $"Firewall opened for LAN access (TCP {port})."
+                        : $"Firewall rule removed (TCP {port}).");
+            }
+            else
+            {
+                ShowBalloon(
+                    "ExLlamaSharp",
+                    "Could not update Windows Firewall (UAC cancelled or access denied). Open TCP "
+                    + port + " manually if LAN clients fail.");
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _firewallBusy, 0);
+        }
+    }
+
+    /// <summary>UAC-elevated netsh to allow/deny inbound TCP for the API port.</summary>
+    private static bool ApplyFirewallRuleElevated(bool enable, int port, string ruleName)
+    {
+        try
+        {
+            // Delete any previous rule with this name, then add when enabling.
+            var safeName = ruleName.Replace("\"", "");
+            var script = enable
+                ? $"netsh advfirewall firewall delete rule name=\"{safeName}\" >nul 2>&1 & "
+                  + $"netsh advfirewall firewall add rule name=\"{safeName}\" dir=in action=allow protocol=TCP localport={port} profile=any"
+                : $"netsh advfirewall firewall delete rule name=\"{safeName}\" & exit /b 0";
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = "/c " + script,
+                UseShellExecute = true,
+                Verb = "runas",
+                WindowStyle = ProcessWindowStyle.Hidden,
+            };
+            using var p = Process.Start(psi);
+            if (p is null)
+            {
+                return false;
+            }
+
+            return p.WaitForExit(60_000) && p.ExitCode == 0;
+        }
+        catch
+        {
+            // User cancelled UAC
+            return false;
+        }
+    }
+
     private static void OpenDataFolder()
     {
         Directory.CreateDirectory(TrayPaths.DataRoot);
@@ -842,6 +995,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         _timer.Stop();
         _restartWatcher?.Dispose();
+        _firewallWatcher?.Dispose();
         _tray.Visible = false;
         _tray.Dispose();
         _iconOk.Dispose();

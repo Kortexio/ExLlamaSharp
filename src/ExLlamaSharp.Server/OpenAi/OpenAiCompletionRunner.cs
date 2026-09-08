@@ -121,7 +121,19 @@ internal static class OpenAiCompletionRunner
             }
             catch (OperationCanceledException)
             {
-                return JsonError("Request timed out or cancelled.", "timeout_error", "timeout", StatusCodes.Status408RequestTimeout);
+                var clientAbort = http.RequestAborted.IsCancellationRequested;
+                var message = clientAbort
+                    ? "Client cancelled or timed out before the reply finished. Set stream:true and raise the client HTTP timeout to at least 120-300s."
+                    : "Request timed out or cancelled.";
+                http.RequestServices.GetService<Microsoft.Extensions.Logging.ILoggerFactory>()
+                    ?.CreateLogger("ExLlamaSharp.Server.OpenAi")
+                    .LogWarning(
+                        "chat completion 408 clientAbort={ClientAbort} stream={Stream} maxNew={MaxNew} elapsedMs={Elapsed}",
+                        clientAbort,
+                        run.Stream,
+                        run.EngineRequest.MaxNewTokens,
+                        (DateTime.UtcNow - started).TotalMilliseconds);
+                return JsonError(message, "timeout_error", "timeout", StatusCodes.Status408RequestTimeout);
             }
 
             if (completed.Failed)
