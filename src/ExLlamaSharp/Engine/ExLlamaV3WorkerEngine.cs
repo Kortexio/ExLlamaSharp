@@ -42,7 +42,10 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
         _admission = new WorkerAdmissionQueue(() => Math.Max(1, _options.MaxNumSeqs));
         _client = new WorkerJsonlClient(_logger, _options);
         _client.StatsReceived += _admission.OnStats;
+        _client.LoadProgressReceived += (phase, pct) => LoadProgress?.Invoke(phase, pct);
     }
+
+    public event Action<string, int>? LoadProgress;
 
     public WorkerEngineOptions Options
     {

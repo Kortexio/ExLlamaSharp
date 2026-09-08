@@ -66,7 +66,7 @@ if ($RemoveData) {
     Remove-Item $data -Recurse -Force -ErrorAction SilentlyContinue
 }
 else {
-    Write-Host "Kept data under %ProgramData%\ExLlamaSharp (use -RemoveData to wipe models/logs)." -ForegroundColor Cyan
+    Write-Host "Kept data under %ProgramData%\ExLlamaSharp (models, logs, venv). Use -RemoveData to wipe." -ForegroundColor Cyan
 }
 
 Write-Host "Uninstall complete." -ForegroundColor Green

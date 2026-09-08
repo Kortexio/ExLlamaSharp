@@ -89,8 +89,19 @@ else if (Tab == "mine")
             <button class="btn btn-sm btn-outline-danger" disabled="@_busy" @onclick="UnloadAsync">Unload</button>
         </div>
     }
-    <div class="d-flex flex-wrap gap-2 mb-3">
-                        <button class="btn btn-sm btn-outline-danger" disabled="@(!_busy && _loadingId is null)" @onclick="CancelLoadUiAsync">Cancel load</button>
+    <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
+        <button class="btn btn-sm btn-outline-danger" disabled="@(!_busy && _loadingId is null)" @onclick="CancelLoadUiAsync">Cancel load</button>
+        @if (_loadingId is not null)
+        {
+            <div class="flex-grow-1" style="min-width:12rem">
+                <div class="progress-thin"><span style="width:@(_loadPct.ToString("0"))%"></span></div>
+                <div class="form-text mb-0">
+                    @(string.IsNullOrEmpty(_loadPhase) ? "Loading" : _loadPhase)
+                    @if (_loadPct > 0) { <text> · @_loadPct%</text> }
+                    @if (_loadElapsedSec > 0) { <text> · @_loadElapsedSec.ToString("0")s</text> }
+                </div>
+            </div>
+        }
     </div>
     <div class="card">
         <div class="card-body p-0">
@@ -131,7 +142,9 @@ else if (Tab == "mine")
                             <td>
                                 @if (isLoading)
                                 {
-                                    <span class="badge-status badge-warn">Loading…</span>
+                                    <span class="badge-status badge-warn">
+                                        @(string.IsNullOrEmpty(_loadPhase) ? "Loading…" : $"Loading {_loadPhase} {_loadPct}%")
+                                    </span>
                                 }
                                 else if (isLoaded)
                                 {
@@ -248,6 +261,9 @@ else
     private bool _pulling;
     private bool _busy;
     private Guid? _loadingId;
+    private string? _loadPhase;
+    private int _loadPct;
+    private double _loadElapsedSec;
     private Guid? _editingAliasId;
     private string _aliasDraft = "";
     private string _quantizeModelId = "";
@@ -624,6 +640,9 @@ else
 
         _busy = true;
         _loadingId = model.Id;
+        _loadPhase = "starting";
+        _loadPct = 1;
+        _loadElapsedSec = 0;
         _msg = $"Loading {label}… this can take 1–3 minutes. UI stays responsive.";
         await InvokeAsync(StateHasChanged);
         try
@@ -666,6 +685,21 @@ else
                 var error = root.TryGetProperty("error", out var e) && e.ValueKind == System.Text.Json.JsonValueKind.String
                     ? e.GetString()
                     : null;
+                if (root.TryGetProperty("phase", out var ph) && ph.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    _loadPhase = ph.GetString();
+                }
+
+                if (root.TryGetProperty("progress_pct", out var pp) && pp.TryGetInt32(out var pct))
+                {
+                    _loadPct = pct;
+                }
+
+                if (root.TryGetProperty("elapsed_ms", out var em) && em.TryGetInt64(out var ms))
+                {
+                    _loadElapsedSec = ms / 1000.0;
+                }
+
                 Guid? loadedId = null;
                 if (root.TryGetProperty("model_id", out var mid) && mid.ValueKind == System.Text.Json.JsonValueKind.String
                     && Guid.TryParse(mid.GetString(), out var gid))
@@ -694,7 +728,8 @@ else
                     return;
                 }
 
-                _msg = $"Loading {label}… still working.";
+                var phase = string.IsNullOrEmpty(_loadPhase) ? "working" : _loadPhase;
+                _msg = $"Loading {label} — {phase} {(_loadPct > 0 ? _loadPct + "%" : "")} ({_loadElapsedSec:0}s).";
                 await InvokeAsync(StateHasChanged);
             }
 

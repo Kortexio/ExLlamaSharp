@@ -196,7 +196,7 @@ if ([string]::IsNullOrWhiteSpace($VenvPath)) {
         $VenvPath = $legacyVenv
     }
     else {
-        $VenvPath = $appVenv
+        $VenvPath = $legacyVenv
     }
 }
 

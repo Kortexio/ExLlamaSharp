@@ -4,6 +4,7 @@ using ExLlamaSharp.Performance;
 using ExLlamaSharp.Server;
 using ExLlamaSharp.Server.Data;
 using ExLlamaSharp.Server.Services;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 
 // .NET 10 performance: sustained low latency for /v1 hot path
@@ -37,6 +38,11 @@ builder.Services.Configure<HostOptions>(o =>
 
 ProductionRuntime.EnsureWritableDataRoot();
 var dataRoot = ProductionRuntime.DataRoot;
+var dpKeysDir = Path.Combine(dataRoot, "dp-keys");
+Directory.CreateDirectory(dpKeysDir);
+builder.Services.AddDataProtection()
+    .PersistKeysToFileSystem(new DirectoryInfo(dpKeysDir))
+    .SetApplicationName("ExLlamaSharp");
 
 var dbPath = Path.Combine(dataRoot, "app.db");
 builder.Services.AddDbContext<AppDbContext>(options =>

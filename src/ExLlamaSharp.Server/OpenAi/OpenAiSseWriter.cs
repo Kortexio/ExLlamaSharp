@@ -29,9 +29,16 @@ internal static class OpenAiSseWriter
         OpenAiSseKind kind,
         IAsyncEnumerable<CompletionDelta> deltas,
         CancellationToken ct,
-        bool parseToolCalls = false)
+        bool parseToolCalls = false,
+        string? preambleComment = null)
     {
         await using var writer = new StreamWriter(stream, new UTF8Encoding(false), leaveOpen: true);
+        if (!string.IsNullOrWhiteSpace(preambleComment))
+        {
+            await writer.WriteAsync($": num_ctx {preambleComment}\n\n").ConfigureAwait(false);
+            await writer.FlushAsync(ct).ConfigureAwait(false);
+        }
+
         if (kind == OpenAiSseKind.Chat)
         {
             await WriteDataAsync(writer, ChatChunk(id, created, model, role: "assistant", content: null, finish: null), ct)

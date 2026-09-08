@@ -7,7 +7,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$VenvPython = "C:\Program Files\ExLlamaSharp\venv\Scripts\python.exe",
+    [string]$VenvPython = "",
     [string]$DonorPyd = ""
 )
 
@@ -15,8 +15,16 @@ $ErrorActionPreference = "Stop"
 
 function Write-Step([string]$m) { Write-Host "==> $m" -ForegroundColor Cyan }
 
-if (-not (Test-Path $VenvPython)) {
-    throw "venv python not found: $VenvPython"
+if ([string]::IsNullOrWhiteSpace($VenvPython)) {
+    foreach ($c in @(
+            (Join-Path $env:ProgramData "ExLlamaSharp\venv\Scripts\python.exe"),
+            (Join-Path $env:ProgramFiles "ExLlamaSharp\venv\Scripts\python.exe")
+        )) {
+        if (Test-Path $c) { $VenvPython = $c; break }
+    }
+}
+if (-not $VenvPython -or -not (Test-Path $VenvPython)) {
+    throw "venv python not found (looked in %ProgramData% and %ProgramFiles%)"
 }
 
 $site = & $VenvPython -c "import site; print(site.getsitepackages()[0])"

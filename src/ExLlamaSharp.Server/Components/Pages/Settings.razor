@@ -73,7 +73,14 @@ else
             else if (Tab == "Multi-GPU")
             {
                 <div class="form-grid">
-                    <div><label class="form-label">CUDA_VISIBLE_DEVICES</label><input class="form-control" @bind="_s.CudaVisibleDevices" /></div>
+                    <div>
+                        <label class="form-label">CUDA_VISIBLE_DEVICES</label>
+                        <input class="form-control" @bind="_s.CudaVisibleDevices" placeholder="0" />
+                        <div class="form-text">
+                            GPU <strong>indices</strong> (e.g. <code>0</code> or <code>0,1</code>), not the GPU count.
+                            Empty = all GPUs. <code>1</code> on a single GPU hides the only device and Load fails.
+                        </div>
+                    </div>
                     <div>
                         <label class="form-label">Parallelism mode</label>
                         <select class="form-select" @bind="_s.ParallelismMode">
@@ -113,6 +120,17 @@ else
                         <label class="form-check-label" for="lms">Load last model on startup</label>
                     </div>
                     <div><label class="form-label">Models path</label><input class="form-control" @bind="_s.ModelsPath" /></div>
+                    <div>
+                        <label class="form-label">Host mode</label>
+                        <select class="form-select" @bind="_hostMode">
+                            <option value="desktop">desktop — Tray starts Server in the user session</option>
+                            <option value="headless">headless — Windows service (needs a GPU account)</option>
+                        </select>
+                        <div class="form-text">
+                            Stored in <code>%ProgramData%\ExLlamaSharp\host-mode.json</code>. Switching requires Restart.
+                            Headless does <strong>not</strong> configure a GPU service account from this page — re-run Setup as Admin.
+                        </div>
+                    </div>
                 </div>
             }
             else if (Tab == "Hugging Face")
@@ -267,6 +285,8 @@ else
     private bool _busy;
     private bool _restarting;
     private int _savedPort;
+    private string _hostMode = ProductionRuntime.ReadHostMode();
+    private string _savedHostMode = "desktop";
     private bool _portChanged => _s is not null && _s.Port != _savedPort;
     private string _hfToken = "";
     private string _restorePath = "";
@@ -292,6 +312,8 @@ else
         {
             _s = await SettingsSvc.GetAsync();
             _savedPort = _s.Port;
+            _hostMode = ProductionRuntime.ReadHostMode();
+            _savedHostMode = _hostMode;
             _draftModelSelect = _s.DraftModelId?.ToString() ?? "";
             var tokenFile = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
@@ -307,6 +329,8 @@ else
         {
             _s = new AppSettings();
             _savedPort = _s.Port;
+            _hostMode = ProductionRuntime.ReadHostMode();
+            _savedHostMode = _hostMode;
             _loadError = $"Using defaults ({ex.Message})";
         }
     }
@@ -522,6 +546,7 @@ else
 
             var snap = _s;
             var portNeedsRestart = snap.Port != _savedPort;
+            var hostModeChanged = !string.Equals(_hostMode, _savedHostMode, StringComparison.OrdinalIgnoreCase);
             await SettingsSvc.UpdateAsync(dest =>
             {
                 dest.BindAddress = snap.BindAddress;
@@ -561,13 +586,22 @@ else
             {
                 File.WriteAllText(tokenFile, _hfToken.Trim());
             }
+            if (hostModeChanged)
+            {
+                ProductionRuntime.WriteHostMode(_hostMode);
+                _savedHostMode = ProductionRuntime.ReadHostMode();
+                _hostMode = _savedHostMode;
+            }
+
             _msg = "Saved.";
             _s = await SettingsSvc.GetAsync();
             _savedPort = _s.Port;
             _draftModelSelect = _s.DraftModelId?.ToString() ?? "";
-            if (portNeedsRestart)
+            if (portNeedsRestart || hostModeChanged)
             {
-                _msg = $"Saved. Port is now {_s.Port} — restart the server to apply (button below or Tray).";
+                _msg = hostModeChanged
+                    ? $"Saved. Host mode is now {_hostMode} — Restart the server (button below or Tray). Headless still needs a GPU service account from Setup."
+                    : $"Saved. Port is now {_s.Port} — restart the server to apply (button below or Tray).";
             }
         }
         catch (Exception ex)

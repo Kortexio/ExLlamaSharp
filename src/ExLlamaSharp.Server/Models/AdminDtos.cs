@@ -84,6 +84,10 @@ public sealed class SettingsDto
 
     [JsonPropertyName("estimated_cost_per_million_tokens")]
     public decimal? EstimatedCostPerMillionTokens { get; set; }
+
+    /// <summary>desktop | headless. Stored in host-mode.json, not SQLite.</summary>
+    [JsonPropertyName("host_mode")]
+    public string? HostMode { get; set; }
 }
 
 public sealed class CreateApiKeyRequest

@@ -237,7 +237,7 @@ Write-Host "  Included Install.ps1 / Install.bat" -ForegroundColor Gray
 Installed automatically:
 - Server + Windows Service
 - Python 3.12 (if missing) + VC++ Redistributable (bundled)
-- Python venv + PyTorch CUDA 12.8 (downloaded)
+- Python venv + PyTorch CUDA 12.8 in %ProgramData%\ExLlamaSharp\venv (downloaded)
 - ExLlamaV3 CUDA extension (bundled official wheel)
 - Firewall + shortcuts + Tray app
 
@@ -253,10 +253,10 @@ Run Uninstall.bat as Administrator.
 
 ## GPU repair (optional)
 
-Setup-Exl3Python.bat - reinstall PyTorch into Program Files\ExLlamaSharp\venv
+Setup-Exl3Python.bat - reinstall PyTorch into %ProgramData%\ExLlamaSharp\venv
 "@ | Set-Content -Path (Join-Path $Stage "README.txt") -Encoding UTF8
 
-$version = "1.3.0"
+$version = "1.3.1"
 $info = @{
     product = "ExLlamaSharp"
     version = $version

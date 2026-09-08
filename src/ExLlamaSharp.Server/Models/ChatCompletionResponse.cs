@@ -21,6 +21,9 @@ public sealed class ChatCompletionResponse
 
     [JsonPropertyName("usage")]
     public UsageInfo? Usage { get; init; }
+
+    [JsonPropertyName("warning")]
+    public string? Warning { get; set; }
 }
 
 public sealed class ChatCompletionChoice

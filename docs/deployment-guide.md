@@ -1,6 +1,6 @@
 ﻿# ExLlamaSharp - Guia de Implantação
 
-**Versão:** 1.3.0  
+**Versão:** 1.3.1  
 **Audiência:** Administradores de TI, DevOps
 
 ---
@@ -39,7 +39,9 @@ Modos de host (`%ProgramData%\ExLlamaSharp\host-mode.json`):
 - **desktop** (default): serviço Manual; Tray + tarefa de logon `ExLlamaSharpTrayLogon` sobem o Server na sessão do utilizador (GPU).
 - **headless**: serviço Delayed Auto com conta GPU (não LocalSystem). Tray só observa.
 
-Após install: `packaging\Verify-Install.ps1`. Authenticode: `EXLLAMASHARP_SIGN_PFX` no `Build-Installer.ps1`.
+Após install: `packaging\Verify-Install.ps1`. Provas de resiliência: `packaging\Prove-Resilience.ps1`. Redeploy local (nunca copies `bin` FDD): `packaging\Redeploy-Local.ps1`.
+
+Authenticode: se `EXLLAMASHARP_SIGN_PFX` + `signtool` existirem, `Build-Installer.ps1` assina Server/Tray/Setup. Sem PFX o Setup fica **por assinar** (SmartScreen).
 
 Build:
 
@@ -84,6 +86,7 @@ foreach ($s in $servers) {
 Install.ps1 -SkipPyTorch
 Install.ps1 -InstallDir "D:\Apps\ExLlamaSharp"
 Install.ps1 -Unattended
+Install.ps1 -HostMode headless -ServiceAccount ".\gpuuser" -ServicePasswordFile C:\Temp\svc.pwd
 ```
 
 ---
@@ -93,9 +96,10 @@ Install.ps1 -Unattended
 | Item | Local |
 |------|--------|
 | App | `C:\Program Files\ExLlamaSharp\` |
-| venv / PyTorch | `C:\Program Files\ExLlamaSharp\venv\` |
+| venv / PyTorch (novo) | `%ProgramData%\ExLlamaSharp\venv\` |
+| venv legado | `C:\Program Files\ExLlamaSharp\venv\` (reusado, não migrado) |
 | Dados / modelos / logs | `%ProgramData%\ExLlamaSharp\` |
-| Serviço | `ExLlamaSharp` (Automatic) |
+| Serviço | Desktop: Manual/parado. Headless: Delayed Auto + conta GPU |
 | UI | http://localhost:14563 |
 
 ```powershell

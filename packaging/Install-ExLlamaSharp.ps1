@@ -22,6 +22,9 @@ param(
     [int]$Port = 14563,
     [ValidateSet("desktop", "headless")]
     [string]$HostMode = "desktop",
+    [string]$ServiceAccount = "",
+    [string]$ServicePasswordFile = "",
+    [string]$ServicePassword = "",
     [switch]$SkipPyTorch,
     [switch]$SkipVCRedist,
     [switch]$Unattended,
@@ -241,6 +244,13 @@ if (-not (Test-IsAdmin)) {
 }
 Write-Log "Admin OK" "OK"
 
+if ($HostMode -eq "headless") {
+    if ([string]::IsNullOrWhiteSpace($ServiceAccount) -or $ServiceAccount -match '(?i)^(LocalSystem|SYSTEM|NT AUTHORITY\\SYSTEM)$') {
+        Write-Log "Headless requires -ServiceAccount (a GPU-capable Windows user). LocalSystem is refused (Session 0 CUDA)." "ERR"
+        exit 1
+    }
+}
+
 $payload = Resolve-PayloadDir
 if (-not $payload) {
     Write-Log "Payload not found (run Build-Installer.ps1 or use the ZIP)" "ERR"
@@ -286,7 +296,7 @@ Write-Log "Copying files to $InstallDir" "STEP"
 if (-not (Test-Path $InstallDir)) {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 }
-$venvPath = Join-Path $InstallDir "venv"
+$legacyVenv = Join-Path $InstallDir "venv"
 # Copy everything except wiping a good venv: copy payload items individually
 Get-ChildItem $payload -Force | ForEach-Object {
     $dest = Join-Path $InstallDir $_.Name
@@ -309,6 +319,15 @@ cmd /c "icacls `"$dataDir`" /grant Users:(OI)(CI)M /T" | Out-Null
 Get-ChildItem $dataDir -Filter "app.db*" -ErrorAction SilentlyContinue | ForEach-Object {
     cmd /c "icacls `"$($_.FullName)`" /grant Users:M" | Out-Null
 }
+$programDataVenv = Join-Path $dataDir "venv"
+if ((Test-Path (Join-Path $legacyVenv "Scripts\python.exe")) -and -not $ForceRecreateVenv) {
+    $venvPath = $legacyVenv
+    Write-Log "Reusing existing Program Files venv (not migrating)" "OK"
+} else {
+    $venvPath = $programDataVenv
+    Write-Log "venv target: $venvPath" "OK"
+}
+cmd /c "icacls `"$programDataVenv`" /grant Users:(OI)(CI)M /T" 2>$null | Out-Null
 @{ mode = $HostMode; written_utc = [DateTime]::UtcNow.ToString("o") } |
     ConvertTo-Json | Set-Content (Join-Path $dataDir "host-mode.json") -Encoding UTF8
 $uninstallSrc = Join-Path $PSScriptRoot "Uninstall.ps1"
@@ -375,6 +394,7 @@ if (-not (Test-Path $pythonExe)) {
 } else {
     Write-Log "Reusing existing venv" "OK"
 }
+cmd /c "icacls `"$venvPath`" /grant Users:(OI)(CI)M /T" | Out-Null
 
 if (-not $SkipPyTorch) {
     $offline = Resolve-OfflineWheelsDir
@@ -463,6 +483,22 @@ if ($HostMode -eq "headless") {
 # Allow interactive users to Start/Stop/Query so the Tray can reset without UAC
 $svcSddl = 'D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWRPWPDTLOCRRC;;;IU)(A;;CCLCSWRPWPDTLOCRRC;;;AU)(A;;CCLCSWLOCRRC;;;SU)'
 & sc.exe sdset $ServiceName $svcSddl | Out-Null
+if ($HostMode -eq "headless") {
+    $svcPassword = $ServicePassword
+    if ($ServicePasswordFile -and (Test-Path $ServicePasswordFile)) {
+        $svcPassword = (Get-Content -LiteralPath $ServicePasswordFile -Raw).TrimEnd("`r", "`n")
+        Remove-Item -LiteralPath $ServicePasswordFile -Force -ErrorAction SilentlyContinue
+        Write-Log "Read service password file and deleted it" "OK"
+    }
+    $cfg = & sc.exe config $ServiceName obj= $ServiceAccount password= $svcPassword 2>&1
+    Write-Log ("sc.exe config account: " + ($cfg | Out-String).Trim())
+    if ($LASTEXITCODE -ne 0) {
+        Write-Log "Failed to set service account $ServiceAccount. Grant 'Log on as a service' and retry." "ERR"
+        exit 1
+    }
+    Write-Log "Service account $ServiceAccount (grant Log on as a service if start fails)" "OK"
+}
+
 Write-Log "Service registered" "OK"
 
 # 7) Firewall — only if the API is intended to leave loopback (operator can add later)

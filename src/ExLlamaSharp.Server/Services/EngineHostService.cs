@@ -1,4 +1,5 @@
 using ExLlamaSharp.Engine;
+using ExLlamaSharp.Engine.Worker;
 using ExLlamaSharp.Server.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -33,6 +34,9 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
     private Task? _loadTask;
     private bool _disposed;
     private readonly bool _forceMock;
+    private string? _loadPhase;
+    private int _loadProgressPct;
+    private DateTime? _loadStartedUtc;
 
     public EngineHostService(
         ILogger<EngineHostService> logger,
@@ -72,6 +76,11 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
     public Guid? LoadingModelId => _loadingModelId;
     public Guid? LoadedModelId => _loadedModelId;
     public string? LoadedModelPath => _loadedModelPath;
+    public string? LoadPhase => _loadPhase;
+    public int LoadProgressPct => _loadProgressPct;
+    public long? LoadElapsedMs => _loadStartedUtc is DateTime started
+        ? (long)(DateTime.UtcNow - started).TotalMilliseconds
+        : null;
 
     /// <summary>
     /// True when the loaded EXL3 worker reported a working vision component.
@@ -219,10 +228,13 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
                 if (_engine is ExLlamaV3WorkerEngine worker)
                 {
                     worker.Options = await WorkerOptionsFromSettingsAsync(cancellationToken).ConfigureAwait(false);
+                    worker.LoadProgress += OnWorkerLoadProgress;
                 }
 
+                SetLoadProgress("starting", 1);
                 await _engine.LoadAsync(modelPath, cancellationToken).ConfigureAwait(false);
                 _engine.Start();
+                SetLoadProgress("ready", 100);
             }
             catch
             {
@@ -236,6 +248,13 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
                 }
 
                 throw;
+            }
+            finally
+            {
+                if (_engine is ExLlamaV3WorkerEngine done)
+                {
+                    done.LoadProgress -= OnWorkerLoadProgress;
+                }
             }
 
             lock (_gate)
@@ -288,6 +307,7 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
 
         _lastLoadError = null;
         _loadingModelId = modelId;
+        SetLoadProgress("queued", 0);
         rejectReason = null;
 
         var previous = Interlocked.Exchange(ref _loadCts, new CancellationTokenSource(TimeSpan.FromSeconds(90)));
@@ -542,12 +562,18 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
             }
         }
 
+        var cuda = CudaDeviceEnvironment.Normalize(s.CudaVisibleDevices, out var cudaWarning);
+        if (!string.IsNullOrWhiteSpace(cudaWarning))
+        {
+            _logger.LogWarning("{Warning}", cudaWarning);
+        }
+
         return new WorkerEngineOptions
         {
             MaxNumSeqs = Math.Max(1, s.MaxNumSeqs),
             MaxChunkSize = Math.Max(1, s.MaxChunkSize),
             MaxBatchedTokens = Math.Max(256, s.MaxBatchedTokens),
-            CudaVisibleDevices = s.CudaVisibleDevices,
+            CudaVisibleDevices = cuda,
             ParallelismMode = s.ParallelismMode ?? "none",
             SpeculativeEnabled = s.SpeculativeEnabled,
             DraftModelPath = draftPath,
@@ -643,6 +669,15 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
         {
             _logger.LogError(ex, "Engine restart attempt {Attempt} failed", attempt);
         }
+    }
+
+    private void OnWorkerLoadProgress(string phase, int pct) => SetLoadProgress(phase, pct);
+
+    private void SetLoadProgress(string phase, int pct)
+    {
+        _loadPhase = phase;
+        _loadProgressPct = Math.Clamp(pct, 0, 100);
+        _loadStartedUtc ??= DateTime.UtcNow;
     }
 
     public async ValueTask DisposeAsync()

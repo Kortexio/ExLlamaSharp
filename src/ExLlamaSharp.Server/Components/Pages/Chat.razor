@@ -3,8 +3,12 @@
 @inject EngineHostService Engine
 @inject SettingsService SettingsSvc
 @inject NavigationManager Nav
+@inject AdminUiSession Session
+@inject IJSRuntime Js
+@using System.Net.Http.Headers
 @using System.Text.Json
 @using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.JSInterop
 
 <PageTitle>Chat — ExLlamaSharp</PageTitle>
 
@@ -111,10 +115,15 @@
                @onkeydown="OnKey" disabled="@_streaming" />
         <button class="btn btn-outline-secondary" disabled="@_streaming" @onclick="ClearChat">Clear</button>
         <button class="btn btn-outline-danger" disabled="@(!_streaming)" @onclick="StopChat">Stop</button>
+        <button class="btn btn-outline-primary" disabled="@(_streaming || !_canRetry)" @onclick="RetryAsync">Retry</button>
         <button class="btn btn-primary" disabled="@_streaming" @onclick="SendAsync">Send</button>
     </div>
 </div>
 
+@if (!string.IsNullOrEmpty(_numCtxWarning))
+{
+    <div class="alert-soft mt-3">@_numCtxWarning</div>
+}
 @if (!string.IsNullOrEmpty(_error))
 {
     <div class="alert-soft mt-3 text-danger">@_error</div>
@@ -128,6 +137,8 @@
     private string _input = "";
     private bool _streaming;
     private string? _error;
+    private string? _numCtxWarning;
+    private bool _canRetry;
     private bool _modelReady;
     private bool _visionReady;
     private string _modelStatus = "Checking model…";
@@ -277,6 +288,32 @@
         _messages.Clear();
         _messages.Add(new("system", "Playground ready. Requests use OpenAI fields plus Ollama-style options."));
         _error = null;
+        _numCtxWarning = null;
+        _canRetry = false;
+    }
+
+    private async Task RetryAsync()
+    {
+        if (_streaming || !_canRetry)
+        {
+            return;
+        }
+
+        var lastUser = _messages.LastOrDefault(m => m.Role == "user");
+        if (lastUser is null)
+        {
+            return;
+        }
+
+        if (_messages.Count > 0 && _messages[^1].Role == "assistant")
+        {
+            _messages.RemoveAt(_messages.Count - 1);
+        }
+
+        _messages.Remove(lastUser);
+        _input = lastUser.Text;
+        _canRetry = false;
+        await SendAsync();
     }
 
     private async Task OnKey(KeyboardEventArgs e)
@@ -295,6 +332,8 @@
         }
 
         _error = null;
+        _numCtxWarning = null;
+        _canRetry = false;
         RefreshModelStatus();
         var userText = _input.Trim();
         var imageForTurn = _visionReady ? _imageDataUrl : null;
@@ -362,7 +401,8 @@
                     ["top_p"] = topP,
                     ["top_k"] = topK,
                     ["min_p"] = minP,
-                    ["repeat_penalty"] = repeatPenalty,
+                    // Ollama: 1.0 = off. Only send when the user changed it from neutral.
+                    ["repeat_penalty"] = Math.Abs(repeatPenalty - 1f) < 1e-5f ? null : repeatPenalty,
                 },
             };
             if (tools is not null)
@@ -374,6 +414,10 @@
             {
                 Content = JsonContent.Create(payload),
             };
+            if (!string.IsNullOrWhiteSpace(Session.ApiKey))
+            {
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Session.ApiKey);
+            }
 
             using var res = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
             if (!res.IsSuccessStatusCode)
@@ -382,14 +426,38 @@
                 assistant.Text = $"API {(int)res.StatusCode}: {(string.IsNullOrWhiteSpace(body) ? res.ReasonPhrase : body)}";
                 if ((int)res.StatusCode == 401)
                 {
-                    _error = "Unauthorized — sign in on Login or check API Keys.";
+                    _error = "Session expired — redirecting to Login…";
+                    Session.ApiKey = null;
+                    try
+                    {
+                        await Js.InvokeVoidAsync("exLlamaSharpAdmin.logoutSession");
+                    }
+                    catch (JSException)
+                    {
+                        try { await Js.InvokeVoidAsync("exLlamaSharpAdmin.clearApiKeyCookie"); } catch (JSException) { }
+                    }
+
+                    Nav.NavigateTo("/login", forceLoad: true);
+                    return;
                 }
-                else if (!_modelReady)
+
+                if (!_modelReady)
                 {
                     _error = "Load a model on the Models page first.";
                 }
 
+                _canRetry = true;
                 return;
+            }
+
+            if (res.Headers.TryGetValues("X-ExLlamaSharp-NumCtx", out var numCtxHdr))
+            {
+                var raw = numCtxHdr.FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(raw))
+                {
+                    _numCtxWarning =
+                        $"num_ctx does not match the loaded KV ({raw}). Change Settings → Max batched tokens and reload the model.";
+                }
             }
 
             if (res.Headers.TryGetValues("X-ExLlamaSharp-Engine", out var eng)
@@ -405,7 +473,21 @@
             while (!reader.EndOfStream)
             {
                 var line = await reader.ReadLineAsync(ct);
-                if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    continue;
+                }
+
+                if (line.StartsWith(':') && line.Contains("num_ctx", StringComparison.OrdinalIgnoreCase)
+                    && string.IsNullOrEmpty(_numCtxWarning))
+                {
+                    _numCtxWarning =
+                        $"num_ctx does not match the loaded KV ({line.TrimStart(':', ' ').Trim()}). Change Settings → Max batched tokens and reload the model.";
+                    await InvokeAsync(StateHasChanged);
+                    continue;
+                }
+
+                if (!line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
@@ -472,6 +554,7 @@
             else if (string.Equals(finishReason, "length", StringComparison.OrdinalIgnoreCase))
             {
                 _error = $"Reply hit Max tokens ({maxTokens}). Increase max_tokens / num_predict for longer answers.";
+                _canRetry = true;
             }
         }
         catch (OperationCanceledException)
@@ -482,11 +565,13 @@
             }
 
             _error = "Generation stopped.";
+            _canRetry = true;
         }
         catch (Exception ex)
         {
             assistant.Text = "(stream failed)";
             _error = $"Stream failed: {ex.Message}";
+            _canRetry = true;
         }
         finally
         {

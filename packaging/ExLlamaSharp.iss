@@ -3,7 +3,7 @@
 ;   & "${env:LocalAppData}\Programs\Inno Setup 6\ISCC.exe" packaging\ExLlamaSharp.iss
 
 #define MyAppName "ExLlamaSharp"
-#define MyAppVersion "1.3.0"
+#define MyAppVersion "1.3.1"
 #define MyAppPublisher "ExLlamaSharp"
 #define MyAppURL "http://127.0.0.1:14563"
 ; Stage folder produced by Build-Installer.ps1 (relative to this .iss)
@@ -13,8 +13,8 @@
 AppId={{8F3E2A91-6C4B-4D7E-9A12-E5B8C0D4F617}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
-VersionInfoVersion=1.3.0
-VersionInfoProductVersion=1.3.0
+VersionInfoVersion=1.3.1
+VersionInfoProductVersion=1.3.1
 AppMutex=Global\ExLlamaSharp.Server
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
@@ -89,17 +89,107 @@ Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Flags: runhidden waituntilterminated; RunOnceId: "UninstallExLlamaSharp"
 
 [Code]
+var
+  HostPage: TWizardPage;
+  RadioDesktop: TNewRadioButton;
+  RadioHeadless: TNewRadioButton;
+  AccountEdit: TNewEdit;
+  PasswordEdit: TNewEdit;
+  AccountLabel: TNewStaticText;
+  PasswordLabel: TNewStaticText;
+
+procedure HostModeChanged(Sender: TObject);
+begin
+  AccountEdit.Enabled := RadioHeadless.Checked;
+  PasswordEdit.Enabled := RadioHeadless.Checked;
+end;
+
+procedure InitializeWizard;
+begin
+  HostPage := CreateCustomPage(wpSelectDir, 'Host mode',
+    'Choose how ExLlamaSharp starts after install.');
+
+  RadioDesktop := TNewRadioButton.Create(HostPage);
+  RadioDesktop.Parent := HostPage.Surface;
+  RadioDesktop.Caption := 'Desktop (recommended) — Tray starts the Server in your user session';
+  RadioDesktop.Checked := True;
+  RadioDesktop.Top := ScaleY(8);
+  RadioDesktop.Width := HostPage.SurfaceWidth;
+  RadioDesktop.OnClick := @HostModeChanged;
+
+  RadioHeadless := TNewRadioButton.Create(HostPage);
+  RadioHeadless.Parent := HostPage.Surface;
+  RadioHeadless.Caption := 'Headless — Windows service with a GPU-capable account (not LocalSystem)';
+  RadioHeadless.Top := RadioDesktop.Top + ScaleY(28);
+  RadioHeadless.Width := HostPage.SurfaceWidth;
+  RadioHeadless.OnClick := @HostModeChanged;
+
+  AccountLabel := TNewStaticText.Create(HostPage);
+  AccountLabel.Parent := HostPage.Surface;
+  AccountLabel.Caption := 'Service account (DOMAIN\user or .\localuser):';
+  AccountLabel.Top := RadioHeadless.Top + ScaleY(32);
+  AccountLabel.Width := HostPage.SurfaceWidth;
+
+  AccountEdit := TNewEdit.Create(HostPage);
+  AccountEdit.Parent := HostPage.Surface;
+  AccountEdit.Top := AccountLabel.Top + ScaleY(18);
+  AccountEdit.Width := HostPage.SurfaceWidth;
+  AccountEdit.Enabled := False;
+
+  PasswordLabel := TNewStaticText.Create(HostPage);
+  PasswordLabel.Parent := HostPage.Surface;
+  PasswordLabel.Caption := 'Password (written to a temp file, not the command line):';
+  PasswordLabel.Top := AccountEdit.Top + ScaleY(32);
+  PasswordLabel.Width := HostPage.SurfaceWidth;
+
+  PasswordEdit := TNewEdit.Create(HostPage);
+  PasswordEdit.Parent := HostPage.Surface;
+  PasswordEdit.Top := PasswordLabel.Top + ScaleY(18);
+  PasswordEdit.Width := HostPage.SurfaceWidth;
+  PasswordEdit.PasswordChar := '*';
+  PasswordEdit.Enabled := False;
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  Result := True;
+  if CurPageID = HostPage.ID then
+  begin
+    if RadioHeadless.Checked then
+    begin
+      if Trim(AccountEdit.Text) = '' then
+      begin
+        MsgBox('Headless mode requires a Windows account that can use the GPU (not LocalSystem).', mbError, MB_OK);
+        Result := False;
+      end;
+    end;
+  end;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
-  Ps, Args: String;
+  Ps, Args, Mode, PwdFile: String;
 begin
   if CurStep = ssPostInstall then
   begin
     WizardForm.StatusLabel.Caption := 'Installing ExLlamaSharp (service, ExLlamaV3 CUDA, PyTorch download)...';
     WizardForm.StatusLabel.Update;
     Ps := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
-    Args := ExpandConstant('-NoProfile -ExecutionPolicy Bypass -File "{tmp}\ExLlamaSharpSetup\Install.ps1" -Unattended -InstallDir "{app}" -HostMode desktop');
+    if RadioHeadless.Checked then
+    begin
+      Mode := 'headless';
+      PwdFile := ExpandConstant('{tmp}\exls-svc.pwd');
+      SaveStringToFile(PwdFile, PasswordEdit.Text, False);
+      Args := ExpandConstant('-NoProfile -ExecutionPolicy Bypass -File "{tmp}\ExLlamaSharpSetup\Install.ps1" -Unattended -InstallDir "{app}" -HostMode headless -ServiceAccount "') +
+        AccountEdit.Text + '" -ServicePasswordFile "' + PwdFile + '"';
+    end
+    else
+    begin
+      Mode := 'desktop';
+      Args := ExpandConstant('-NoProfile -ExecutionPolicy Bypass -File "{tmp}\ExLlamaSharpSetup\Install.ps1" -Unattended -InstallDir "{app}" -HostMode desktop');
+    end;
+    Log('Install.ps1 host-mode=' + Mode);
     if not Exec(Ps, Args, '', SW_SHOW, ewWaitUntilTerminated, ResultCode) then
     begin
       MsgBox('Could not start Install.ps1 (PowerShell).', mbError, MB_OK);

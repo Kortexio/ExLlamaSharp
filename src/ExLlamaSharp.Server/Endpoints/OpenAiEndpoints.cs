@@ -160,7 +160,7 @@ public static class OpenAiEndpoints
         }
 
         var timeoutCts = await CreateTimeoutCtsAsync(settingsService, http.RequestAborted).ConfigureAwait(false);
-        await NoteNumCtxAsync(request.Options?.NumCtx, settingsService, http.RequestAborted).ConfigureAwait(false);
+        var numCtxWarning = await NoteNumCtxAsync(request.Options?.NumCtx, settingsService).ConfigureAwait(false);
         var appSettings = await settingsService.GetAsync(http.RequestAborted).ConfigureAwait(false);
         var engineRequest = new CompletionRequest
         {
@@ -175,7 +175,7 @@ public static class OpenAiEndpoints
             PresencePenalty = request.PresencePenalty ?? request.Options?.PresencePenalty ?? 0f,
             FrequencyPenalty = request.FrequencyPenalty
                 ?? request.Options?.FrequencyPenalty
-                ?? request.Options?.RepeatPenalty
+                ?? NormalizeOllamaRepeatPenalty(request.Options?.RepeatPenalty)
                 ?? 0f,
             Seed = request.Seed ?? request.Options?.Seed,
             Priority = InvertPriority(http.GetPriority()),
@@ -212,7 +212,13 @@ public static class OpenAiEndpoints
                 AbTestId = abTestId,
                 AbVariant = abVariant,
                 ParseToolCalls = request.Tools is { Count: > 0 },
-                ToJson = (completed, created) => BuildChatCompletionJson(completed, created, modelId, request.Tools is { Count: > 0 }),
+                NumCtxWarning = numCtxWarning,
+                ToJson = (completed, created) =>
+                {
+                    var json = BuildChatCompletionJson(completed, created, modelId, request.Tools is { Count: > 0 });
+                    json.Warning = numCtxWarning;
+                    return json;
+                },
             },
             timeoutCts,
             started,
@@ -222,7 +228,7 @@ public static class OpenAiEndpoints
             settingsService).ConfigureAwait(false);
     }
 
-    private static object BuildChatCompletionJson(CompletionResult completed, long created, string modelId, bool parseTools)
+    private static ChatCompletionResponse BuildChatCompletionJson(CompletionResult completed, long created, string modelId, bool parseTools)
     {
         List<ChatToolCall>? toolCalls = null;
         string? content = completed.Text;
@@ -399,7 +405,7 @@ public static class OpenAiEndpoints
         }
 
         var timeoutCts = await CreateTimeoutCtsAsync(settingsService, http.RequestAborted).ConfigureAwait(false);
-        await NoteNumCtxAsync(request.Options?.NumCtx, settingsService, http.RequestAborted).ConfigureAwait(false);
+        var numCtxWarning = await NoteNumCtxAsync(request.Options?.NumCtx, settingsService).ConfigureAwait(false);
         var appSettings = await settingsService.GetAsync(http.RequestAborted).ConfigureAwait(false);
         var engineRequest = new CompletionRequest
         {
@@ -413,7 +419,7 @@ public static class OpenAiEndpoints
             PresencePenalty = request.PresencePenalty ?? request.Options?.PresencePenalty ?? 0f,
             FrequencyPenalty = request.FrequencyPenalty
                 ?? request.Options?.FrequencyPenalty
-                ?? request.Options?.RepeatPenalty
+                ?? NormalizeOllamaRepeatPenalty(request.Options?.RepeatPenalty)
                 ?? 0f,
             Seed = request.Seed ?? request.Options?.Seed,
             Priority = InvertPriority(http.GetPriority()),
@@ -444,6 +450,7 @@ public static class OpenAiEndpoints
                 SseKind = OpenAiSseKind.Completion,
                 AbTestId = abTestId,
                 AbVariant = abVariant,
+                NumCtxWarning = numCtxWarning,
                 ToJson = (completed, created) => new CompletionResponse
                 {
                     Id = $"cmpl-{completed.JobId:N}",
@@ -897,26 +904,45 @@ public static class OpenAiEndpoints
     }
 
     /// <summary>
+    /// Ollama <c>repeat_penalty</c> defaults to 1.0 (off). OpenAI <c>frequency_penalty</c>
+    /// defaults to 0. Mapping 1.0 → frequency_penalty hangs some EXL3 ComboSampler paths.
+    /// </summary>
+    private static float? NormalizeOllamaRepeatPenalty(float? repeatPenalty)
+    {
+        if (repeatPenalty is null)
+        {
+            return null;
+        }
+
+        // 1.0 = no penalty in Ollama.
+        if (Math.Abs(repeatPenalty.Value - 1f) < 1e-5f)
+        {
+            return 0f;
+        }
+
+        // Bridge typical Ollama range (1.0–2.0) into OpenAI-style non-negative penalty.
+        return Math.Clamp(repeatPenalty.Value - 1f, 0f, 2f);
+    }
+
+    /// <summary>
     /// Ollama <c>num_ctx</c> is the KV/context size. In ExLlamaSharp that is fixed at model load
     /// (Settings → Max batched tokens). Per-request num_ctx cannot resize the live cache.
     /// </summary>
-    private static async Task NoteNumCtxAsync(int? numCtx, SettingsService settingsService, CancellationToken ct)
+    private static async Task<string?> NoteNumCtxAsync(int? numCtx, SettingsService settingsService)
     {
         if (numCtx is null or <= 0)
         {
-            return;
+            return null;
         }
 
-        var settings = await settingsService.GetAsync(ct).ConfigureAwait(false);
-        if (numCtx.Value != settings.MaxBatchedTokens)
+        var settings = await settingsService.GetAsync(CancellationToken.None).ConfigureAwait(false);
+        if (numCtx.Value == settings.MaxBatchedTokens)
         {
-            // Intentionally not throwing: clients often send num_ctx with every Ollama-style request.
-            // Changing context requires unload/reload with a new cache size.
-            Console.WriteLine(
-                $"[ExLlamaSharp] options.num_ctx={numCtx} ignored for this request; " +
-                $"loaded context is MaxBatchedTokens={settings.MaxBatchedTokens}. " +
-                "Change Settings → Performance → Max batched tokens and reload the model.");
+            return null;
         }
+
+        // Intentionally not throwing: clients often send num_ctx with every Ollama-style request.
+        return $"ignored; loaded={settings.MaxBatchedTokens} requested={numCtx.Value}";
     }
 
     private static async Task<CancellationTokenSource> CreateTimeoutCtsAsync(

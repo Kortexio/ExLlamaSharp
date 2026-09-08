@@ -141,9 +141,11 @@ public static class AdminEndpoints
             return Results.Json(ErrorResponse.Create("Invalid API key.", code: "unauthorized"), statusCode: 401);
         }
 
+        // HttpOnly=false so Blazor JS can read/clear the same cookie the circuit uses.
+        // Admin is typically loopback-only; XSS risk is acceptable for local console UX.
         http.Response.Cookies.Append("exllamasharp_key", key, new CookieOptions
         {
-            HttpOnly = true,
+            HttpOnly = false,
             SameSite = SameSiteMode.Lax,
             Secure = http.Request.IsHttps,
             Path = "/",
@@ -154,7 +156,21 @@ public static class AdminEndpoints
 
     private static IResult CloseUiSessionAsync(HttpContext http)
     {
-        http.Response.Cookies.Delete("exllamasharp_key", new CookieOptions { Path = "/" });
+        http.Response.Cookies.Delete("exllamasharp_key", new CookieOptions
+        {
+            Path = "/",
+            HttpOnly = false,
+            Secure = http.Request.IsHttps,
+            SameSite = SameSiteMode.Lax,
+        });
+        // Also clear any legacy HttpOnly copy from older builds.
+        http.Response.Cookies.Delete("exllamasharp_key", new CookieOptions
+        {
+            Path = "/",
+            HttpOnly = true,
+            Secure = http.Request.IsHttps,
+            SameSite = SameSiteMode.Lax,
+        });
         return Results.Ok();
     }
 
@@ -220,6 +236,11 @@ public static class AdminEndpoints
                 ApplySettings(s, body, replace: true);
                 planner.BuildPlan(s);
             }, ct).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(body.HostMode))
+            {
+                ProductionRuntime.WriteHostMode(body.HostMode);
+            }
+
             return Results.Json(ToSettingsDto(updated), JsonOptions);
         }
         catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
@@ -243,6 +264,11 @@ public static class AdminEndpoints
                 ApplySettings(s, body, replace: false);
                 planner.BuildPlan(s);
             }, ct).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(body.HostMode))
+            {
+                ProductionRuntime.WriteHostMode(body.HostMode);
+            }
+
             return Results.Json(ToSettingsDto(updated), JsonOptions);
         }
         catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
@@ -451,6 +477,9 @@ public static class AdminEndpoints
             loading_model_id = engine.LoadingModelId,
             path = engine.LoadedModelPath,
             error = engine.LastLoadError,
+            phase = engine.LoadPhase,
+            progress_pct = engine.LoadProgressPct,
+            elapsed_ms = engine.LoadElapsedMs,
         }, JsonOptions);
     }
 
@@ -1267,6 +1296,7 @@ public static class AdminEndpoints
         DraftK = s.DraftK,
         ModelsPath = s.ModelsPath,
         EstimatedCostPerMillionTokens = s.EstimatedCostPerMillionTokens,
+        HostMode = ProductionRuntime.ReadHostMode(),
     };
 
     private static void ApplySettings(AppSettings s, SettingsDto body, bool replace)

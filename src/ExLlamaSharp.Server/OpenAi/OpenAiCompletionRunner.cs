@@ -18,6 +18,8 @@ internal sealed class OpenAiRunContext
     public Guid? AbTestId { get; init; }
     public string? AbVariant { get; init; }
     public bool ParseToolCalls { get; init; }
+
+    public string? NumCtxWarning { get; init; }
 }
 
 /// <summary>Shared stream / non-stream execution for OpenAI completion endpoints.</summary>
@@ -37,6 +39,11 @@ internal static class OpenAiCompletionRunner
         var ct = timeoutCts.Token;
         var created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         http.Response.Headers["X-ExLlamaSharp-Engine"] = engine.IsMock ? "mock" : "worker";
+        if (!string.IsNullOrWhiteSpace(run.NumCtxWarning))
+        {
+            http.Response.Headers["X-ExLlamaSharp-NumCtx"] = run.NumCtxWarning;
+            http.Response.Headers["Warning"] = $"199 ExLlamaSharp \"{run.NumCtxWarning}\"";
+        }
 
         if (run.Stream)
         {
@@ -57,7 +64,8 @@ internal static class OpenAiCompletionRunner
                                     run.SseKind,
                                     engine.SubmitStreamAsync(run.EngineRequest, ct),
                                     ct,
-                                    run.ParseToolCalls)
+                                    run.ParseToolCalls,
+                                    run.NumCtxWarning)
                                 .ConfigureAwait(false);
                         }
                         else

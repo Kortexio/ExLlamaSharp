@@ -31,7 +31,7 @@
                     if (el) el.remove();
                     clearInterval(timer);
                 } else if (Date.now() - started > 20000 && el) {
-                    el.textContent = 'Could not connect to the Admin server. Reload the page.';
+                    el.innerHTML = 'Could not connect to the Admin server. <a href="/login">Open login</a> or <a href="/">reload</a>.';
                     clearInterval(timer);
                 }
             }, 200);

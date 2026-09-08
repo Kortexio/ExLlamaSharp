@@ -1,6 +1,10 @@
+@implements IDisposable
 @inject NavigationManager Nav
 @inject IJSRuntime Js
 @inject IHttpContextAccessor Http
+@inject AdminUiSession Session
+@inject KeyCacheService KeyCache
+@using ExLlamaSharp.Server.Auth
 
 @if (_ready)
 {
@@ -12,15 +16,118 @@
     public RenderFragment? ChildContent { get; set; }
 
     private bool _ready;
+    private bool _checking;
+    private bool _redirecting;
 
-    protected override async Task OnAfterRenderAsync(bool firstRender)
+    protected override void OnInitialized()
     {
-        if (!firstRender)
+        Nav.LocationChanged += OnLocationChanged;
+    }
+
+    protected override Task OnAfterRenderAsync(bool firstRender)
+        => firstRender ? EvaluateAsync() : Task.CompletedTask;
+
+    private void OnLocationChanged(object? sender, LocationChangedEventArgs e)
+        => _ = InvokeAsync(EvaluateAsync);
+
+    private async Task EvaluateAsync()
+    {
+        if (_checking)
         {
             return;
         }
 
-        var path = Nav.ToBaseRelativePath(Nav.Uri);
+        _checking = true;
+        try
+        {
+            if (IsPublicPath(Nav.Uri))
+            {
+                _redirecting = false;
+                _ready = true;
+                await InvokeAsync(StateHasChanged);
+                return;
+            }
+
+            var key = await ResolveSessionKeyAsync();
+            if (string.IsNullOrWhiteSpace(key) || !await IsValidKeyAsync(key))
+            {
+                Session.ApiKey = null;
+                await ClearBrowserSessionAsync();
+                _ready = false;
+                await InvokeAsync(StateHasChanged);
+                if (!_redirecting)
+                {
+                    _redirecting = true;
+                    Nav.NavigateTo("/login", forceLoad: false);
+                }
+
+                return;
+            }
+
+            Session.ApiKey = key;
+            _redirecting = false;
+            _ready = true;
+            await InvokeAsync(StateHasChanged);
+        }
+        finally
+        {
+            _checking = false;
+        }
+    }
+
+    private async Task<string?> ResolveSessionKeyAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(Session.ApiKey))
+        {
+            return Session.ApiKey;
+        }
+
+        if (Http.HttpContext?.Request.Cookies.TryGetValue("exllamasharp_key", out var cookie) == true
+            && !string.IsNullOrWhiteSpace(cookie))
+        {
+            return cookie;
+        }
+
+        try
+        {
+            var fromJs = await Js.InvokeAsync<string?>("exLlamaSharpAdmin.getApiKeyCookie");
+            return string.IsNullOrWhiteSpace(fromJs) ? null : fromJs;
+        }
+        catch (JSException)
+        {
+            return null;
+        }
+    }
+
+    private async Task<bool> IsValidKeyAsync(string key)
+    {
+        try
+        {
+            var apiKey = await KeyCache.GetAsync(ApiKeyHasher.Hash(key));
+            return apiKey is not null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private async Task ClearBrowserSessionAsync()
+    {
+        try
+        {
+            await Js.InvokeVoidAsync("exLlamaSharpAdmin.logoutSession");
+            await Js.InvokeVoidAsync("exLlamaSharpAdmin.clearApiKeyCookie");
+        }
+        catch (JSException)
+        {
+            try { await Js.InvokeVoidAsync("exLlamaSharpAdmin.clearApiKeyCookie"); } catch (JSException) { }
+        }
+    }
+
+    private bool IsPublicPath(string uri)
+    {
+        var path = Nav.ToBaseRelativePath(uri);
         var q = path.IndexOf('?', StringComparison.Ordinal);
         if (q >= 0)
         {
@@ -34,38 +141,14 @@
         }
 
         path = path.Trim('/');
-        var isPublic = path is "login" or "setup" or "about"
+        return path is "login" or "setup" or "about"
             || path.StartsWith("login/", StringComparison.OrdinalIgnoreCase)
             || path.StartsWith("setup/", StringComparison.OrdinalIgnoreCase)
             || path.StartsWith("about/", StringComparison.OrdinalIgnoreCase);
+    }
 
-        if (isPublic)
-        {
-            _ready = true;
-            await InvokeAsync(StateHasChanged);
-            return;
-        }
-
-        var hasCookie = Http.HttpContext?.Request.Cookies.ContainsKey("exllamasharp_key") == true;
-        if (!hasCookie)
-        {
-            try
-            {
-                hasCookie = await Js.InvokeAsync<bool>("exLlamaSharpAdmin.hasApiKeyCookie");
-            }
-            catch (JSException)
-            {
-                hasCookie = false;
-            }
-        }
-
-        if (!hasCookie)
-        {
-            Nav.NavigateTo("/login", forceLoad: false);
-            return;
-        }
-
-        _ready = true;
-        await InvokeAsync(StateHasChanged);
+    public void Dispose()
+    {
+        Nav.LocationChanged -= OnLocationChanged;
     }
 }

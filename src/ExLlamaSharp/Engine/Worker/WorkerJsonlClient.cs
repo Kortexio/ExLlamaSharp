@@ -47,6 +47,8 @@ internal sealed class WorkerJsonlClient : IDisposable
 
     public event Action<WorkerStats>? StatsReceived;
 
+    public event Action<string, int>? LoadProgressReceived;
+
     public bool IsAlive
     {
         get
@@ -109,16 +111,16 @@ internal sealed class WorkerJsonlClient : IDisposable
             StandardInputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
         };
         WorkerRuntimeLocator.ConfigureProcessEnvironment(psi, python);
-        if (!string.IsNullOrWhiteSpace(_options.CudaVisibleDevices))
-        {
-            psi.Environment["CUDA_VISIBLE_DEVICES"] = _options.CudaVisibleDevices;
-        }
+        CudaDeviceEnvironment.ApplyToProcess(psi, _options.CudaVisibleDevices, _logger);
+        var cudaEnv = psi.Environment.TryGetValue("CUDA_VISIBLE_DEVICES", out var cudaVal) && !string.IsNullOrWhiteSpace(cudaVal)
+            ? cudaVal
+            : "(default)";
 
         _logger.LogInformation(
             "Starting EXL3 worker: {Python} {Script} (CUDA_VISIBLE_DEVICES={Cuda})",
             python,
             script,
-            _options.CudaVisibleDevices ?? "(default)");
+            cudaEnv);
         var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
         if (!proc.Start())
         {
@@ -332,6 +334,20 @@ internal sealed class WorkerJsonlClient : IDisposable
                 catch (JsonException ex)
                 {
                     _logger.LogWarning(ex, "Ignoring non-JSON worker line");
+                    continue;
+                }
+
+                if (root.TryGetProperty("event", out var evName)
+                    && string.Equals(evName.GetString(), "load_progress", StringComparison.OrdinalIgnoreCase))
+                {
+                    var phase = root.TryGetProperty("phase", out var ph) ? ph.GetString() ?? "weights" : "weights";
+                    var pct = 0;
+                    if (root.TryGetProperty("progress_pct", out var pp) && pp.TryGetInt32(out var n))
+                    {
+                        pct = n;
+                    }
+
+                    LoadProgressReceived?.Invoke(phase, pct);
                     continue;
                 }
 

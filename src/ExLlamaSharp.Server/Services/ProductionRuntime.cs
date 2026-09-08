@@ -102,6 +102,7 @@ public static class ProductionRuntime
         Directory.CreateDirectory(LogsDirectory);
         Directory.CreateDirectory(Path.Combine(DataRoot, "models"));
         Directory.CreateDirectory(Path.Combine(DataRoot, "backups"));
+        Directory.CreateDirectory(Path.Combine(DataRoot, "dp-keys"));
 
         ApplyUsersModifyAcl(DataRoot, recursive: true);
         foreach (var dbFile in Directory.EnumerateFiles(DataRoot, "app.db*"))

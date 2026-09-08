@@ -98,6 +98,11 @@
             {
                 try { await Js.InvokeVoidAsync("exLlamaSharpAdmin.setApiKeyCookie", raw); } catch (JSException) { }
             }
+            catch (Exception ex)
+            {
+                _error = "Could not open admin session: " + ex.Message;
+                return;
+            }
 
             Nav.NavigateTo("/", forceLoad: true);
         }

@@ -28,30 +28,49 @@ window.exLlamaSharpAdmin = window.exLlamaSharpAdmin || {
   },
   setApiKeyCookie: function (key) {
     if (!key) return;
+    this.clearApiKeyCookie();
     var secure = window.location.protocol === "https:" ? "; Secure" : "";
     document.cookie = "exllamasharp_key=" + encodeURIComponent(key) +
       "; path=/; SameSite=Lax; Max-Age=604800" + secure;
   },
   hasApiKeyCookie: function () {
-    return document.cookie.split(";").some(function (c) {
-      return c.trim().indexOf("exllamasharp_key=") === 0;
-    });
+    return !!this.getApiKeyCookie();
+  },
+  getApiKeyCookie: function () {
+    var parts = document.cookie.split(";");
+    for (var i = 0; i < parts.length; i++) {
+      var c = parts[i].trim();
+      if (c.indexOf("exllamasharp_key=") === 0) {
+        return decodeURIComponent(c.substring("exllamasharp_key=".length));
+      }
+    }
+    return "";
   },
   clearApiKeyCookie: function () {
     document.cookie = "exllamasharp_key=; path=/; Max-Age=0";
+    document.cookie = "exllamasharp_key=; path=/; Max-Age=0; SameSite=Lax";
   },
   openSession: function (key) {
+    this.setApiKeyCookie(key);
     return fetch("/api/v1/ui-session", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "same-origin",
       body: JSON.stringify({ key: key })
+    }).then(function (res) {
+      if (!res.ok) {
+        throw new Error("ui-session " + res.status);
+      }
+      return res;
     });
   },
   logoutSession: function () {
+    var self = this;
     return fetch("/api/v1/ui-session/logout", {
       method: "POST",
       credentials: "same-origin"
+    }).finally(function () {
+      self.clearApiKeyCookie();
     });
   }
 };

@@ -3,6 +3,7 @@ using ExLlamaSharp.Server.Hubs;
 using ExLlamaSharp.Server.Services;
 using ExLlamaSharp.Server.Services.Ui;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Components.Server.Circuits;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace ExLlamaSharp.Server;
@@ -37,6 +38,7 @@ public static class UiHostingExtensions
         services.AddSingleton<VramFitService>();
         services.AddScoped<ModelInventoryService>();
         services.AddScoped<AdminUiSession>();
+        services.AddScoped<CircuitHandler, AdminUiCircuitHandler>();
         services.AddTransient<LocalApiAuthHandler>();
         services.AddSingleton<HuggingFaceCatalogService>();
         services.AddHttpClient("huggingface", client =>

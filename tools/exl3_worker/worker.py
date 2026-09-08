@@ -60,13 +60,27 @@ if _env_root and Path(_env_root).is_dir():
         sys.path.insert(0, p)
 
 
+_IO_LOCK = threading.Lock()
+
+
 def _log(msg: str) -> None:
     print(f"[exl3_worker] {msg}", file=sys.stderr, flush=True)
 
 
 def _reply(obj: dict[str, Any]) -> None:
-    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    line = json.dumps(obj, ensure_ascii=False) + "\n"
+    with _IO_LOCK:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+
+
+def _progress(phase: str, pct: int, heartbeat: bool = False) -> None:
+    pct = max(0, min(100, int(pct)))
+    STATE.load_phase = phase
+    STATE.load_pct = pct
+    _reply({"event": "load_progress", "phase": phase, "progress_pct": pct, "heartbeat": heartbeat})
+    if not heartbeat:
+        _log(f"load phase={phase} pct={pct}")
 
 
 def _ok(req_id: Any = None, **kwargs: Any) -> None:
@@ -138,6 +152,8 @@ class WorkerState:
         self.generated_tokens: int = 0
         self.finished: int = 0
         self.load_ts: float | None = None
+        self.load_phase: str = ""
+        self.load_pct: int = 0
         self.jobs: dict[Any, Any] = {}
         self.sanitizers: dict[Any, _StreamSanitizer] = {}
         self.prompt_lens: dict[Any, int] = {}
@@ -254,83 +270,120 @@ def _load(
         f"{f' speculative draft={draft_path} k={draft_k}' if speculative else ''})"
     )
     t0 = time.perf_counter()
-    config = Config.from_directory(path)
-    model = Model.from_config(config)
-    cache = Cache(model, max_num_tokens=max_num_tokens)
-    model.load()
-    tokenizer = Tokenizer.from_config(config)
+    hb_stop = threading.Event()
 
-    draft_model = None
-    draft_cache = None
-    if speculative and draft_path:
-        draft_path = str(Path(draft_path).resolve())
-        if not Path(draft_path).is_dir():
-            raise FileNotFoundError(f"Draft model directory not found: {draft_path}")
-        _log(f"Loading draft model from {draft_path}")
-        draft_config = Config.from_directory(draft_path)
-        draft_model = Model.from_config(draft_config)
-        draft_cache = Cache(draft_model, max_num_tokens=max_num_tokens)
-        draft_model.load()
+    def _hb() -> None:
+        while not hb_stop.wait(1.5):
+            _progress(STATE.load_phase or "weights", STATE.load_pct or 40, heartbeat=True)
 
-    gen_kwargs = dict(
-        model=model,
-        cache=cache,
-        tokenizer=tokenizer,
-        max_batch_size=max_batch_size,
-        max_chunk_size=max_chunk_size,
-    )
-
-    if draft_model is not None:
-        # Probe Generator signature â€” draft kwargs vary across exllamav3 versions.
-        draft_attempts = [
-            dict(draft_model=draft_model, draft_cache=draft_cache, draft_k=draft_k),
-            dict(draft_model=draft_model, draft_cache=draft_cache, num_draft_tokens=draft_k),
-            dict(draft_model=draft_model, draft_cache=draft_cache),
-        ]
-        last_type_error: TypeError | None = None
-        generator = None
-        for extra in draft_attempts:
-            try:
-                generator = Generator(**gen_kwargs, **extra)
-                _log(f"Generator accepted speculative kwargs: {list(extra.keys())}")
-                break
-            except TypeError as te:
-                last_type_error = te
-                continue
-        if generator is None:
-            raise RuntimeError(
-                "speculative_enabled but exllamav3 Generator does not accept draft model kwargs "
-                f"(tried draft_model/draft_cache/draft_k). Last TypeError: {last_type_error}"
-            )
-    else:
-        generator = Generator(**gen_kwargs)
-
-    # Optional vision tower (VLM). Failure keeps text-only load honest.
-    vision_model = None
-    vision_capable = False
+    hb = threading.Thread(target=_hb, daemon=True)
+    hb.start()
     try:
-        vision_model = Model.from_config(config, component="vision")
-        vision_model.load()
-        vision_capable = True
-        _log("Vision component loaded (multimodal capable)")
-    except Exception as ex:
+        _progress("config", 10)
+        config = Config.from_directory(path)
+        _progress("model", 20)
+        model = Model.from_config(config)
+        _progress("cache", 30)
+        cache = Cache(model, max_num_tokens=max_num_tokens)
+        _progress("weights", 40)
+        _try_load_weights(model, phase="weights", base=40, span=40)
+        _progress("tokenizer", 85)
+        tokenizer = Tokenizer.from_config(config)
+
+        draft_model = None
+        draft_cache = None
+        if speculative and draft_path:
+            draft_path = str(Path(draft_path).resolve())
+            if not Path(draft_path).is_dir():
+                raise FileNotFoundError(f"Draft model directory not found: {draft_path}")
+            _progress("draft", 86)
+            _log(f"Loading draft model from {draft_path}")
+            draft_config = Config.from_directory(draft_path)
+            draft_model = Model.from_config(draft_config)
+            draft_cache = Cache(draft_model, max_num_tokens=max_num_tokens)
+            _try_load_weights(draft_model, phase="draft", base=86, span=4)
+
+        gen_kwargs = dict(
+            model=model,
+            cache=cache,
+            tokenizer=tokenizer,
+            max_batch_size=max_batch_size,
+            max_chunk_size=max_chunk_size,
+        )
+
+        if draft_model is not None:
+            draft_attempts = [
+                dict(draft_model=draft_model, draft_cache=draft_cache, draft_k=draft_k),
+                dict(draft_model=draft_model, draft_cache=draft_cache, num_draft_tokens=draft_k),
+                dict(draft_model=draft_model, draft_cache=draft_cache),
+            ]
+            last_type_error: TypeError | None = None
+            generator = None
+            for extra in draft_attempts:
+                try:
+                    generator = Generator(**gen_kwargs, **extra)
+                    _log(f"Generator accepted speculative kwargs: {list(extra.keys())}")
+                    break
+                except TypeError as te:
+                    last_type_error = te
+                    continue
+            if generator is None:
+                raise RuntimeError(
+                    "speculative_enabled but exllamav3 Generator does not accept draft model kwargs "
+                    f"(tried draft_model/draft_cache/draft_k). Last TypeError: {last_type_error}"
+                )
+        else:
+            generator = Generator(**gen_kwargs)
+
         vision_model = None
         vision_capable = False
-        _log(f"No vision component (text-only): {ex}")
+        try:
+            _progress("vision", 90)
+            vision_model = Model.from_config(config, component="vision")
+            _try_load_weights(vision_model, phase="vision", base=90, span=8)
+            vision_capable = True
+            _log("Vision component loaded (multimodal capable)")
+        except Exception as ex:
+            vision_model = None
+            vision_capable = False
+            _log(f"No vision component (text-only): {ex}")
 
-    STATE.config = config
-    STATE.model = model
-    STATE.cache = cache
-    STATE.tokenizer = tokenizer
-    STATE.generator = generator
-    STATE.vision_model = vision_model
-    STATE.vision_capable = vision_capable
-    STATE.model_path = path
-    STATE.max_num_tokens = max_num_tokens
-    STATE.max_batch_size = max_batch_size
-    STATE.max_chunk_size = max_chunk_size
-    STATE.load_ts = time.time()
-    _log(f"Loaded in {time.perf_counter() - t0:.2f}s vision_capable={vision_capable}")
+        STATE.config = config
+        STATE.model = model
+        STATE.cache = cache
+        STATE.tokenizer = tokenizer
+        STATE.generator = generator
+        STATE.vision_model = vision_model
+        STATE.vision_capable = vision_capable
+        STATE.model_path = path
+        STATE.max_num_tokens = max_num_tokens
+        STATE.max_batch_size = max_batch_size
+        STATE.max_chunk_size = max_chunk_size
+        STATE.load_ts = time.time()
+        _progress("ready", 100)
+        _log(f"Loaded in {time.perf_counter() - t0:.2f}s vision_capable={vision_capable}")
+    finally:
+        hb_stop.set()
+
+
+def _try_load_weights(model: Any, phase: str, base: int, span: int) -> None:
+    """Load tensors; use a progress callback when ExLlamaV3 exposes one."""
+
+    def cb(*args: Any) -> None:
+        pct = base
+        if len(args) >= 2 and isinstance(args[0], (int, float)) and isinstance(args[1], (int, float)) and args[1]:
+            pct = base + int(span * float(args[0]) / float(args[1]))
+        elif len(args) >= 1 and isinstance(args[0], (int, float)) and 0 <= float(args[0]) <= 1:
+            pct = base + int(span * float(args[0]))
+        _progress(phase, min(base + span, pct))
+
+    for kwargs in ({"callback": cb}, {"progress": cb}, {"progress_fn": cb}):
+        try:
+            model.load(**kwargs)
+            return
+        except TypeError:
+            continue
+    model.load()
 
 
 _MAX_IMAGE_BYTES = 16 * 1024 * 1024
@@ -520,6 +573,11 @@ def _format_llama3_chat(messages: list[dict], add_generation_prompt: bool = True
     return "".join(parts)
 
 
+def _model_looks_qwen() -> bool:
+    path = (STATE.model_path or "").lower()
+    return "qwen" in path
+
+
 def _try_hf_chat_template(messages: list[dict], add_generation_prompt: bool = True) -> str | None:
     tok = STATE.tokenizer
     if tok is None:
@@ -527,17 +585,36 @@ def _try_hf_chat_template(messages: list[dict], add_generation_prompt: bool = Tr
     hf = getattr(tok, "hf_tokenizer", None)
     if hf is None or not hasattr(hf, "apply_chat_template"):
         return None
-    try:
-        rendered = hf.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=add_generation_prompt,
-        )
-        if isinstance(rendered, str) and rendered:
-            return rendered
-    except Exception as ex:
-        _log(f"HF chat template failed: {ex}")
+    attempts = (
+        dict(tokenize=False, add_generation_prompt=add_generation_prompt, enable_thinking=False),
+        dict(tokenize=False, add_generation_prompt=add_generation_prompt),
+    )
+    last_err: Exception | None = None
+    for kwargs in attempts:
+        try:
+            rendered = hf.apply_chat_template(messages, **kwargs)
+            if isinstance(rendered, str) and rendered:
+                return rendered
+        except TypeError as ex:
+            last_err = ex
+            continue
+        except Exception as ex:
+            _log(f"HF chat template failed: {ex}")
+            return None
+    if last_err is not None:
+        _log(f"HF chat template failed: {last_err}")
     return None
+
+
+def _skip_qwen_thinking(prompt: str) -> str:
+    """Qwen3 spends max_new_tokens inside <think> (often decoded as empty text)."""
+    if not _model_looks_qwen():
+        return prompt
+    if "<think>" in prompt and "</think>" in prompt:
+        return prompt
+    if prompt.endswith("<|im_start|>assistant\n"):
+        return prompt + "<think>\n</think>\n"
+    return prompt
 
 
 def _format_messages(messages: list[dict]) -> str:
@@ -550,6 +627,10 @@ def _format_messages(messages: list[dict]) -> str:
         else:
             used = "chatml"
             prompt = _format_chatml(messages, add_generation_prompt=True)
+    before = prompt
+    prompt = _skip_qwen_thinking(prompt)
+    if prompt != before:
+        used = f"{used}+nothink"
     _log(f"chat template={used} chars={len(prompt)}")
     return prompt
 
@@ -671,6 +752,11 @@ def _enqueue(req_id: Any, prompt: str, msg: dict[str, Any]) -> None:
     STATE.t0[req_id] = time.perf_counter()
     STATE.prompt_tokens += n_prompt
     STATE.generator.enqueue(job)
+    st = _stats()
+    _log(
+        f"enqueue id={req_id} prompt_tokens={n_prompt} max_new={kwargs['max_new_tokens']} "
+        f"pending={st.get('pending')} active={st.get('active')} free_pages={st.get('free_pages')}"
+    )
 
 
 def _cancel_job(req_id: Any) -> bool:
@@ -1061,6 +1147,7 @@ def _dispatch_line(line: str) -> None:
 def serve() -> None:
     threading.Thread(target=_reader, daemon=True, name="exl3-stdin").start()
     _log("serve loop jsonl-v2")
+    pending_since: float | None = None
     while True:
         gen = STATE.generator
         idle = gen is None or gen.num_remaining_jobs() == 0
@@ -1068,14 +1155,36 @@ def serve() -> None:
             break
         gen = STATE.generator
         if gen is None or gen.num_remaining_jobs() == 0:
+            pending_since = None
             continue
+        if gen.num_pending_jobs() and not gen.num_active_jobs():
+            if pending_since is None:
+                pending_since = time.perf_counter()
+            elif time.perf_counter() - pending_since > 15:
+                st = _stats()
+                _fail_all_jobs(
+                    "Job never started (KV cache / batch full). "
+                    f"pending={st.get('pending')} free_pages={st.get('free_pages')}. "
+                    "Lower max_tokens or reload with a larger Max batched tokens."
+                )
+                pending_since = None
+                continue
+        else:
+            pending_since = None
         try:
+            t0 = time.perf_counter()
             results = gen.iterate()
+            elapsed = time.perf_counter() - t0
+            if elapsed > 2:
+                _log(f"iterate {elapsed:.1f}s remaining={gen.num_remaining_jobs()}")
         except Exception as ex:
             _log(traceback.format_exc())
             _fail_all_jobs(str(ex))
             continue
-        _emit_batch(results)
+        if results:
+            _emit_batch(results)
+        else:
+            _reply({"events": [], "stats": _stats()})
 
 
 def main() -> None:
@@ -1087,9 +1196,16 @@ def main() -> None:
         import torch  # noqa: F401
         from exllamav3 import Config, Model, Cache, Tokenizer, Generator  # noqa: F401
         cuda_ok = bool(torch.cuda.is_available())
-        _log(f"warm import ok torch={getattr(torch, '__version__', '?')} cuda={cuda_ok}")
+        vis = os.environ.get("CUDA_VISIBLE_DEVICES")
+        n = int(torch.cuda.device_count()) if cuda_ok else 0
+        _log(f"warm import ok torch={getattr(torch, '__version__', '?')} cuda={cuda_ok} devices={n} CUDA_VISIBLE_DEVICES={vis!r}")
         if not cuda_ok and os.environ.get("EXLLAMASHARP_ALLOW_CPU", "").strip() != "1":
-            _err("torch.cuda.is_available() is false")
+            _err(
+                "torch.cuda.is_available() is false "
+                f"(CUDA_VISIBLE_DEVICES={vis!r}). "
+                "Use Settings → Multi-GPU device index 0 (not 1) on a single GPU, "
+                "and run the Server from the Tray (user session), not LocalSystem."
+            )
             raise SystemExit(2)
     except SystemExit:
         raise

@@ -16,10 +16,14 @@ Run against a real EXL3 install (not mock):
 12. [ ] Tenant multi-tenancy on → other tenant model → forbidden
 13. [ ] CLI `exllamasharp chat --model <exl3-dir>` uses worker; responses include `X-ExLlamaSharp-Engine: worker`
 14. [ ] Production never returns `X-ExLlamaSharp-Engine: mock` (worker only)
-16. [ ] Kill Server.exe → Tray relaunches; model reloads (`LoadModelOnStartup`)
-17. [ ] Admin Restart → `restart.request` → Tray relaunches
-18. [ ] Second Server.exe exits (global mutex)
-19. [ ] `Verify-Install.ps1` passes (self-contained, one process, listen.json)
+16. [ ] Kill Server.exe → Tray relaunches; model reloads (`LoadModelOnStartup`); SessionId ≠ 0; service stays Stopped
+17. [ ] Kill EXL3 `python` worker → watchdog recovers without Mock
+18. [ ] Admin Restart → `restart.request` → Tray relaunches
+19. [ ] Second Server.exe exits (global mutex)
+20. [ ] `Verify-Install.ps1` passes (self-contained, one process, desktop ≠ Session 0)
+21. [ ] Reboot + logon: `ExLlamaSharpTrayLogon` starts Tray+Server; service stays Stopped; last model reloads
 15. [ ] `seed` / non-zero penalties: applied or clear inference error (never silently dropped)
+
+Automated (except reboot): `packaging\Prove-Resilience.ps1`
 
 Media `/v1/images` and `/v1/audio*` remain 501 by design.
