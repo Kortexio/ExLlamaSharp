@@ -45,17 +45,43 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 New-Item -ItemType Directory -Force -Path $RedistDir | Out-Null
 
 function Find-Python {
-    if ($env:EXLLAMASHARP_PYTHON -and (Test-Path $env:EXLLAMASHARP_PYTHON)) { return $env:EXLLAMASHARP_PYTHON }
-    foreach ($c in @("py", "python")) {
+    if ($env:EXLLAMASHARP_PYTHON -and (Test-Path $env:EXLLAMASHARP_PYTHON)) {
+        return $env:EXLLAMASHARP_PYTHON
+    }
+
+    foreach ($p in @(
+            (Join-Path $env:LocalAppData "Programs\Python\Python312\python.exe"),
+            (Join-Path $env:LocalAppData "Programs\Python\Python311\python.exe"),
+            (Join-Path ${env:ProgramFiles} "ExLlamaSharp\venv\Scripts\python.exe"),
+            (Join-Path $env:ProgramData "ExLlamaSharp\venv\Scripts\python.exe")
+        )) {
+        if ($p -and (Test-Path $p)) {
+            return $p
+        }
+    }
+
+    foreach ($c in @("python", "py")) {
         $cmd = Get-Command $c -EA SilentlyContinue
         if (-not $cmd) { continue }
-        if ($c -eq "py") {
-            $v = & py -3 -c "import sys; print(sys.executable)" 2>$null
-            if ($LASTEXITCODE -eq 0 -and $v) { return $v.Trim() }
+        try {
+            if ($c -eq "py") {
+                $v = & py -3.12 -c "import sys; print(sys.executable)" 2>$null
+                if (-not $v) {
+                    $v = & py -3 -c "import sys; print(sys.executable)" 2>$null
+                }
+            }
+            else {
+                $v = & $c -c "import sys; print(sys.executable)" 2>$null
+            }
+            if ($v) {
+                $path = ($v | Select-Object -First 1).ToString().Trim()
+                if ($path -and (Test-Path $path)) {
+                    return $path
+                }
+            }
         }
-        else {
-            $v = & $c -c "import sys; print(sys.executable)" 2>$null
-            if ($LASTEXITCODE -eq 0 -and $v) { return $v.Trim() }
+        catch {
+            continue
         }
     }
     return $null

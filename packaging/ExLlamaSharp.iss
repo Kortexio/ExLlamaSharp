@@ -46,7 +46,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "Create desktop shortcut (starts Tray + server)"; GroupDescription: "Additional icons:"; Flags: checked
+Name: "desktopicon"; Description: "Create desktop shortcut (starts Tray + server)"; GroupDescription: "Additional icons:"
 
 [Files]
 ; App payload (compressed)
@@ -205,4 +205,4 @@ begin
   end;
 end;
 
-; Payload is already embedded in Setup.exe — do not probe StageDir on the target PC.
+// Payload is already embedded in Setup.exe — do not probe StageDir on the target PC.
