@@ -572,11 +572,18 @@ if ($HostMode -eq "headless") {
         Write-Log "Service did not reach Running ($($service.Status))" "WARN"
     }
 } else {
+    # Desktop: Tray must start BEFORE the health probe (otherwise Install.ps1 always
+    # exits 2 and Inno shows a false "installation failed" dialog).
     Write-Log "Desktop mode: service is Manual; Tray starts Server in the user session" "OK"
+    if ((Test-Path $trayExe) -and -not (Get-Process -Name "ExLlamaSharp.Tray" -ErrorAction SilentlyContinue)) {
+        Start-Process $trayExe -WorkingDirectory $InstallDir
+        Write-Log "Tray started" "OK"
+        Start-Sleep -Seconds 2
+    }
 }
 
 $ready = $false
-for ($i = 0; $i -lt 18; $i++) {
+for ($i = 0; $i -lt 30; $i++) {
     try {
         $r = Invoke-WebRequest -Uri "$UiUrl/health" -UseBasicParsing -TimeoutSec 3
         if ($r.StatusCode -eq 200) { $ready = $true; break }
@@ -588,12 +595,7 @@ for ($i = 0; $i -lt 18; $i++) {
 if ($ready) {
     Write-Log ('Health OK ({0}/health)' -f $UiUrl) "OK"
 } else {
-    Write-Log "Health did not respond - see Event Viewer / $LogFile" "WARN"
-}
-
-if ((Test-Path $trayExe) -and -not (Get-Process -Name "ExLlamaSharp.Tray" -ErrorAction SilentlyContinue)) {
-    Start-Process $trayExe -WorkingDirectory $InstallDir
-    Write-Log "Tray started" "OK"
+    Write-Log "Health did not respond yet - UI may still be starting. See $LogFile" "WARN"
 }
 
 Write-Host ""
@@ -610,4 +612,5 @@ if (-not $Unattended -and $ready) {
     Start-Process $UiUrl
 }
 
-if ($ready) { exit 0 } else { exit 2 }
+# Files/service/tray are already installed; a slow /health must not Abort the Inno wizard.
+exit 0
