@@ -1,5 +1,6 @@
 @inject NavigationManager Nav
 @inject IJSRuntime Js
+@inject IHttpContextAccessor Http
 
 @if (_ready)
 {
@@ -45,18 +46,23 @@
             return;
         }
 
-        try
+        var hasCookie = Http.HttpContext?.Request.Cookies.ContainsKey("exllamasharp_key") == true;
+        if (!hasCookie)
         {
-            var hasKey = await Js.InvokeAsync<bool>("exLlamaSharpAdmin.hasApiKeyCookie");
-            if (!hasKey)
+            try
             {
-                Nav.NavigateTo("/login", forceLoad: false);
-                return;
+                hasCookie = await Js.InvokeAsync<bool>("exLlamaSharpAdmin.hasApiKeyCookie");
+            }
+            catch (JSException)
+            {
+                hasCookie = false;
             }
         }
-        catch (JSException)
+
+        if (!hasCookie)
         {
-            // Cookie helper unavailable — allow page; API calls still enforce auth.
+            Nav.NavigateTo("/login", forceLoad: false);
+            return;
         }
 
         _ready = true;

@@ -25,6 +25,8 @@ public static class AdminEndpoints
         app.MapGet("/health", HealthAsync);
         app.MapGet("/ready", ReadyAsync);
         app.MapGet("/metrics", PrometheusMetricsAsync);
+        app.MapPost("/api/v1/ui-session", OpenUiSessionAsync);
+        app.MapPost("/api/v1/ui-session/logout", CloseUiSessionAsync);
 
         var api = app.MapGroup("/api/v1");
 
@@ -37,11 +39,15 @@ public static class AdminEndpoints
         api.MapPost("/models/library", PostModelLibraryAsync);
 
         api.MapPost("/models/load", LoadModelAsync);
+        api.MapGet("/models/load-status", GetLoadStatusAsync);
+        api.MapPost("/models/load-cancel", CancelLoadAsync);
         api.MapPost("/models/unload", UnloadModelAsync);
         api.MapPost("/models/pull", PullModelAsync);
         api.MapPost("/models/quantize", QuantizeModelAsync);
         api.MapPost("/models/import", ImportModelAsync);
         api.MapPost("/models/alias", AliasModelAsync);
+        api.MapPost("/models/rename", RenameModelAsync);
+        api.MapDelete("/models/{id:guid}", DeleteModelAsync);
 
         api.MapGet("/models/{id:guid}/modelfile", GetModelfileAsync);
         api.MapPut("/models/{id:guid}/modelfile", PutModelfileAsync);
@@ -115,6 +121,46 @@ public static class AdminEndpoints
             EngineRunning = engine.IsRunning,
         };
         return Results.Json(body, JsonOptions, statusCode: ready ? StatusCodes.Status200OK : StatusCodes.Status503ServiceUnavailable);
+    }
+
+    private static async Task<IResult> OpenUiSessionAsync(
+        HttpContext http,
+        KeyCacheService keyCache,
+        UiSessionRequest? body,
+        CancellationToken ct)
+    {
+        var key = body?.Key;
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return Results.BadRequest(ErrorResponse.Create("Missing key", code: "invalid_request"));
+        }
+
+        var apiKey = await keyCache.GetAsync(ApiKeyHasher.Hash(key), ct).ConfigureAwait(false);
+        if (apiKey is null)
+        {
+            return Results.Json(ErrorResponse.Create("Invalid API key.", code: "unauthorized"), statusCode: 401);
+        }
+
+        http.Response.Cookies.Append("exllamasharp_key", key, new CookieOptions
+        {
+            HttpOnly = true,
+            SameSite = SameSiteMode.Lax,
+            Secure = http.Request.IsHttps,
+            Path = "/",
+            MaxAge = TimeSpan.FromDays(7),
+        });
+        return Results.Ok();
+    }
+
+    private static IResult CloseUiSessionAsync(HttpContext http)
+    {
+        http.Response.Cookies.Delete("exllamasharp_key", new CookieOptions { Path = "/" });
+        return Results.Ok();
+    }
+
+    private sealed class UiSessionRequest
+    {
+        public string? Key { get; set; }
     }
 
     private static IResult PrometheusMetricsAsync(EngineHostService engineHost)
@@ -212,7 +258,8 @@ public static class AdminEndpoints
         string? q,
         CancellationToken ct)
     {
-        var hits = await hf.SearchAsync(q ?? "exl3", 40, ct).ConfigureAwait(false);
+        var hits = HuggingFaceCatalogService.FilterLoadableHits(
+            await hf.SearchAsync(q ?? "exl3", 40, ct).ConfigureAwait(false));
         return Results.Json(new
         {
             query = string.IsNullOrWhiteSpace(q) ? "exl3" : q,
@@ -226,6 +273,8 @@ public static class AdminEndpoints
                 parameters = h.ParameterLabel,
                 size_bytes = h.SizeBytes,
                 size_label = h.SizeBytes is > 0 ? HuggingFaceCatalogService.FormatBytes(h.SizeBytes.Value) : null,
+                has_safetensors = h.HasSafetensors,
+                has_tokenizer = h.HasTokenizer,
             }),
         }, JsonOptions);
     }
@@ -333,7 +382,44 @@ public static class AdminEndpoints
                 statusCode: StatusCodes.Status400BadRequest);
         }
 
+        if (!Directory.Exists(path) && !path.StartsWith("mock://", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Json(
+                ErrorResponse.Create($"Model path missing: {path}", code: "path_missing"),
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        if (!path.StartsWith("mock://", StringComparison.OrdinalIgnoreCase)
+            && !Directory.EnumerateFiles(path, "*.safetensors", SearchOption.AllDirectories).Any())
+        {
+            return Results.Json(
+                ErrorResponse.Create("Incomplete model (no .safetensors weights).", code: "incomplete_model"),
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
         record ??= await inventory.EnsureRecordAsync(path, body.Alias, ct).ConfigureAwait(false);
+
+        if (body.Background)
+        {
+            if (!engine.TryQueueLoad(path, record.Id, out var reject))
+            {
+                return Results.Json(
+                    ErrorResponse.Create(reject ?? "Load already in progress", code: "load_busy"),
+                    statusCode: StatusCodes.Status409Conflict);
+            }
+
+            return Results.Json(
+                new
+                {
+                    loading = true,
+                    model_id = record.Id,
+                    path,
+                    alias = record.Alias,
+                },
+                JsonOptions,
+                statusCode: StatusCodes.Status202Accepted);
+        }
+
         try
         {
             await engine.LoadAsync(path, record.Id, ct).ConfigureAwait(false);
@@ -348,9 +434,30 @@ public static class AdminEndpoints
         return Results.Json(new
         {
             loaded = true,
-            path,
             model_id = record.Id,
+            path = engine.LoadedModelPath,
+            alias = record.Alias,
         }, JsonOptions);
+    }
+
+    private static IResult GetLoadStatusAsync(EngineHostService engine)
+    {
+        return Results.Json(new
+        {
+            loading = engine.IsLoading,
+            loaded = engine.IsLoaded,
+            running = engine.IsRunning,
+            model_id = engine.LoadedModelId,
+            loading_model_id = engine.LoadingModelId,
+            path = engine.LoadedModelPath,
+            error = engine.LastLoadError,
+        }, JsonOptions);
+    }
+
+    private static async Task<IResult> CancelLoadAsync(EngineHostService engine, CancellationToken ct)
+    {
+        await engine.CancelLoadAsync(ct).ConfigureAwait(false);
+        return Results.Json(new { cancelled = true, loading = engine.IsLoading }, JsonOptions);
     }
 
     private static async Task<IResult> UnloadModelAsync(EngineHostService engine, CancellationToken ct)
@@ -418,19 +525,71 @@ public static class AdminEndpoints
         return Results.Json(new JobCreatedResponse { JobId = job.JobId }, JsonOptions, statusCode: StatusCodes.Status202Accepted);
     }
 
-    private static async Task<IResult> AliasModelAsync(ModelAliasRequest body, AppDbContext db, CancellationToken ct)
+    private static async Task<IResult> AliasModelAsync(ModelAliasRequest body, ModelInventoryService inventory, CancellationToken ct)
     {
-        var model = await db.Models.FirstOrDefaultAsync(m => m.Id == body.ModelId, ct).ConfigureAwait(false);
-        if (model is null)
+        try
+        {
+            var model = await inventory.SetAliasAsync(body.ModelId, body.Alias, ct).ConfigureAwait(false);
+            return Results.Json(ToModelRecordDto(model), JsonOptions);
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("not found", StringComparison.OrdinalIgnoreCase))
         {
             return Results.Json(
                 ErrorResponse.Create("Model not found", code: "model_not_found"),
                 statusCode: StatusCodes.Status404NotFound);
         }
+    }
 
-        model.Alias = body.Alias;
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
-        return Results.Json(ToModelRecordDto(model), JsonOptions);
+    private static async Task<IResult> RenameModelAsync(ModelRenameRequest body, ModelInventoryService inventory, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(body.FolderName))
+        {
+            return Results.Json(
+                ErrorResponse.Create("folder_name is required", code: "invalid_name"),
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        try
+        {
+            var model = await inventory.RenameFolderAsync(body.ModelId, body.FolderName.Trim(), ct).ConfigureAwait(false);
+            return Results.Json(ToModelRecordDto(model), JsonOptions);
+        }
+        catch (InvalidOperationException ex)
+        {
+            var code = ex.Message.Contains("not found", StringComparison.OrdinalIgnoreCase)
+                ? "model_not_found"
+                : "rename_failed";
+            var status = code == "model_not_found"
+                ? StatusCodes.Status404NotFound
+                : StatusCodes.Status400BadRequest;
+            return Results.Json(ErrorResponse.Create(ex.Message, code: code), statusCode: status);
+        }
+    }
+
+    private static async Task<IResult> DeleteModelAsync(
+        Guid id,
+        ModelInventoryService inventory,
+        CancellationToken ct,
+        bool delete_files = false)
+    {
+        try
+        {
+            var model = await inventory.DeleteAsync(id, delete_files, ct).ConfigureAwait(false);
+            if (model is null)
+            {
+                return Results.Json(
+                    ErrorResponse.Create("Model not found", code: "model_not_found"),
+                    statusCode: StatusCodes.Status404NotFound);
+            }
+
+            return Results.Json(new { deleted = true, id, delete_files }, JsonOptions);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.Json(
+                ErrorResponse.Create(ex.Message, code: "delete_partial"),
+                statusCode: StatusCodes.Status409Conflict);
+        }
     }
 
     private static async Task<IResult> GetModelfileAsync(Guid id, AppDbContext db, CancellationToken ct)
@@ -809,7 +968,9 @@ public static class AdminEndpoints
 
     private static IResult RestartAsync(IHostApplicationLifetime lifetime)
     {
-        // Soft restart signal — host process should recycle via Windows Service / systemd.
+        // App-mode: Tray watches restart.request and relaunches Server.exe.
+        // Service-mode: SCM recovery may also recycle the process.
+        ProductionRuntime.RequestRestart();
         _ = Task.Run(async () =>
         {
             await Task.Delay(500).ConfigureAwait(false);
@@ -1086,6 +1247,9 @@ public static class AdminEndpoints
         MaxNumSeqs = s.MaxNumSeqs,
         MaxChunkSize = s.MaxChunkSize,
         MaxBatchedTokens = s.MaxBatchedTokens,
+        DefaultMaxTokens = s.DefaultMaxTokens,
+        NumCtx = s.MaxBatchedTokens,
+        NumPredict = s.DefaultMaxTokens,
         GpuMemoryUtilization = s.GpuMemoryUtilization,
         RequestTimeoutSeconds = s.RequestTimeoutSeconds,
         LoadModelOnStartup = s.LoadModelOnStartup,
@@ -1114,6 +1278,9 @@ public static class AdminEndpoints
         if (body.MaxNumSeqs is int mns) s.MaxNumSeqs = mns;
         if (body.MaxChunkSize is int mcs) s.MaxChunkSize = mcs;
         if (body.MaxBatchedTokens is int mbt) s.MaxBatchedTokens = mbt;
+        if (body.NumCtx is int numCtx) s.MaxBatchedTokens = numCtx;
+        if (body.DefaultMaxTokens is int dmt) s.DefaultMaxTokens = Math.Clamp(dmt, 1, 128_000);
+        if (body.NumPredict is int numPredict) s.DefaultMaxTokens = Math.Clamp(numPredict, 1, 128_000);
         if (body.GpuMemoryUtilization is double gpu) s.GpuMemoryUtilization = gpu;
         if (body.RequestTimeoutSeconds is int rts) s.RequestTimeoutSeconds = rts;
         if (body.LoadModelOnStartup is bool lms) s.LoadModelOnStartup = lms;

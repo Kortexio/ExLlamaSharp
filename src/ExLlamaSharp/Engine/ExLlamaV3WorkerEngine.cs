@@ -344,6 +344,19 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
 
     public EngineMetrics GetMetrics()
     {
+        // Watchdog / health rely on this throwing when the Python worker died (OOM, CUDA, crash).
+        if (_loaded && !_client.IsAlive)
+        {
+            lock (_gate)
+            {
+                _loaded = false;
+                _running = false;
+                _visionCapable = false;
+            }
+
+            throw new InvalidOperationException("Python worker process is not alive (model unloaded).");
+        }
+
         var stats = _admission.Stats;
         return new EngineMetrics
         {
@@ -358,6 +371,9 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
             IsMock = false,
         };
     }
+
+    /// <summary>True when the JSONL worker process is still running.</summary>
+    public bool IsWorkerAlive => _client.IsAlive;
 
     public int[] Tokenize(string text)
     {

@@ -15,7 +15,11 @@ Run against a real EXL3 install (not mock):
 11. [ ] Text-only model + `image_url` → **400** `vision_not_supported` (not silently ignored)
 12. [ ] Tenant multi-tenancy on → other tenant model → forbidden
 13. [ ] CLI `exllamasharp chat --model <exl3-dir>` uses worker; responses include `X-ExLlamaSharp-Engine: worker`
-14. [ ] Completions show `X-ExLlamaSharp-Engine: mock` when ForceMock / no GPU path
+14. [ ] Production never returns `X-ExLlamaSharp-Engine: mock` (worker only)
+16. [ ] Kill Server.exe → Tray relaunches; model reloads (`LoadModelOnStartup`)
+17. [ ] Admin Restart → `restart.request` → Tray relaunches
+18. [ ] Second Server.exe exits (global mutex)
+19. [ ] `Verify-Install.ps1` passes (self-contained, one process, listen.json)
 15. [ ] `seed` / non-zero penalties: applied or clear inference error (never silently dropped)
 
 Media `/v1/images` and `/v1/audio*` remain 501 by design.

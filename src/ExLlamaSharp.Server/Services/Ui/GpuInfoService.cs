@@ -23,7 +23,7 @@ public sealed class GpuInfoService
             using var process = Process.Start(psi);
             if (process is null)
             {
-                return MockGpus();
+                return [];
             }
 
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -35,7 +35,7 @@ public sealed class GpuInfoService
 
                 if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(output))
                 {
-                    return MockGpus();
+                    return [];
                 }
 
                 var list = new List<GpuSnapshot>();
@@ -59,17 +59,17 @@ public sealed class GpuInfoService
                     });
                 }
 
-                return list.Count > 0 ? list : MockGpus();
+                return list.Count > 0 ? list : [];
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
                 try { process.Kill(entireProcessTree: true); } catch { }
-                return MockGpus();
+                return [];
             }
         }
         catch
         {
-            return MockGpus();
+            return [];
         }
     }
 
@@ -81,20 +81,6 @@ public sealed class GpuInfoService
 
     private static double ParseDouble(string value) =>
         double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? d : 0;
-
-    private static IReadOnlyList<GpuSnapshot> MockGpus() =>
-    [
-        new GpuSnapshot
-        {
-            Index = 0,
-            Name = "Mock GPU (nvidia-smi unavailable)",
-            UtilizationPct = 12,
-            MemoryUsedMb = 2048,
-            MemoryTotalMb = 24576,
-            TemperatureC = 42,
-            IsMock = true,
-        },
-    ];
 }
 
 public sealed class GpuSnapshot

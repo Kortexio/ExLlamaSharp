@@ -29,7 +29,7 @@
             <button type="button" class="btn-help" title="Help" @onclick="ShowHelp">?</button>
             @if (_signedIn)
             {
-                <span class="kx-topbar-btn" title="Signed in">admin</span>
+                <button type="button" class="kx-topbar-btn" title="Sign out" @onclick="LogoutAsync">Logout</button>
             }
             else
             {
@@ -38,7 +38,18 @@
         </header>
 
         <main class="kx-content">
-            @Body
+            <ErrorBoundary>
+                <ChildContent>
+                    @Body
+                </ChildContent>
+                <ErrorContent Context="ex">
+                    <div class="alert-soft">
+                        <strong>Something went wrong in this page.</strong>
+                        <p class="mb-2 mt-2 text-muted small">@ex.Message</p>
+                        <a class="btn btn-sm btn-primary" href="@Nav.Uri">Reload page</a>
+                    </div>
+                </ErrorContent>
+            </ErrorBoundary>
         </main>
     </div>
 </div>
@@ -100,6 +111,20 @@
     }
 
     private void ShowHelp() => _helpOpen = true;
+
+    private async Task LogoutAsync()
+    {
+        try
+        {
+            await Js.InvokeVoidAsync("exLlamaSharpAdmin.logoutSession");
+            await Js.InvokeVoidAsync("exLlamaSharpAdmin.clearApiKeyCookie");
+        }
+        catch (JSException)
+        {
+        }
+
+        Nav.NavigateTo("/login", forceLoad: true);
+    }
 
     private async Task ToggleSidebarAsync()
     {

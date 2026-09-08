@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
 
 namespace ExLlamaSharp.Server.Services.Ui;
 
@@ -11,11 +12,13 @@ public sealed class LocalApiAuthHandler : DelegatingHandler
 {
     private readonly IHttpContextAccessor _http;
     private readonly IConfiguration _config;
+    private readonly IHostEnvironment _environment;
 
-    public LocalApiAuthHandler(IHttpContextAccessor http, IConfiguration config)
+    public LocalApiAuthHandler(IHttpContextAccessor http, IConfiguration config, IHostEnvironment environment)
     {
         _http = http;
         _config = config;
+        _environment = environment;
     }
 
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -29,7 +32,10 @@ public sealed class LocalApiAuthHandler : DelegatingHandler
                 key = cookie;
             }
 
-            key ??= _config["ExLlamaSharp:AdminApiKey"];
+            if (_environment.IsDevelopment())
+            {
+                key ??= _config["ExLlamaSharp:AdminApiKey"];
+            }
             if (!string.IsNullOrWhiteSpace(key))
             {
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);

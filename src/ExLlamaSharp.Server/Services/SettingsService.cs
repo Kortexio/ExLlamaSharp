@@ -83,6 +83,7 @@ public sealed class SettingsService
         MaxNumSeqs = s.MaxNumSeqs,
         MaxChunkSize = s.MaxChunkSize,
         MaxBatchedTokens = s.MaxBatchedTokens,
+        DefaultMaxTokens = s.DefaultMaxTokens,
         GpuMemoryUtilization = s.GpuMemoryUtilization,
         RequestTimeoutSeconds = s.RequestTimeoutSeconds,
         LoadModelOnStartup = s.LoadModelOnStartup,

@@ -24,6 +24,10 @@ public sealed class ModelLoadRequest
 
     [JsonPropertyName("path")]
     public string? Path { get; set; }
+
+    /// <summary>When true, return 202 and load in the background (keeps UI responsive).</summary>
+    [JsonPropertyName("background")]
+    public bool Background { get; set; }
 }
 
 public sealed class ModelUnloadRequest
@@ -85,6 +89,21 @@ public sealed class ModelAliasRequest
 
     [JsonPropertyName("alias")]
     public string Alias { get; set; } = string.Empty;
+}
+
+public sealed class ModelRenameRequest
+{
+    [JsonPropertyName("model_id")]
+    public Guid ModelId { get; set; }
+
+    [JsonPropertyName("folder_name")]
+    public string FolderName { get; set; } = string.Empty;
+}
+
+public sealed class ModelDeleteRequest
+{
+    [JsonPropertyName("delete_files")]
+    public bool DeleteFiles { get; set; }
 }
 
 public sealed class ModelfileDto

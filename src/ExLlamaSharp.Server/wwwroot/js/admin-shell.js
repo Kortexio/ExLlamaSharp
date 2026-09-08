@@ -28,7 +28,9 @@ window.exLlamaSharpAdmin = window.exLlamaSharpAdmin || {
   },
   setApiKeyCookie: function (key) {
     if (!key) return;
-    document.cookie = "exllamasharp_key=" + encodeURIComponent(key) + "; path=/; SameSite=Lax";
+    var secure = window.location.protocol === "https:" ? "; Secure" : "";
+    document.cookie = "exllamasharp_key=" + encodeURIComponent(key) +
+      "; path=/; SameSite=Lax; Max-Age=604800" + secure;
   },
   hasApiKeyCookie: function () {
     return document.cookie.split(";").some(function (c) {
@@ -37,5 +39,19 @@ window.exLlamaSharpAdmin = window.exLlamaSharpAdmin || {
   },
   clearApiKeyCookie: function () {
     document.cookie = "exllamasharp_key=; path=/; Max-Age=0";
+  },
+  openSession: function (key) {
+    return fetch("/api/v1/ui-session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ key: key })
+    });
+  },
+  logoutSession: function () {
+    return fetch("/api/v1/ui-session/logout", {
+      method: "POST",
+      credentials: "same-origin"
+    });
   }
 };

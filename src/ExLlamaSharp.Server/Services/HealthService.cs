@@ -66,8 +66,17 @@ public sealed class HealthService
     public async Task<bool> IsReadyAsync(CancellationToken cancellationToken = default)
     {
         var report = await GetHealthAsync(cancellationToken).ConfigureAwait(false);
-        return report.Status is "healthy" or "degraded"
-               && report.Components["database"].Status == "healthy";
+        if (report.Components["database"].Status != "healthy")
+        {
+            return false;
+        }
+
+        if (ProductionRuntime.IsSessionZero() && !ProductionRuntime.IsHeadless)
+        {
+            return report.Status is "healthy" or "degraded";
+        }
+
+        return _engineHost.IsLoaded && _engineHost.IsRunning && !_engineHost.Engine.IsMock;
     }
 
     private async Task<ComponentHealth> CheckDatabaseAsync(CancellationToken cancellationToken)
@@ -95,15 +104,32 @@ public sealed class HealthService
         try
         {
             var engine = _engineHost.Engine;
+            var session0 = ProductionRuntime.IsSessionZero();
+            var lastError = _engineHost.LastLoadError;
+            var mock = engine.IsMock;
+            var status = mock || (session0 && !ProductionRuntime.IsHeadless)
+                ? "unhealthy"
+                : "healthy";
+            var detail = mock
+                ? "MockEngine is not allowed in production"
+                : session0 && !ProductionRuntime.IsHeadless
+                    ? "Session 0 / LocalSystem — GPU load is refused. Use Tray (desktop) or a GPU service account (headless)."
+                    : string.IsNullOrWhiteSpace(lastError)
+                        ? engine.GetType().Name
+                        : lastError;
             return new ComponentHealth
             {
-                Status = "healthy",
-                Detail = engine.IsMock ? "MockEngine" : engine.GetType().Name,
+                Status = status,
+                Detail = detail,
                 Data = new Dictionary<string, object?>
                 {
-                    ["isMock"] = engine.IsMock,
+                    ["isMock"] = mock,
                     ["isLoaded"] = engine.IsLoaded,
                     ["isRunning"] = engine.IsRunning,
+                    ["isLoading"] = _engineHost.IsLoading,
+                    ["sessionZero"] = session0,
+                    ["hostMode"] = ProductionRuntime.ReadHostMode(),
+                    ["lastError"] = lastError,
                 },
             };
         }

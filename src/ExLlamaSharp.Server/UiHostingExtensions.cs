@@ -23,6 +23,14 @@ public static class UiHostingExtensions
         services.AddRazorComponents()
             .AddInteractiveServerComponents();
 
+        services.Configure<Microsoft.AspNetCore.Components.Server.CircuitOptions>(options =>
+        {
+            // Model load / long admin ops should not drop the Blazor circuit immediately.
+            options.DisconnectedCircuitRetentionPeriod = TimeSpan.FromMinutes(15);
+            options.JSInteropDefaultCallTimeout = TimeSpan.FromMinutes(5);
+            options.DetailedErrors = true;
+        });
+
         services.AddHttpContextAccessor();
         services.AddSingleton<OnboardingState>();
         services.AddSingleton<GpuInfoService>();
@@ -36,7 +44,10 @@ public static class UiHostingExtensions
             client.BaseAddress = new Uri("https://huggingface.co/");
             client.Timeout = TimeSpan.FromSeconds(60);
         });
-        services.AddHttpClient("local-api")
+        services.AddHttpClient("local-api", client =>
+            {
+                client.Timeout = TimeSpan.FromMinutes(10);
+            })
             .AddHttpMessageHandler<LocalApiAuthHandler>();
         services.AddSignalR();
 

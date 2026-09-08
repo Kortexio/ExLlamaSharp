@@ -9,8 +9,10 @@
 @inject VramFitService VramFit
 @inject IHttpClientFactory HttpClientFactory
 @inject NavigationManager Nav
+@inject IJSRuntime Js
 @using Microsoft.EntityFrameworkCore
 @using ExLlamaSharp.Server.Services.Ui
+@using System.Net.Http.Json
 
 <PageTitle>Models — ExLlamaSharp</PageTitle>
 
@@ -42,7 +44,7 @@
                 </button>
             </div>
             <p class="form-text mb-0 mt-2">
-                Prefer repos with <code>exl3</code> in the name. Gated models need a token in Settings → Hugging Face.
+                Prefer standalone <code>exl3</code> chat/VLM models. Drafts (DFlash), GGUF, and incomplete repos are hidden.
             </p>
         </div>
     </div>
@@ -87,28 +89,84 @@ else if (Tab == "mine")
             <button class="btn btn-sm btn-outline-danger" disabled="@_busy" @onclick="UnloadAsync">Unload</button>
         </div>
     }
+    <div class="d-flex flex-wrap gap-2 mb-3">
+                        <button class="btn btn-sm btn-outline-danger" disabled="@(!_busy && _loadingId is null)" @onclick="CancelLoadUiAsync">Cancel load</button>
+    </div>
     <div class="card">
         <div class="card-body p-0">
             <table class="table-clean">
                 <thead>
-                    <tr><th>Alias</th><th>Path</th><th>Size</th><th>Quant</th><th>VRAM</th><th></th></tr>
+                    <tr><th>Alias</th><th>Folder</th><th>Size</th><th>Quant</th><th>VRAM</th><th>Status</th><th></th></tr>
                 </thead>
                 <tbody>
                     @if (_mine.Count == 0)
                     {
-                        <tr><td colspan="6" class="text-muted">No local models. Import or pull one.</td></tr>
+                        <tr><td colspan="7" class="text-muted">No local models. Import or pull one.</td></tr>
                     }
                     @foreach (var m in _mine)
                     {
                         var fit = VramFit.EvaluateGb(m.SizeGb, _gpu, _gpuUtil);
-                        <tr>
-                            <td>@(m.Alias ?? m.Id.ToString("N")[..8])</td>
-                            <td><code>@m.Path</code></td>
-                            <td>@m.SizeGb.ToString("0.0") GB</td>
+                        var isLoaded = IsLoadedModel(m);
+                        var isLoading = _loadingId == m.Id;
+                        var folderName = Path.GetFileName(m.Path.TrimEnd(Path.DirectorySeparatorChar));
+                        <tr class="@(isLoaded ? "table-row-active" : null)">
+                            <td>
+                                @if (_editingAliasId == m.Id)
+                                {
+                                    <div class="d-flex flex-wrap gap-1 align-items-center">
+                                        <input class="form-control form-control-sm" style="min-width:8rem" @bind="_aliasDraft" />
+                                        <button class="btn btn-sm btn-primary" disabled="@_busy" @onclick="() => SaveAliasAsync(m)">Save</button>
+                                        <button class="btn btn-sm btn-outline-secondary" disabled="@_busy" @onclick="CancelEdit">Cancel</button>
+                                    </div>
+                                }
+                                else
+                                {
+                                    <span>@(string.IsNullOrWhiteSpace(m.Alias) ? folderName : m.Alias)</span>
+                                }
+                            </td>
+                            <td><code title="@m.Path">@folderName</code></td>
+                            <td>@FormatSizeGb(m.SizeGb)</td>
                             <td>@(m.QuantMode ?? "—")</td>
                             <td><span class="badge-status @fit.BadgeClass" title="@fit.Detail">@fit.Label</span></td>
                             <td>
-                                <button class="btn btn-sm btn-primary" @onclick="() => LoadModel(m)">Load</button>
+                                @if (isLoading)
+                                {
+                                    <span class="badge-status badge-warn">Loading…</span>
+                                }
+                                else if (isLoaded)
+                                {
+                                    <span class="badge-status badge-ok">Loaded</span>
+                                }
+                                else if (!Directory.Exists(m.Path))
+                                {
+                                    <span class="badge-status badge-err" title="@m.Path">Missing</span>
+                                }
+                                else if (!HasWeights(m.Path))
+                                {
+                                    <span class="badge-status badge-warn" title="No .safetensors weights found">Incomplete</span>
+                                }
+                                else
+                                {
+                                    <span class="text-muted">Ready</span>
+                                }
+                            </td>
+                            <td>
+                                <div class="d-flex flex-wrap gap-1">
+                                    @if (isLoaded)
+                                    {
+                                        <button class="btn btn-sm btn-outline-danger" disabled="@_busy" @onclick="UnloadAsync">Unload</button>
+                                    }
+                                    else
+                                    {
+                                        <button class="btn btn-sm btn-primary" disabled="@(_busy || isLoading)" @onclick="() => LoadModel(m)">
+                                            @(isLoading ? "Loading…" : "Load")
+                                        </button>
+                                    }
+                                    <button class="btn btn-sm btn-outline-secondary" disabled="@_busy" @onclick="() => BeginEditAlias(m)">Alias</button>
+                                    <button class="btn btn-sm btn-outline-secondary" disabled="@_busy" @onclick="() => RenameFolderAsync(m)">Rename</button>
+                                    <button class="btn btn-sm btn-outline-danger" disabled="@_busy" @onclick="() => DeleteModelAsync(m, deleteFiles: false)">Remove</button>
+                                    <button class="btn btn-sm btn-outline-danger" disabled="@_busy" @onclick="() => DeleteModelAsync(m, deleteFiles: true)">Delete files</button>
+                                </div>
                             </td>
                         </tr>
                     }
@@ -189,6 +247,9 @@ else
     private bool _searching;
     private bool _pulling;
     private bool _busy;
+    private Guid? _loadingId;
+    private Guid? _editingAliasId;
+    private string _aliasDraft = "";
     private string _quantizeModelId = "";
     private string _quantizePath = "";
     private double _quantizeBits = 4.0;
@@ -208,6 +269,54 @@ else
         var client = HttpClientFactory.CreateClient("local-api");
         client.BaseAddress ??= new Uri(Nav.BaseUri);
         return client;
+    }
+
+    private static string FormatSizeGb(double gb)
+    {
+        if (gb < 0.05)
+        {
+            return "—";
+        }
+
+        return gb < 10 ? $"{gb:0.00} GB" : $"{gb:0.0} GB";
+    }
+
+    private static bool HasWeights(string path)
+    {
+        try
+        {
+            return Directory.Exists(path)
+                && Directory.EnumerateFiles(path, "*.safetensors", SearchOption.AllDirectories).Any();
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool IsLoadedModel(ModelRecord m)
+    {
+        if (!Engine.IsLoaded || string.IsNullOrWhiteSpace(Engine.LoadedModelPath))
+        {
+            return false;
+        }
+
+        if (Engine.LoadedModelId == m.Id)
+        {
+            return true;
+        }
+
+        try
+        {
+            return string.Equals(
+                Path.GetFullPath(Engine.LoadedModelPath.TrimEnd(Path.DirectorySeparatorChar)),
+                Path.GetFullPath(m.Path.TrimEnd(Path.DirectorySeparatorChar)),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private async Task LoadGpuAsync()
@@ -248,10 +357,10 @@ else
         _msg = null;
         try
         {
-            _hfHits = (await HuggingFace.SearchAsync(_hfQuery)).ToList();
+            _hfHits = HuggingFaceCatalogService.FilterLoadableHits(await HuggingFace.SearchAsync(_hfQuery)).ToList();
             if (_hfHits.Count == 0)
             {
-                _msg = "Hugging Face returned no models for that search.";
+                _msg = "No loadable EXL3 models for that search (drafts / incomplete repos are filtered out).";
             }
             else
             {
@@ -275,6 +384,11 @@ else
         try
         {
             await HuggingFace.EnrichHitsAsync(snapshot);
+            _hfHits = HuggingFaceCatalogService.FilterLoadableHits(snapshot).ToList();
+            if (_hfHits.Count == 0)
+            {
+                _msg = "No loadable EXL3 models after checking weights/tokenizer (incomplete Hub repos were removed).";
+            }
             await InvokeAsync(StateHasChanged);
         }
         catch
@@ -288,7 +402,12 @@ else
         try
         {
             await Inventory.SyncFromDiskAsync();
-            _mine = await Db.Models.AsNoTracking().OrderByDescending(x => x.CreatedAt).Take(50).ToListAsync();
+            foreach (var e in Db.ChangeTracker.Entries().ToList())
+            {
+                e.State = EntityState.Detached;
+            }
+
+            _mine = await Db.Models.AsNoTracking().OrderByDescending(x => x.CreatedAt).Take(100).ToListAsync();
         }
         catch
         {
@@ -296,8 +415,57 @@ else
         }
     }
 
+    private async Task RefreshMineAsync()
+    {
+        _busy = true;
+        _msg = null;
+        try
+        {
+            await Inventory.RefreshAllSizesAsync();
+            await ReloadAsync();
+            _msg = "Sizes refreshed from disk.";
+        }
+        catch (Exception ex)
+        {
+            _msg = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task CancelLoadUiAsync()
+    {
+        try
+        {
+            var client = CreateApi();
+            await client.PostAsync("/api/v1/models/load-cancel", null);
+            _msg = "Load cancelled.";
+            _loadingId = null;
+            _busy = false;
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _msg = ex.Message;
+        }
+    }
+
     private async Task PullAsync(string repoId, string displayName)
     {
+        var probe = new HuggingFaceModelHit
+        {
+            RepoId = repoId,
+            DisplayName = displayName,
+            Tags = repoId,
+        };
+        if (!HuggingFaceCatalogService.IsStandaloneExl3Candidate(probe))
+        {
+            _msg = $"Skipped {displayName}: not a standalone EXL3 chat/VLM model (drafts like DFlash are not supported).";
+            return;
+        }
+
         _pulling = true;
         _msg = $"Downloading {displayName} from Hugging Face… this can take several minutes.";
         try
@@ -317,16 +485,229 @@ else
         }
     }
 
-    private async Task LoadModel(ModelRecord model)
+    private void BeginEditAlias(ModelRecord model)
     {
+        _editingAliasId = model.Id;
+        _aliasDraft = model.Alias ?? Path.GetFileName(model.Path.TrimEnd(Path.DirectorySeparatorChar));
+        _msg = null;
+    }
+
+    private void CancelEdit()
+    {
+        _editingAliasId = null;
+        _aliasDraft = "";
+    }
+
+    private async Task SaveAliasAsync(ModelRecord model)
+    {
+        _busy = true;
+        _msg = null;
         try
         {
-            await Engine.LoadAsync(model.Path, model.Id);
-            _msg = $"Loaded {model.Alias ?? model.Path}.";
+            var client = CreateApi();
+            var resp = await client.PostAsJsonAsync("/api/v1/models/alias", new
+            {
+                model_id = model.Id,
+                alias = _aliasDraft?.Trim() ?? "",
+            });
+            var body = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode)
+            {
+                _msg = body;
+                return;
+            }
+
+            _editingAliasId = null;
+            _msg = "Alias saved.";
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _msg = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task RenameFolderAsync(ModelRecord model)
+    {
+        var current = Path.GetFileName(model.Path.TrimEnd(Path.DirectorySeparatorChar));
+        var name = await Js.InvokeAsync<string?>("prompt", "New folder name on disk:", current);
+        if (string.IsNullOrWhiteSpace(name) || string.Equals(name.Trim(), current, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _busy = true;
+        _msg = null;
+        try
+        {
+            var client = CreateApi();
+            var resp = await client.PostAsJsonAsync("/api/v1/models/rename", new
+            {
+                model_id = model.Id,
+                folder_name = name.Trim(),
+            });
+            var body = await resp.Content.ReadAsStringAsync();
+            _msg = resp.IsSuccessStatusCode ? $"Renamed folder to {name.Trim()}." : body;
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _msg = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task DeleteModelAsync(ModelRecord model, bool deleteFiles)
+    {
+        var label = string.IsNullOrWhiteSpace(model.Alias)
+            ? Path.GetFileName(model.Path.TrimEnd(Path.DirectorySeparatorChar))
+            : model.Alias;
+        var confirm = deleteFiles
+            ? $"Delete '{label}' from the library AND erase files on disk?\n{model.Path}"
+            : $"Remove '{label}' from My Models? (files stay on disk)";
+        if (!await Js.InvokeAsync<bool>("confirm", confirm))
+        {
+            return;
+        }
+
+        _busy = true;
+        _msg = null;
+        try
+        {
+            var client = CreateApi();
+            var url = $"/api/v1/models/{model.Id}?delete_files={(deleteFiles ? "true" : "false")}";
+            var resp = await client.DeleteAsync(url);
+            var body = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode)
+            {
+                _msg = body;
+                return;
+            }
+
+            _msg = deleteFiles ? $"Deleted {label} and files." : $"Removed {label} from library.";
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _msg = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task LoadModel(ModelRecord model)
+    {
+        var label = string.IsNullOrWhiteSpace(model.Alias)
+            ? Path.GetFileName(model.Path.TrimEnd(Path.DirectorySeparatorChar))
+            : model.Alias;
+
+        if (!Directory.Exists(model.Path))
+        {
+            _msg = $"Load failed: folder missing — {model.Path}";
+            return;
+        }
+
+        if (!HasWeights(model.Path))
+        {
+            _msg = $"Load failed: incomplete model (no .safetensors) — {label}";
+            return;
+        }
+
+        _busy = true;
+        _loadingId = model.Id;
+        _msg = $"Loading {label}… this can take 1–3 minutes. UI stays responsive.";
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            var client = CreateApi();
+            var resp = await client.PostAsJsonAsync("/api/v1/models/load", new
+            {
+                model_id = model.Id,
+                path = model.Path,
+                background = true,
+            });
+            var body = await resp.Content.ReadAsStringAsync();
+            if (resp.StatusCode == System.Net.HttpStatusCode.Conflict)
+            {
+                _msg = "Another model is already loading. Wait for it to finish.";
+                return;
+            }
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                _msg = $"Load failed: {body}";
+                return;
+            }
+
+            // Poll status so the Blazor circuit is not blocked inside Engine.LoadAsync.
+            var deadline = DateTime.UtcNow.AddMinutes(10);
+            while (DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(1500);
+                var statusResp = await client.GetAsync("/api/v1/models/load-status");
+                if (!statusResp.IsSuccessStatusCode)
+                {
+                    continue;
+                }
+
+                using var doc = System.Text.Json.JsonDocument.Parse(await statusResp.Content.ReadAsStringAsync());
+                var root = doc.RootElement;
+                var loading = root.TryGetProperty("loading", out var l) && l.GetBoolean();
+                var loaded = root.TryGetProperty("loaded", out var ld) && ld.GetBoolean();
+                var error = root.TryGetProperty("error", out var e) && e.ValueKind == System.Text.Json.JsonValueKind.String
+                    ? e.GetString()
+                    : null;
+                Guid? loadedId = null;
+                if (root.TryGetProperty("model_id", out var mid) && mid.ValueKind == System.Text.Json.JsonValueKind.String
+                    && Guid.TryParse(mid.GetString(), out var gid))
+                {
+                    loadedId = gid;
+                }
+
+                if (!string.IsNullOrWhiteSpace(error) && !loading)
+                {
+                    _msg = $"Load failed: {error}";
+                    return;
+                }
+
+                if (!loading && loaded && (loadedId == model.Id || Engine.LoadedModelId == model.Id || IsLoadedModel(model)))
+                {
+                    _msg = $"Loaded {label}.";
+                    await ReloadAsync();
+                    return;
+                }
+
+                if (!loading && !loaded)
+                {
+                    _msg = string.IsNullOrWhiteSpace(error)
+                        ? $"Load failed for {label}."
+                        : $"Load failed: {error}";
+                    return;
+                }
+
+                _msg = $"Loading {label}… still working.";
+                await InvokeAsync(StateHasChanged);
+            }
+
+            _msg = $"Load timed out for {label}. Check Diagnostics / logs.";
         }
         catch (Exception ex)
         {
             _msg = $"Load failed: {ex.Message}";
+        }
+        finally
+        {
+            _loadingId = null;
+            _busy = false;
         }
     }
 
@@ -336,10 +717,9 @@ else
         _msg = null;
         try
         {
-            var client = CreateApi();
-            var resp = await client.PostAsync("/api/v1/models/unload", null);
-            var body = await resp.Content.ReadAsStringAsync();
-            _msg = resp.IsSuccessStatusCode ? "Model unloaded." : body;
+            await Engine.UnloadAsync();
+            _msg = "Model unloaded.";
+            await ReloadAsync();
         }
         catch (Exception ex)
         {
@@ -405,14 +785,9 @@ else
 
         try
         {
-            var rec = new ModelRecord
-            {
-                Path = _importPath.Trim(),
-                Alias = string.IsNullOrWhiteSpace(_importAlias) ? Path.GetFileName(_importPath.Trim()) : _importAlias.Trim(),
-                TenantId = "default",
-            };
-            Db.Models.Add(rec);
-            await Db.SaveChangesAsync();
+            await Inventory.EnsureRecordAsync(
+                _importPath.Trim(),
+                string.IsNullOrWhiteSpace(_importAlias) ? null : _importAlias.Trim());
             _msg = "Imported.";
             await ReloadAsync();
             Tab = "mine";

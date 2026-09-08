@@ -1,13 +1,13 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
-ExLlamaSharp EXL3 Python worker — JSON-lines over stdin/stdout.
+ExLlamaSharp EXL3 Python worker â€” JSON-lines over stdin/stdout.
 
 Uses local third_party/exllamav3 (official Config/Model/Cache/Tokenizer/Generator).
 This is the real CUDA EXL3 GEMM/attention path.
 
 Protocol jsonl-v2: stdin and stdout are independent streams.
-  .NET → Python: submit / cancel / load / unload / metrics / tokenize / detokenize
-  Python → .NET: RPC replies (ok/error + id) and multiplexed event batches:
+  .NET â†’ Python: submit / cancel / load / unload / metrics / tokenize / detokenize
+  Python â†’ .NET: RPC replies (ok/error + id) and multiplexed event batches:
       {"events":[...], "stats":{"active":N,"pending":N,"free_pages":N,"max_batch_size":N}}
 
 A reader thread only parses stdin into a queue. The main thread owns the
@@ -231,6 +231,7 @@ def _load(
     max_chunk_size: int = 2048,
 ) -> None:
     _preload_torch_dlls()
+    # Import here is safe only after warm-import in main(); keep for clarity.
     from exllamav3 import Config, Model, Cache, Tokenizer, Generator
 
     _unload()
@@ -280,7 +281,7 @@ def _load(
     )
 
     if draft_model is not None:
-        # Probe Generator signature — draft kwargs vary across exllamav3 versions.
+        # Probe Generator signature â€” draft kwargs vary across exllamav3 versions.
         draft_attempts = [
             dict(draft_model=draft_model, draft_cache=draft_cache, draft_k=draft_k),
             dict(draft_model=draft_model, draft_cache=draft_cache, num_draft_tokens=draft_k),
@@ -966,7 +967,7 @@ def handle(msg: dict[str, Any]) -> None:
                     type="vision_not_supported",
                 )
                 return
-            # LoRA: ExLlamaV3 applies adapters globally — serialize swaps vs concurrent submits.
+            # LoRA: ExLlamaV3 applies adapters globally â€” serialize swaps vs concurrent submits.
             with _ADAPTER_LOCK:
                 adapter_path = msg.get("adapter_path")
                 try:
@@ -1078,6 +1079,25 @@ def serve() -> None:
 
 
 def main() -> None:
+    # Warm-import CUDA/torch BEFORE the stdin reader thread starts.
+    # On Windows, first-time torch import while another thread is blocked on
+    # stdin/pipe I/O can deadlock and leave Admin UI stuck on "Loading…".
+    try:
+        _preload_torch_dlls()
+        import torch  # noqa: F401
+        from exllamav3 import Config, Model, Cache, Tokenizer, Generator  # noqa: F401
+        cuda_ok = bool(torch.cuda.is_available())
+        _log(f"warm import ok torch={getattr(torch, '__version__', '?')} cuda={cuda_ok}")
+        if not cuda_ok and os.environ.get("EXLLAMASHARP_ALLOW_CPU", "").strip() != "1":
+            _err("torch.cuda.is_available() is false")
+            raise SystemExit(2)
+    except SystemExit:
+        raise
+    except Exception as ex:
+        _log(f"warm import failed: {ex}")
+        _err(str(ex))
+        raise SystemExit(2)
+
     _log(f"ready repo={_REPO_ROOT} exl3={_EXL3_ROOT.is_dir()}")
     _ok(ready=True, protocol="jsonl-v2")
     serve()

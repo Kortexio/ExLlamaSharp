@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
@@ -20,6 +20,8 @@
 param(
     [string]$InstallDir = "$env:ProgramFiles\ExLlamaSharp",
     [int]$Port = 14563,
+    [ValidateSet("desktop", "headless")]
+    [string]$HostMode = "desktop",
     [switch]$SkipPyTorch,
     [switch]$SkipVCRedist,
     [switch]$Unattended,
@@ -135,8 +137,18 @@ function Invoke-VenvPip {
     $prev = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-        & $PythonExe -m pip @PipArgs
-        return $LASTEXITCODE
+        # pip writes progress/notices to stderr; do not let that become a failing exit code
+        $output = & $PythonExe -m pip @PipArgs 2>&1
+        $exitCode = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } else { 0 }
+        foreach ($line in @($output)) {
+            if ($null -eq $line) { continue }
+            if ($line -is [System.Management.Automation.ErrorRecord]) {
+                Write-Host ($line.ToString()) -ForegroundColor DarkGray
+            } else {
+                Write-Host ($line.ToString()) -ForegroundColor Gray
+            }
+        }
+        return $exitCode
     }
     finally {
         $ErrorActionPreference = $prev
@@ -278,7 +290,7 @@ $venvPath = Join-Path $InstallDir "venv"
 # Copy everything except wiping a good venv: copy payload items individually
 Get-ChildItem $payload -Force | ForEach-Object {
     $dest = Join-Path $InstallDir $_.Name
-    # Skip venv if it already exists — will be validated/reused below
+    # Skip venv if it already exists - will be validated/reused below
     if ($_.Name -eq "venv" -and (Test-Path $dest)) {
         Write-Log "Keeping existing venv" "OK"
         return
@@ -293,7 +305,18 @@ $dataDir = Join-Path $env:ProgramData "ExLlamaSharp"
 @($dataDir, (Join-Path $dataDir "logs"), (Join-Path $dataDir "models"), (Join-Path $dataDir "backups")) | ForEach-Object {
     if (-not (Test-Path $_)) { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
 }
-Write-Log "Files copied" "OK"
+cmd /c "icacls `"$dataDir`" /grant Users:(OI)(CI)M /T" | Out-Null
+Get-ChildItem $dataDir -Filter "app.db*" -ErrorAction SilentlyContinue | ForEach-Object {
+    cmd /c "icacls `"$($_.FullName)`" /grant Users:M" | Out-Null
+}
+@{ mode = $HostMode; written_utc = [DateTime]::UtcNow.ToString("o") } |
+    ConvertTo-Json | Set-Content (Join-Path $dataDir "host-mode.json") -Encoding UTF8
+$uninstallSrc = Join-Path $PSScriptRoot "Uninstall.ps1"
+if (-not (Test-Path $uninstallSrc)) { $uninstallSrc = Join-Path $payload "Uninstall.ps1" }
+if (Test-Path $uninstallSrc) {
+    Copy-Item $uninstallSrc (Join-Path $InstallDir "Uninstall.ps1") -Force
+}
+Write-Log "Files copied (host-mode=$HostMode)" "OK"
 
 # 3) VC++
 if (-not $SkipVCRedist) {
@@ -323,7 +346,7 @@ if (-not $SkipVCRedist) {
     }
 }
 
-# 4) venv + PyTorch — never delete a venv if torch already works
+# 4) venv + PyTorch - never delete a venv if torch already works
 Write-Log "Python venv / PyTorch" "STEP"
 # $venvPath already defined in step 2
 $pythonExe = Join-Path $venvPath "Scripts\python.exe"
@@ -337,8 +360,16 @@ if ($ForceRecreateVenv -and (Test-Path $venvPath)) {
 
 if (-not (Test-Path $pythonExe)) {
     Write-Log "Creating venv..."
-    & python -m venv $venvPath
-    if ($LASTEXITCODE -ne 0) { Write-Log "Failed to create venv" "ERR"; exit 1 }
+    # Native stderr must not trip $ErrorActionPreference Stop (Windows PowerShell 5.1)
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & python -m venv $venvPath
+        $venvCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+    if ($venvCode -ne 0) { Write-Log "Failed to create venv" "ERR"; exit 1 }
     $pythonExe = Join-Path $venvPath "Scripts\python.exe"
     Write-Log "venv created" "OK"
 } else {
@@ -348,17 +379,20 @@ if (-not (Test-Path $pythonExe)) {
 if (-not $SkipPyTorch) {
     $offline = Resolve-OfflineWheelsDir
     if ($torchOk) {
-        Write-Log "PyTorch already present — skipping torch download" "OK"
+        Write-Log "PyTorch already present - skipping torch download" "OK"
     } else {
         if ($offline) {
             Write-Log "Upgrading pip from bundled wheels"
             $null = Invoke-VenvPip -PythonExe $pythonExe -PipArgs @("install", "--no-index", "--find-links", $offline, "pip", "wheel", "setuptools")
         } else {
-            & $pythonExe -m pip install --upgrade pip --quiet
+            $null = Invoke-VenvPip -PythonExe $pythonExe -PipArgs @("install", "--upgrade", "pip")
         }
         Write-Log "Downloading PyTorch cu128 from pytorch.org (~2-3 GB)..."
-        & $pythonExe -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-        if ($LASTEXITCODE -ne 0) {
+        $torchCode = Invoke-VenvPip -PythonExe $pythonExe -PipArgs @(
+            "install", "torch", "torchvision", "torchaudio",
+            "--index-url", "https://download.pytorch.org/whl/cu128"
+        )
+        if ($torchCode -ne 0) {
             Write-Log "PyTorch install failed" "ERR"
             exit 1
         }
@@ -383,7 +417,8 @@ if (-not $SkipPyTorch) {
         exit 1
     }
 
-    & $pythonExe -c "import torch; print(torch.__version__, 'cuda=', torch.cuda.is_available())"
+    # Single-quoted -c so PowerShell does not parse commas / () inside the Python snippet
+    & $pythonExe -c 'import torch; print(torch.__version__, "cuda=", torch.cuda.is_available())'
 } else {
     Write-Log "PyTorch skipped (-SkipPyTorch)" "WARN"
 }
@@ -396,7 +431,7 @@ if (-not $SkipPyTorch) {
 } | ConvertTo-Json | Set-Content (Join-Path $InstallDir "exl3-runtime.json") -Encoding UTF8
 Write-Log "exl3-runtime.json" "OK"
 
-# 6) Windows Service — New-Service (correct quoting with Program Files)
+# 6) Windows Service - New-Service (correct quoting with Program Files)
 Write-Log "Registering Windows Service" "STEP"
 $serverExe = Join-Path $InstallDir "ExLlamaSharp.Server.exe"
 if (-not (Test-Path $serverExe)) { Write-Log "Missing $serverExe" "ERR"; exit 1 }
@@ -408,25 +443,31 @@ try {
         -BinaryPathName $binPath `
         -DisplayName "ExLlamaSharp LLM Server" `
         -Description "Local LLM server (OpenAI-compatible API + Admin UI)" `
-        -StartupType Automatic | Out-Null
+        -StartupType $(if ($HostMode -eq "headless") { "Automatic" } else { "Manual" }) | Out-Null
 } catch {
-    Write-Log "New-Service failed: $($_.Exception.Message) — trying sc.exe" "WARN"
-    $createOut = & sc.exe create $ServiceName binPath= $binPath DisplayName= "ExLlamaSharp LLM Server" start= auto 2>&1
+    Write-Log "New-Service failed: $($_.Exception.Message) - trying sc.exe" "WARN"
+    $svcStart = if ($HostMode -eq "headless") { "delayed-auto" } else { "demand" }
+    $createOut = & sc.exe create $ServiceName binPath= $binPath DisplayName= "ExLlamaSharp LLM Server" start= $svcStart 2>&1
     Write-Log ("sc.exe: " + ($createOut | Out-String).Trim())
     if ($LASTEXITCODE -ne 0 -and -not (Get-Service $ServiceName -ErrorAction SilentlyContinue)) {
         Write-Log "Failed to create service" "ERR"
         exit 1
     }
 }
-& sc.exe failure $ServiceName reset= 86400 actions= restart/60000/restart/60000/restart/60000 | Out-Null
+& sc.exe failure $ServiceName reset= 86400 actions= restart/10000/restart/30000/restart/60000 | Out-Null
+if ($HostMode -eq "headless") {
+    & sc.exe config $ServiceName start= delayed-auto | Out-Null
+} else {
+    & sc.exe config $ServiceName start= demand | Out-Null
+}
+# Allow interactive users to Start/Stop/Query so the Tray can reset without UAC
+$svcSddl = 'D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWRPWPDTLOCRRC;;;IU)(A;;CCLCSWRPWPDTLOCRRC;;;AU)(A;;CCLCSWLOCRRC;;;SU)'
+& sc.exe sdset $ServiceName $svcSddl | Out-Null
 Write-Log "Service registered" "OK"
 
-# 7) Firewall
-Write-Log "Firewall" "STEP"
+# 7) Firewall — only if the API is intended to leave loopback (operator can add later)
+Write-Log "Firewall skipped (default bind is 127.0.0.1)" "OK"
 Get-NetFirewallRule -DisplayName "ExLlamaSharp Server" -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
-New-NetFirewallRule -DisplayName "ExLlamaSharp Server" `
-    -Direction Inbound -Program $serverExe -Action Allow -Profile Any -Enabled True | Out-Null
-Write-Log "Rule created" "OK"
 
 # 8) Shortcuts with branded icon
 Write-Log "Shortcuts" "STEP"
@@ -446,37 +487,56 @@ if (-not (Test-Path $iconFile)) {
 
 $desktop = [Environment]::GetFolderPath("CommonDesktopDirectory")
 if (-not $desktop) { $desktop = [Environment]::GetFolderPath("Desktop") }
-New-InternetShortcut (Join-Path $desktop "ExLlamaSharp.url") $UiUrl $iconFile
 
 $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\ExLlamaSharp"
 New-Item -ItemType Directory -Path $startMenu -Force | Out-Null
 Get-ChildItem $startMenu -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-New-AppShortcut (Join-Path $startMenu "ExLlamaSharp.lnk") `
-    "$env:SystemRoot\System32\cmd.exe" "/C start $UiUrl" $iconFile $InstallDir
-New-InternetShortcut (Join-Path $startMenu "ExLlamaSharp.url") $UiUrl $iconFile
 
 $trayExe = Join-Path $InstallDir "ExLlamaSharp.Tray.exe"
 if (Test-Path $trayExe) {
+    # Primary shortcuts: one click starts Tray + server
+    New-AppShortcut (Join-Path $desktop "ExLlamaSharp.lnk") $trayExe "" $iconFile $InstallDir
+    New-AppShortcut (Join-Path $startMenu "ExLlamaSharp.lnk") $trayExe "" $iconFile $InstallDir
     New-AppShortcut (Join-Path $startMenu "ExLlamaSharp Tray.lnk") $trayExe "" $iconFile $InstallDir
-    $startup = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\StartUp"
-    if (-not (Test-Path $startup)) { $startup = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup" }
-    New-AppShortcut (Join-Path $startup "ExLlamaSharp Tray.lnk") $trayExe "" $iconFile $InstallDir
+    New-AppShortcut (Join-Path $startMenu "Open Admin UI.lnk") `
+        "$env:SystemRoot\System32\cmd.exe" "/C start $UiUrl" $iconFile $InstallDir
+    Get-ChildItem @(
+        (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\StartUp\ExLlamaSharp Tray.lnk"),
+        (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup\ExLlamaSharp Tray.lnk")
+    ) -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    try {
+        Unregister-ScheduledTask -TaskName "ExLlamaSharpUserSession" -Confirm:$false -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName "ExLlamaSharpTrayLogon" -Confirm:$false -ErrorAction SilentlyContinue
+        if ($HostMode -eq "desktop") {
+            $action = New-ScheduledTaskAction -Execute $trayExe -WorkingDirectory $InstallDir
+            $trigger = New-ScheduledTaskTrigger -AtLogOn
+            $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+            Register-ScheduledTask -TaskName "ExLlamaSharpTrayLogon" -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+            Write-Log "Logon task ExLlamaSharpTrayLogon registered" "OK"
+        }
+    } catch {
+        Write-Log "Scheduled task: $($_.Exception.Message)" "WARN"
+    }
+} else {
+    New-InternetShortcut (Join-Path $desktop "ExLlamaSharp.url") $UiUrl $iconFile
+    New-AppShortcut (Join-Path $startMenu "ExLlamaSharp.lnk") `
+        "$env:SystemRoot\System32\cmd.exe" "/C start $UiUrl" $iconFile $InstallDir
 }
 Write-Log "Shortcuts OK" "OK"
 
-# 9) Start service
-Write-Log "Starting service" "STEP"
+# 9) Start host
+Write-Log "Starting ($HostMode)" "STEP"
 Clear-Port $Port
 Stop-ExLlamaProcesses
-Start-Service -Name $ServiceName
-Start-Sleep -Seconds 4
-
-$service = Get-Service -Name $ServiceName
-if ($service.Status -ne "Running") {
-    Write-Log "Service did not reach Running ($($service.Status)). Trying console..." "WARN"
-    # Fallback: start as process so user is not stuck
-    Start-Process -FilePath $serverExe -WorkingDirectory $InstallDir -WindowStyle Hidden
-    Start-Sleep -Seconds 5
+if ($HostMode -eq "headless") {
+    Start-Service -Name $ServiceName
+    Start-Sleep -Seconds 4
+    $service = Get-Service -Name $ServiceName
+    if ($service.Status -ne "Running") {
+        Write-Log "Service did not reach Running ($($service.Status))" "WARN"
+    }
+} else {
+    Write-Log "Desktop mode: service is Manual; Tray starts Server in the user session" "OK"
 }
 
 $ready = $false
@@ -490,9 +550,9 @@ for ($i = 0; $i -lt 18; $i++) {
 }
 
 if ($ready) {
-    Write-Log "Health OK ($UiUrl/health)" "OK"
+    Write-Log ('Health OK ({0}/health)' -f $UiUrl) "OK"
 } else {
-    Write-Log "Health did not respond — see Event Viewer / $LogFile" "WARN"
+    Write-Log "Health did not respond - see Event Viewer / $LogFile" "WARN"
 }
 
 if ((Test-Path $trayExe) -and -not (Get-Process -Name "ExLlamaSharp.Tray" -ErrorAction SilentlyContinue)) {

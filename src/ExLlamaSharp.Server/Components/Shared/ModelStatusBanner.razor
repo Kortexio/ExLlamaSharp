@@ -1,0 +1,63 @@
+@inject EngineHostService Engine
+@inject NavigationManager Nav
+
+@if (!string.IsNullOrWhiteSpace(_message))
+{
+    <div class="alert-soft mb-3 @(_ok ? "text-success" : "text-danger")">
+        @_message
+        @if (!_ok)
+        {
+            <a class="btn btn-sm btn-primary ms-2" href="/models">Load model</a>
+        }
+    </div>
+}
+
+@code {
+    private string? _message;
+    private bool _ok;
+
+    protected override void OnParametersSet()
+    {
+        try
+        {
+            _ = Engine.Engine;
+        }
+        catch (Exception ex)
+        {
+            _ok = false;
+            _message = ex.Message;
+            return;
+        }
+
+        if (Engine.Engine.IsMock)
+        {
+            _ok = false;
+            _message = "Mock engine is not used in production. Load an EXL3 model via the worker.";
+            return;
+        }
+
+        if (Engine.IsLoading)
+        {
+            _ok = true;
+            _message = "Loading model…";
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(Engine.LastLoadError) && !Engine.IsLoaded)
+        {
+            _ok = false;
+            _message = Engine.LastLoadError;
+            return;
+        }
+
+        if (!Engine.IsLoaded || !Engine.IsRunning)
+        {
+            _ok = false;
+            _message = "No model loaded. Open Models and click Load. After the first successful load the Server will reload it on startup.";
+            return;
+        }
+
+        _ok = true;
+        _message = null;
+    }
+}

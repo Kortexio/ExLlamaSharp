@@ -14,6 +14,12 @@ public sealed class CompletionRequestDto
     [JsonPropertyName("max_tokens")]
     public int? MaxTokens { get; set; }
 
+    [JsonPropertyName("max_completion_tokens")]
+    public int? MaxCompletionTokens { get; set; }
+
+    [JsonPropertyName("options")]
+    public OllamaStyleOptions? Options { get; set; }
+
     [JsonPropertyName("temperature")]
     public float? Temperature { get; set; }
 
@@ -22,6 +28,18 @@ public sealed class CompletionRequestDto
 
     [JsonPropertyName("top_k")]
     public int? TopK { get; set; }
+
+    [JsonPropertyName("min_p")]
+    public float? MinP { get; set; }
+
+    [JsonPropertyName("presence_penalty")]
+    public float? PresencePenalty { get; set; }
+
+    [JsonPropertyName("frequency_penalty")]
+    public float? FrequencyPenalty { get; set; }
+
+    [JsonPropertyName("seed")]
+    public long? Seed { get; set; }
 
     [JsonPropertyName("stop")]
     public JsonElement? Stop { get; set; }

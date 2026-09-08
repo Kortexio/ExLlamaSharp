@@ -12,6 +12,10 @@ JSON for OpenAI routes uses **snake_case** field names where applicable.
 
 ## OpenAI-compatible (`/v1`)
 
+Primary contract is **OpenAI Chat Completions / Completions**. Clients that speak OpenAI (SDKs, Continue, Open WebUI in OpenAI mode, etc.) work against `/v1/*` with `Authorization: Bearer <key>`.
+
+**Ollama-style extras** are also accepted on the same routes via an `options` object (and a few aliases). There is **no** separate Ollama HTTP API (`/api/chat`, `/api/generate`).
+
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/v1/chat/completions` | Chat completions (streaming SSE when `stream: true`) |
@@ -26,6 +30,19 @@ JSON for OpenAI routes uses **snake_case** field names where applicable.
 Unimplemented `/v1/**` paths (including **images/audio generation**) return **501** with an OpenAI-shaped error object (`not_implemented_error`).
 
 Chat supports OpenAI `tools` / `tool_choice` (response may include `tool_calls` + `finish_reason: tool_calls`), `response_format` / JSON schema, and multimodal `image_url` when the loaded EXL3 model has a vision component (Qwen3-VL, Gemma VL, etc.). Text-only models return **400** `vision_not_supported`. Unsupported fields such as `logit_bias`, `logprobs`, and `n > 1` return **400**. Responses include header `X-ExLlamaSharp-Engine: worker|mock`.
+
+### Generation length & context
+
+| Field | Role |
+|-------|------|
+| `max_tokens` / `max_completion_tokens` | OpenAI — max **reply** tokens |
+| `options.num_predict` | Ollama alias for reply length |
+| *(omitted)* | Uses Settings → **Default max tokens** |
+| `options.num_ctx` | Ollama context / KV size — must match Settings → **Max batched tokens**; changing it requires **model reload** (per-request mismatch is logged and ignored) |
+
+Priority for reply length: `max_tokens` → `max_completion_tokens` → `options.num_predict` → settings default.
+
+OpenAI top-level sampling fields (`temperature`, `top_p`, `top_k`, `min_p`, penalties, `seed`, `stop`) override the same keys inside `options` when both are present.
 
 ### Chat completions (sketch)
 
@@ -42,9 +59,17 @@ Content-Type: application/json
   ],
   "temperature": 0.7,
   "max_tokens": 512,
-  "stream": false
+  "stream": false,
+  "options": {
+    "num_predict": 512,
+    "num_ctx": 8192,
+    "top_k": 40,
+    "repeat_penalty": 1.1
+  }
 }
 ```
+
+`options` may include: `num_predict`, `num_ctx`, `temperature`, `top_p`, `top_k`, `min_p`, `seed`, `stop`, `presence_penalty`, `frequency_penalty`, `repeat_penalty` (alias for `frequency_penalty`).
 
 Streaming responses use `text/event-stream` chunks compatible with OpenAI clients.
 

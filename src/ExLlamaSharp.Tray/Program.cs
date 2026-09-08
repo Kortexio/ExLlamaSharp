@@ -5,9 +5,77 @@ using System.ServiceProcess;
 
 namespace ExLlamaSharp.Tray;
 
+internal static class TrayPaths
+{
+    public static string DataRoot =>
+        !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EXLLAMASHARP_DATA_ROOT"))
+            ? Environment.GetEnvironmentVariable("EXLLAMASHARP_DATA_ROOT")!
+            : Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                "ExLlamaSharp");
+
+    public static string AdminUrl
+    {
+        get
+        {
+            var env = Environment.GetEnvironmentVariable("EXLLAMASHARP_URL");
+            if (!string.IsNullOrWhiteSpace(env))
+            {
+                return env.TrimEnd('/');
+            }
+
+            var listen = Path.Combine(DataRoot, "listen.json");
+            try
+            {
+                if (File.Exists(listen))
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(listen));
+                    if (doc.RootElement.TryGetProperty("url", out var url)
+                        && url.GetString() is { Length: > 0 } u)
+                    {
+                        return u.TrimEnd('/');
+                    }
+                }
+            }
+            catch
+            {
+                // default
+            }
+
+            return "http://127.0.0.1:14563";
+        }
+    }
+
+    public static bool IsHeadless
+    {
+        get
+        {
+            var path = Path.Combine(DataRoot, "host-mode.json");
+            try
+            {
+                if (File.Exists(path))
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
+                    if (doc.RootElement.TryGetProperty("mode", out var mode)
+                        && string.Equals(mode.GetString(), "headless", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch
+            {
+                // desktop
+            }
+
+            return false;
+        }
+    }
+}
+
 internal static class Program
 {
-    private const string MutexName = "Local\\ExLlamaSharp.Tray.SingleInstance";
+    private const string MutexName = "Global\\ExLlamaSharp.Tray.SingleInstance";
 
     [STAThread]
     private static void Main()
@@ -15,6 +83,20 @@ internal static class Program
         using var mutex = new Mutex(true, MutexName, out var created);
         if (!created)
         {
+            // Second click: bring UI up via the already-running tray instance by opening the Admin URL.
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = TrayPaths.AdminUrl + "/",
+                    UseShellExecute = true
+                });
+            }
+            catch
+            {
+                // ignore
+            }
+
             return;
         }
 
@@ -25,6 +107,10 @@ internal static class Program
 
 internal sealed class TrayApplicationContext : ApplicationContext
 {
+    private const string ServiceName = "ExLlamaSharp";
+    private static readonly string InstallDir =
+        Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory;
+
     private readonly NotifyIcon _tray;
     private readonly System.Windows.Forms.Timer _timer;
     private readonly SynchronizationContext _ui;
@@ -39,15 +125,20 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly Bitmap _bmpWarn;
     private readonly Bitmap _bmpOff;
     private bool _refreshing;
+    private bool _starting;
+    private bool _intentionalStop;
+    private int _autoRecoverAttempts;
+    private DateTime _lastAutoRecoverUtc = DateTime.MinValue;
+    private DateTime _lastStableUtc = DateTime.MinValue;
+    private FileSystemWatcher? _restartWatcher;
 
     public TrayApplicationContext()
     {
         try
         {
             _ui = SynchronizationContext.Current ?? new SynchronizationContext();
-            EnsureUserAutostart();
+            WatchRestartRequest();
 
-            // Keep bitmaps alive — FromHandle icons alias them.
             _bmpOk = CreateIconBitmap(Color.FromArgb(34, 197, 94));
             _bmpWarn = CreateIconBitmap(Color.FromArgb(234, 179, 8));
             _bmpOff = CreateIconBitmap(Color.FromArgb(148, 163, 184));
@@ -57,14 +148,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _iconOff = Icon.FromHandle(_bmpOff.GetHicon());
 
             _statusItem = new ToolStripMenuItem("Status: …") { Enabled = false };
-            _startItem = new ToolStripMenuItem("Start service", null, (_, _) => ControlService("start"));
-            _stopItem = new ToolStripMenuItem("Stop service", null, (_, _) => ControlService("stop"));
-            _restartItem = new ToolStripMenuItem("Restart service", null, (_, _) => ControlService("restart"));
+            _startItem = new ToolStripMenuItem("Start server", null, (_, _) => _ = StartServerAsync(openUi: false));
+            _stopItem = new ToolStripMenuItem("Stop server", null, (_, _) => _ = StopServerAsync());
+            _restartItem = new ToolStripMenuItem("Restart server", null, (_, _) => _ = RestartServerAsync());
 
             var menu = new ContextMenuStrip();
             menu.Items.Add(_statusItem);
             menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add("Open Admin UI", null, (_, _) => OpenUi());
+            menu.Items.Add("Open Admin UI", null, (_, _) => _ = StartServerAsync(openUi: true));
             menu.Items.Add("Open data folder", null, (_, _) => OpenDataFolder());
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(_startItem);
@@ -80,7 +171,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 Visible = true,
                 ContextMenuStrip = menu
             };
-            _tray.DoubleClick += (_, _) => OpenUi();
+            _tray.DoubleClick += (_, _) => _ = StartServerAsync(openUi: true);
 
             Application.DoEvents();
 
@@ -95,7 +186,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 _ = RefreshStatusAsync();
             };
             _timer.Start();
-            _ = RefreshStatusAsync();
+
+            // One-click UX: launching the tray starts the server if needed.
+            _ = BootstrapAsync();
         }
         catch (Exception ex)
         {
@@ -104,6 +197,21 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
             throw;
+        }
+    }
+
+    private async Task BootstrapAsync()
+    {
+        ShowBalloon("ExLlamaSharp", "A iniciar o servidor…");
+        var ok = await EnsureServerRunningAsync().ConfigureAwait(false);
+        await RefreshStatusAsync().ConfigureAwait(false);
+        if (ok)
+        {
+            ShowBalloon("ExLlamaSharp", "Servidor pronto. Duplo-clique para abrir o Admin.");
+        }
+        else
+        {
+            ShowBalloon("ExLlamaSharp", "Não foi possível iniciar o servidor. Usa Start server no menu.");
         }
     }
 
@@ -122,13 +230,31 @@ internal sealed class TrayApplicationContext : ApplicationContext
             using var core = new SolidBrush(accent);
             g.FillEllipse(core, 11, 11, 10, 10);
         }
+
         return bmp;
     }
 
-    private static string AdminUrl =>
-        Environment.GetEnvironmentVariable("EXLLAMASHARP_URL") is { Length: > 0 } u
-            ? u.TrimEnd('/')
-            : "http://127.0.0.1:14563";
+    private static string AdminUrl => TrayPaths.AdminUrl;
+
+    private static string ServerExe => Path.Combine(InstallDir, "ExLlamaSharp.Server.exe");
+
+    private void ShowBalloon(string title, string text)
+    {
+        try
+        {
+            PostUi(() =>
+            {
+                _tray.BalloonTipTitle = title;
+                _tray.BalloonTipText = text;
+                _tray.BalloonTipIcon = ToolTipIcon.Info;
+                _tray.ShowBalloonTip(4000);
+            });
+        }
+        catch
+        {
+            // optional
+        }
+    }
 
     private static void EnsureUserAutostart()
     {
@@ -150,6 +276,357 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
+    private async Task StartServerAsync(bool openUi)
+    {
+        _intentionalStop = false;
+        PostUi(() =>
+        {
+            _statusItem.Text = "Status: a iniciar…";
+            _tray.Text = "ExLlamaSharp\nA iniciar…";
+        });
+
+        var ok = await EnsureServerRunningAsync().ConfigureAwait(false);
+        await RefreshStatusAsync().ConfigureAwait(false);
+        if (!ok)
+        {
+            PostUi(() => MessageBox.Show(
+                "Não foi possível iniciar o servidor ExLlamaSharp.\n\n" +
+                "Tenta: menu do tray → Start server\nou reinicia o PC e volta a abrir o ícone.",
+                "ExLlamaSharp",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning));
+            return;
+        }
+
+        if (openUi)
+        {
+            OpenUi();
+        }
+    }
+
+    private async Task StopServerAsync()
+    {
+        _intentionalStop = true;
+        PostUi(() =>
+        {
+            _statusItem.Text = "Status: a parar…";
+            _tray.Text = "ExLlamaSharp\nA parar…";
+            _startItem.Enabled = false;
+            _stopItem.Enabled = false;
+            _restartItem.Enabled = false;
+        });
+
+        try
+        {
+            if (!TryStopService())
+            {
+                // Last resort: elevated sc.exe (one UAC prompt)
+                RunElevatedSc("stop");
+            }
+
+            KillServerProcesses();
+            await Task.Delay(800).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            PostUi(() => MessageBox.Show(ex.Message, "ExLlamaSharp", MessageBoxButtons.OK, MessageBoxIcon.Warning));
+        }
+
+        await RefreshStatusAsync().ConfigureAwait(false);
+    }
+
+    private async Task RestartServerAsync()
+    {
+        PostUi(() =>
+        {
+            _statusItem.Text = "Status: a reiniciar…";
+            _tray.Text = "ExLlamaSharp\nA reiniciar…";
+            ShowBalloon("ExLlamaSharp", "A reiniciar o servidor…");
+        });
+
+        await StopServerAsync().ConfigureAwait(false);
+        _intentionalStop = false;
+        await Task.Delay(1000).ConfigureAwait(false);
+        var ok = await EnsureServerRunningAsync().ConfigureAwait(false);
+        await RefreshStatusAsync().ConfigureAwait(false);
+        ShowBalloon("ExLlamaSharp", ok ? "Servidor reiniciado." : "Falha ao reiniciar. Tenta Start server.");
+    }
+
+    private async Task<bool> EnsureServerRunningAsync()
+    {
+        if (_starting)
+        {
+            return await WaitForHealthAsync(TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+        }
+
+        _starting = true;
+        try
+        {
+            if (await IsHealthyAsync().ConfigureAwait(false))
+            {
+                // Prefer user-session process for CUDA. If only the LocalSystem service is up,
+                // GPU model loads often hang with VRAM unused — migrate to App mode.
+                if (!TrayPaths.IsHeadless && IsServiceRunning() && !IsUserSessionServerRunning())
+                {
+                    ShowBalloon("ExLlamaSharp", "A mudar para modo App (GPU na sessão do utilizador)…");
+                    TryStopServiceQuiet();
+                    KillServerProcesses();
+                    await Task.Delay(800).ConfigureAwait(false);
+                    StartServerProcess();
+                    return await WaitForHealthAsync(TimeSpan.FromSeconds(45)).ConfigureAwait(false);
+                }
+
+                return true;
+            }
+
+            if (TrayPaths.IsHeadless)
+            {
+                if (!TryStartService())
+                {
+                    RunElevatedSc("start");
+                }
+
+                return await WaitForHealthAsync(TimeSpan.FromSeconds(45)).ConfigureAwait(false);
+            }
+
+            // Desktop GPU path: run Server.exe in the logged-on user session (not LocalSystem).
+            TryStopServiceQuiet();
+            if (Process.GetProcessesByName("ExLlamaSharp.Server").Length == 0)
+            {
+                StartServerProcess();
+            }
+
+            return await WaitForHealthAsync(TimeSpan.FromSeconds(45)).ConfigureAwait(false);
+        }
+        finally
+        {
+            _starting = false;
+        }
+    }
+
+    private static bool IsServiceRunning()
+    {
+        try
+        {
+            using var sc = new ServiceController(ServiceName);
+            sc.Refresh();
+            return sc.Status is ServiceControllerStatus.Running or ServiceControllerStatus.StartPending;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsUserSessionServerRunning()
+    {
+        try
+        {
+            foreach (var p in Process.GetProcessesByName("ExLlamaSharp.Server"))
+            {
+                // Session 0 = services; interactive users are typically session >= 1.
+                if (p.SessionId > 0)
+                {
+                    return true;
+                }
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        return false;
+    }
+
+    private static void TryStopServiceQuiet()
+    {
+        try
+        {
+            using var sc = new ServiceController(ServiceName);
+            sc.Refresh();
+            if (sc.Status is ServiceControllerStatus.Stopped or ServiceControllerStatus.StopPending)
+            {
+                return;
+            }
+
+            sc.Stop();
+            sc.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(20));
+        }
+        catch
+        {
+            // ACL may deny; KillServerProcesses still clears orphans.
+        }
+    }
+
+    private static bool TryStartService()
+    {
+        try
+        {
+            using var sc = new ServiceController(ServiceName);
+            sc.Refresh();
+            if (sc.Status == ServiceControllerStatus.Running)
+            {
+                return true;
+            }
+
+            if (sc.Status is ServiceControllerStatus.StartPending)
+            {
+                sc.WaitForStatus(ServiceControllerStatus.Running, TimeSpan.FromSeconds(45));
+                sc.Refresh();
+                return sc.Status == ServiceControllerStatus.Running;
+            }
+
+            sc.Start();
+            sc.WaitForStatus(ServiceControllerStatus.Running, TimeSpan.FromSeconds(45));
+            sc.Refresh();
+            return sc.Status == ServiceControllerStatus.Running;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryStopService()
+    {
+        try
+        {
+            using var sc = new ServiceController(ServiceName);
+            sc.Refresh();
+            if (sc.Status is ServiceControllerStatus.Stopped)
+            {
+                return true;
+            }
+
+            if (sc.Status is ServiceControllerStatus.StopPending)
+            {
+                sc.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(45));
+                sc.Refresh();
+                return sc.Status == ServiceControllerStatus.Stopped;
+            }
+
+            sc.Stop();
+            sc.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(45));
+            sc.Refresh();
+            return sc.Status == ServiceControllerStatus.Stopped;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>UAC-elevated sc.exe for start/stop when the user lacks service ACL rights.</summary>
+    private static bool RunElevatedSc(string action)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "sc.exe",
+                Arguments = $"{action} {ServiceName}",
+                UseShellExecute = true,
+                Verb = "runas",
+                WindowStyle = ProcessWindowStyle.Hidden,
+            };
+            using var p = Process.Start(psi);
+            if (p is null)
+            {
+                return false;
+            }
+
+            if (!p.WaitForExit(60_000))
+            {
+                return false;
+            }
+
+            // Give SCM a moment to flip state
+            Thread.Sleep(1500);
+            using var sc = new ServiceController(ServiceName);
+            sc.Refresh();
+            return action switch
+            {
+                "stop" => sc.Status is ServiceControllerStatus.Stopped or ServiceControllerStatus.StopPending,
+                "start" => sc.Status is ServiceControllerStatus.Running or ServiceControllerStatus.StartPending,
+                _ => p.ExitCode == 0,
+            };
+        }
+        catch
+        {
+            // User cancelled UAC or sc failed
+            return false;
+        }
+    }
+
+    private static void StartServerProcess()
+    {
+        if (!File.Exists(ServerExe))
+        {
+            return;
+        }
+
+        if (Process.GetProcessesByName("ExLlamaSharp.Server").Length > 0)
+        {
+            return;
+        }
+
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = ServerExe,
+            WorkingDirectory = InstallDir,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden,
+        });
+    }
+
+    private static void KillServerProcesses()
+    {
+        foreach (var p in Process.GetProcessesByName("ExLlamaSharp.Server"))
+        {
+            try
+            {
+                p.Kill(entireProcessTree: true);
+                p.WaitForExit(10_000);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+    }
+
+    private static async Task<bool> IsHealthyAsync()
+    {
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+            using var res = await http.GetAsync(AdminUrl + "/health").ConfigureAwait(false);
+            return res.IsSuccessStatusCode;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static async Task<bool> WaitForHealthAsync(TimeSpan timeout)
+    {
+        var sw = Stopwatch.StartNew();
+        while (sw.Elapsed < timeout)
+        {
+            if (await IsHealthyAsync().ConfigureAwait(false))
+            {
+                return true;
+            }
+
+            await Task.Delay(1000).ConfigureAwait(false);
+        }
+
+        return await IsHealthyAsync().ConfigureAwait(false);
+    }
+
     private static void OpenUi()
     {
         try
@@ -166,45 +643,39 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private static void OpenDataFolder()
-    {
-        var path = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "ExLlamaSharp");
-        Directory.CreateDirectory(path);
-        Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
-    }
-
-    private static void ControlService(string action)
+    private void WatchRestartRequest()
     {
         try
         {
-            using var sc = new ServiceController("ExLlamaSharp");
-            sc.Refresh();
-            if (action is "stop" or "restart" && sc.Status != ServiceControllerStatus.Stopped)
+            Directory.CreateDirectory(TrayPaths.DataRoot);
+            _restartWatcher = new FileSystemWatcher(TrayPaths.DataRoot, "restart.request")
             {
-                sc.Stop();
-                sc.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(40));
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite,
+                EnableRaisingEvents = true,
+            };
+            void OnRestart(object sender, FileSystemEventArgs e)
+            {
+                if (_intentionalStop || _starting)
+                {
+                    return;
+                }
+
+                _ = RestartServerAsync();
             }
 
-            if (action is "start" or "restart")
-            {
-                sc.Refresh();
-                if (sc.Status != ServiceControllerStatus.Running)
-                {
-                    sc.Start();
-                    sc.WaitForStatus(ServiceControllerStatus.Running, TimeSpan.FromSeconds(40));
-                }
-            }
+            _restartWatcher.Created += OnRestart;
+            _restartWatcher.Changed += OnRestart;
         }
-        catch (Exception ex)
+        catch
         {
-            MessageBox.Show(
-                "Could not control the Windows service (admin rights may be required).\n\n" + ex.Message,
-                "ExLlamaSharp",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
+            // optional
         }
+    }
+
+    private static void OpenDataFolder()
+    {
+        Directory.CreateDirectory(TrayPaths.DataRoot);
+        Process.Start(new ProcessStartInfo { FileName = TrayPaths.DataRoot, UseShellExecute = true });
     }
 
     private async Task RefreshStatusAsync()
@@ -221,47 +692,113 @@ internal sealed class TrayApplicationContext : ApplicationContext
             Icon icon = _iconOff;
             var startOn = true;
             var stopOn = false;
+
+            var serviceRunning = false;
+            var serviceStatus = "not installed";
             try
             {
-                using var sc = new ServiceController("ExLlamaSharp");
+                using var sc = new ServiceController(ServiceName);
                 sc.Refresh();
-                if (sc.Status != ServiceControllerStatus.Running)
-                {
-                    line = $"Service: {sc.Status}";
-                    icon = _iconOff;
-                }
-                else
-                {
-                    startOn = false;
-                    stopOn = true;
-                    try
-                    {
-                        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-                        var json = await http.GetStringAsync(AdminUrl + "/health").ConfigureAwait(false);
-                        var degraded = json.Contains("\"status\":\"degraded\"", StringComparison.Ordinal);
-                        var healthy = json.Contains("\"status\":\"healthy\"", StringComparison.Ordinal);
-                        if (healthy && !degraded)
-                        {
-                            line = "Service: Running · Healthy";
-                            icon = _iconOk;
-                        }
-                        else
-                        {
-                            line = "Service: Running · Degraded (no model?)";
-                            icon = _iconWarn;
-                        }
-                    }
-                    catch
-                    {
-                        line = "Service: Running · UI unreachable";
-                        icon = _iconWarn;
-                    }
-                }
+                serviceStatus = sc.Status.ToString();
+                serviceRunning = sc.Status == ServiceControllerStatus.Running;
             }
             catch
             {
-                line = "Service: not installed / unreachable";
+                // service may be missing
+            }
+
+            var processRunning = Process.GetProcessesByName("ExLlamaSharp.Server").Length > 0;
+            var healthyJson = (string?)null;
+            if (serviceRunning || processRunning)
+            {
+                try
+                {
+                    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+                    healthyJson = await http.GetStringAsync(AdminUrl + "/health").ConfigureAwait(false);
+                }
+                catch
+                {
+                    healthyJson = null;
+                }
+            }
+
+            if (healthyJson is not null)
+            {
+                startOn = false;
+                stopOn = true;
+                var degraded = healthyJson.Contains("\"status\":\"degraded\"", StringComparison.Ordinal);
+                var healthy = healthyJson.Contains("\"status\":\"healthy\"", StringComparison.Ordinal);
+                var mode = serviceRunning ? "Service" : "App";
+                if (healthy && !degraded)
+                {
+                    line = $"{mode}: Running · Healthy";
+                    icon = _iconOk;
+                }
+                else
+                {
+                    line = $"{mode}: Running · Degraded (no model?)";
+                    icon = _iconWarn;
+                }
+            }
+            else if (serviceRunning || processRunning)
+            {
+                startOn = false;
+                stopOn = true;
+                line = serviceRunning
+                    ? $"Service: {serviceStatus} · UI unreachable"
+                    : "App: starting / UI unreachable";
+                icon = _iconWarn;
+            }
+            else
+            {
+                line = serviceStatus == "not installed"
+                    ? "Server: stopped"
+                    : $"Service: {serviceStatus}";
                 icon = _iconOff;
+
+                if (!_intentionalStop && !_starting)
+                {
+                    if (_lastStableUtc != DateTime.MinValue
+                        && (DateTime.UtcNow - _lastStableUtc) > TimeSpan.FromMinutes(15))
+                    {
+                        _autoRecoverAttempts = 0;
+                    }
+
+                    var delay = _autoRecoverAttempts switch
+                    {
+                        0 => TimeSpan.FromSeconds(5),
+                        1 => TimeSpan.FromSeconds(20),
+                        2 => TimeSpan.FromSeconds(60),
+                        _ => TimeSpan.FromMinutes(5),
+                    };
+                    if ((DateTime.UtcNow - _lastAutoRecoverUtc) > delay)
+                    {
+                        _lastAutoRecoverUtc = DateTime.UtcNow;
+                        _autoRecoverAttempts++;
+                        line = $"Recovering (attempt {_autoRecoverAttempts}, backoff {delay.TotalSeconds:0}s)…";
+                        icon = _iconWarn;
+                        _ = EnsureServerRunningAsync().ContinueWith(async _ =>
+                        {
+                            await RefreshStatusAsync().ConfigureAwait(false);
+                            if (await IsHealthyAsync().ConfigureAwait(false))
+                            {
+                                _autoRecoverAttempts = 0;
+                                _lastStableUtc = DateTime.UtcNow;
+                                ShowBalloon("ExLlamaSharp", "Servidor recuperado automaticamente.");
+                            }
+                        }, TaskScheduler.Default);
+                    }
+                }
+            }
+
+            if (healthyJson is not null)
+            {
+                _lastStableUtc = DateTime.UtcNow;
+                if ((DateTime.UtcNow - _lastStableUtc) > TimeSpan.FromMinutes(15)
+                    || _autoRecoverAttempts > 0)
+                {
+                    _autoRecoverAttempts = 0;
+                }
             }
 
             PostUi(() =>
@@ -304,6 +841,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     protected override void ExitThreadCore()
     {
         _timer.Stop();
+        _restartWatcher?.Dispose();
         _tray.Visible = false;
         _tray.Dispose();
         _iconOk.Dispose();

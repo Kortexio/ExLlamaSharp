@@ -88,6 +88,21 @@ internal sealed class WorkerAdmissionQueue
         }
     }
 
+    public void Reset()
+    {
+        lock (_gate)
+        {
+            _inFlight = 0;
+            _stats = default;
+            foreach (var waiter in _waiters)
+            {
+                waiter.Slot.TrySetCanceled();
+            }
+
+            _waiters.Clear();
+        }
+    }
+
     public void OnStats(WorkerStats stats)
     {
         lock (_gate)

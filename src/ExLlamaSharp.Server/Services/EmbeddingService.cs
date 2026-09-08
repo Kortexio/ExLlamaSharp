@@ -133,6 +133,10 @@ public sealed class EmbeddingService : IDisposable
 
     public bool AllowFallback =>
         string.Equals(
+            Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"),
+            "Development",
+            StringComparison.OrdinalIgnoreCase)
+        && string.Equals(
             Environment.GetEnvironmentVariable("EXLLAMASHARP_ALLOW_EMBEDDING_FALLBACK"),
             "1",
             StringComparison.OrdinalIgnoreCase);

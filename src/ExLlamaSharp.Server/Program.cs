@@ -9,6 +9,13 @@ using Microsoft.EntityFrameworkCore;
 // .NET 10 performance: sustained low latency for /v1 hot path
 GcTuning.EnableSustainedLowLatency();
 
+using var instanceMutex = new Mutex(true, ProductionRuntime.ServerMutexName, out var createdNew);
+if (!createdNew)
+{
+    Console.Error.WriteLine("ExLlamaSharp.Server is already running (Global\\ExLlamaSharp.Server).");
+    return;
+}
+
 // Windows Service cwd is System32; always pin content root to the install folder.
 var options = new WebApplicationOptions
 {
@@ -28,22 +35,12 @@ builder.Services.Configure<HostOptions>(o =>
     o.BackgroundServiceExceptionBehavior = BackgroundServiceExceptionBehavior.Ignore;
 });
 
-var dataRoot = Environment.GetEnvironmentVariable("EXLLAMASHARP_DATA_ROOT");
-if (string.IsNullOrWhiteSpace(dataRoot))
-{
-    dataRoot = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-        "ExLlamaSharp");
-}
-
-Directory.CreateDirectory(dataRoot);
-Directory.CreateDirectory(Path.Combine(dataRoot, "logs"));
-Directory.CreateDirectory(Path.Combine(dataRoot, "models"));
-Directory.CreateDirectory(Path.Combine(dataRoot, "backups"));
+ProductionRuntime.EnsureWritableDataRoot();
+var dataRoot = ProductionRuntime.DataRoot;
 
 var dbPath = Path.Combine(dataRoot, "app.db");
 builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseSqlite($"Data Source={dbPath}"));
+    options.UseSqlite($"Data Source={dbPath};Cache=Shared"));
 
 builder.Services.AddMemoryCache();
 builder.Services.AddHttpClient();
@@ -78,6 +75,7 @@ builder.Services.AddExLlamaSharpUi();
 builder.Logging.AddConsole();
 builder.Logging.AddDebug();
 builder.Services.AddSingleton<ILoggerProvider, LiveLogLoggerProvider>();
+builder.Services.AddSingleton<ILoggerProvider, FileLogLoggerProvider>();
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
@@ -87,6 +85,10 @@ builder.Services.AddSwaggerGen(c =>
 
 var dbListen = ReadListenSettingsFromDatabase(dataRoot);
 var corsValue = string.IsNullOrWhiteSpace(dbListen.Cors) ? "*" : dbListen.Cors.Trim();
+if (corsValue is "*" && !builder.Environment.IsDevelopment())
+{
+    corsValue = "http://127.0.0.1:14563,http://localhost:14563";
+}
 
 builder.Services.AddCors(options =>
 {
@@ -124,7 +126,7 @@ if (!string.IsNullOrWhiteSpace(dbListen.TlsCertPath))
 builder.WebHost.ConfigureKestrel((context, options) =>
 {
     var port = context.Configuration.GetValue("Kestrel:Port", 14563);
-    var bind = context.Configuration.GetValue("Kestrel:Bind", "0.0.0.0") ?? "0.0.0.0";
+    var bind = context.Configuration.GetValue("Kestrel:Bind", "127.0.0.1") ?? "127.0.0.1";
     if (!string.IsNullOrWhiteSpace(dbListen.Bind))
     {
         bind = dbListen.Bind;
@@ -157,7 +159,8 @@ builder.WebHost.ConfigureKestrel((context, options) =>
     }
     else
     {
-        options.ListenAnyIP(port, ConfigureListen);
+        throw new InvalidOperationException(
+            $"Invalid Kestrel bind address '{bind}'. Use 127.0.0.1, localhost, 0.0.0.0, or a valid IP.");
     }
 
     options.Limits.MaxConcurrentConnections = 1000;
@@ -170,10 +173,20 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("DbInitializer");
-    await DbInitializer.InitializeAsync(db, logger);
+    await DbInitializer.InitializeAsync(db, logger, app.Environment);
+    await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
+    await db.Database.ExecuteSqlRawAsync("PRAGMA busy_timeout=5000;");
     var inventory = scope.ServiceProvider.GetRequiredService<ModelInventoryService>();
     await inventory.SyncFromDiskAsync();
 }
+
+var listenBind = !string.IsNullOrWhiteSpace(dbListen.Bind)
+    ? dbListen.Bind
+    : builder.Configuration.GetValue("Kestrel:Bind", "127.0.0.1") ?? "127.0.0.1";
+var listenPort = dbListen.Port is > 0 and < 65536
+    ? dbListen.Port.Value
+    : builder.Configuration.GetValue("Kestrel:Port", 14563);
+ProductionRuntime.WriteListenFile(listenBind, listenPort, tlsActive);
 
 if (app.Environment.IsDevelopment())
 {
@@ -211,18 +224,18 @@ await app.RunAsync();
 static DbListenSettings ReadListenSettingsFromDatabase(string root)
 {
     var result = new DbListenSettings();
+    var settingsDbPath = Path.Combine(root, "app.db");
     try
     {
-        var dbPath = Path.Combine(root, "app.db");
-        if (!File.Exists(dbPath))
+        if (!File.Exists(settingsDbPath))
         {
             return result;
         }
 
-        using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath}");
+        using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={settingsDbPath};Mode=ReadOnly");
         conn.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT BindAddress, Port, Cors, TlsCertPath FROM Settings LIMIT 1";
+        cmd.CommandText = "SELECT BindAddress, Port, Cors FROM Settings LIMIT 1";
         using var reader = cmd.ExecuteReader();
         if (!reader.Read())
         {
@@ -252,14 +265,31 @@ static DbListenSettings ReadListenSettingsFromDatabase(string root)
             result.Cors = reader.GetString(2);
         }
 
-        if (reader.FieldCount > 3 && !reader.IsDBNull(3))
+        reader.Close();
+        try
         {
-            result.TlsCertPath = reader.GetString(3);
+            using var tlsCmd = conn.CreateCommand();
+            tlsCmd.CommandText = "SELECT TlsCertPath FROM Settings LIMIT 1";
+            var tls = tlsCmd.ExecuteScalar() as string;
+            if (!string.IsNullOrWhiteSpace(tls))
+            {
+                result.TlsCertPath = tls;
+            }
+        }
+        catch
+        {
+            // column may not exist yet
         }
     }
-    catch
+    catch (Exception ex)
     {
-        // first run / schema not ready — keep appsettings defaults
+        Console.Error.WriteLine($"Failed to read listen settings from {settingsDbPath}: {ex.Message}");
+        if (File.Exists(settingsDbPath))
+        {
+            throw new InvalidOperationException(
+                $"Cannot read Settings from {settingsDbPath}. Fix ACL/schema before start. {ex.Message}",
+                ex);
+        }
     }
 
     return result;

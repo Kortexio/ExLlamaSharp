@@ -203,9 +203,14 @@
 .badge-ok { background: #dcfce7; color: #166534; }
 .badge-warn { background: #ffedd5; color: #9a3412; }
 .badge-err { background: #fee2e2; color: #991b1b; }
+.badge-danger { background: #fee2e2; color: #991b1b; }
 .badge-info { background: var(--kx-accent-soft); color: var(--kx-accent-hover); }
 .badge-muted { background: var(--kx-surface-2); color: var(--kx-muted); }
 .badge-success { background: #16a34a; color: #fff; }
+
+.table-row-active td {
+  background: color-mix(in srgb, var(--kx-accent-soft) 55%, transparent);
+}
 
 .mode-badge {
   font-size: 0.75rem;

@@ -18,6 +18,9 @@
         <h1>Dashboard</h1>
         <p>Server overview for your business.</p>
     </div>
+</div>
+<ModelStatusBanner />
+<div class="d-flex justify-content-end mb-3">
     <button class="btn btn-outline-secondary btn-sm" @onclick="ToggleAdvanced">
         @(ShowAdvanced ? "Hide advanced metrics" : "Show advanced metrics")
     </button>
@@ -64,8 +67,9 @@
         </div>
         <div class="card stat-card">
             <div class="card-body">
-                <div class="stat-label">Jobs waiting</div>
+                <div class="stat-label">Engine queue waiting</div>
                 <div class="stat-value">@_jobsWaiting</div>
+                <div class="small text-muted">Inference queue (not pull/quantize Jobs)</div>
             </div>
         </div>
         <div class="card stat-card">

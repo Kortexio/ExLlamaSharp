@@ -1,6 +1,6 @@
 ﻿# ExLlamaSharp - Guia de Implantação
 
-**Versão:** 2.0  
+**Versão:** 1.3.0  
 **Audiência:** Administradores de TI, DevOps
 
 ---
@@ -14,8 +14,8 @@
 
 ### Software
 - Windows 10 20H1+ ou Windows 11
-- Python 3.10+ no PATH
 - Driver NVIDIA com CUDA 12.8+
+- Não copies `bin\Release` framework-dependent por cima de Program Files (parte o hostfxr). Só publish **self-contained**.
 - Porta TCP 14563 livre
 - Administrador local para instalação
 
@@ -33,6 +33,13 @@
 |--------|---------|--------|
 | **Recomendado** | `ExLlamaSharp-Setup-win-x64.exe` | App + ExLlamaV3 `.pyd` + deps + Python/VC; PyTorch descarrega na instalação |
 | Slim | `Build-Installer.ps1 -SkipBundleWheels` | Só a app; GPU fica para depois |
+
+Modos de host (`%ProgramData%\ExLlamaSharp\host-mode.json`):
+
+- **desktop** (default): serviço Manual; Tray + tarefa de logon `ExLlamaSharpTrayLogon` sobem o Server na sessão do utilizador (GPU).
+- **headless**: serviço Delayed Auto com conta GPU (não LocalSystem). Tray só observa.
+
+Após install: `packaging\Verify-Install.ps1`. Authenticode: `EXLLAMASHARP_SIGN_PFX` no `Build-Installer.ps1`.
 
 Build:
 

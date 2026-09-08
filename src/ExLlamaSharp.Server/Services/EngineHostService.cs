@@ -17,14 +17,20 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
     private readonly IConfiguration _configuration;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ArchitectureDetector _architectureDetector;
+    private readonly IHostEnvironment _environment;
     private readonly object _gate = new();
     private readonly SemaphoreSlim _loadLock = new(1, 1);
     private IInferenceEngine? _engine;
     private string? _loadedModelPath;
     private Guid? _loadedModelId;
     private int _restartAttempts;
+    private int _loadingFlag;
+    private string? _lastLoadError;
+    private Guid? _loadingModelId;
+    private CancellationTokenSource? _loadCts;
     private CancellationTokenSource? _watchdogCts;
     private Task? _watchdogTask;
+    private Task? _loadTask;
     private bool _disposed;
     private readonly bool _forceMock;
 
@@ -33,14 +39,21 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
         SettingsService settings,
         IConfiguration configuration,
         IServiceScopeFactory scopeFactory,
-        ArchitectureDetector architectureDetector)
+        ArchitectureDetector architectureDetector,
+        IHostEnvironment environment)
     {
         _logger = logger;
         _settings = settings;
         _configuration = configuration;
         _scopeFactory = scopeFactory;
         _architectureDetector = architectureDetector;
-        _forceMock = configuration.GetValue("ExLlamaSharp:ForceMockEngine", false);
+        _environment = environment;
+        var requestedMock = configuration.GetValue("ExLlamaSharp:ForceMockEngine", false);
+        _forceMock = requestedMock && environment.IsDevelopment();
+        if (requestedMock && !environment.IsDevelopment())
+        {
+            _logger.LogError("ForceMockEngine is ignored outside Development");
+        }
     }
 
     public IInferenceEngine Engine
@@ -54,6 +67,9 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
 
     public bool IsLoaded => _engine?.IsLoaded == true;
     public bool IsRunning => _engine?.IsRunning == true;
+    public bool IsLoading => Volatile.Read(ref _loadingFlag) == 1;
+    public string? LastLoadError => _lastLoadError;
+    public Guid? LoadingModelId => _loadingModelId;
     public Guid? LoadedModelId => _loadedModelId;
     public string? LoadedModelPath => _loadedModelPath;
 
@@ -64,17 +80,34 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        EnsureEngine(null);
+        try
+        {
+            EnsureEngine(null);
+        }
+        catch (Exception ex)
+        {
+            _lastLoadError = ex.Message;
+            _logger.LogError(ex, "EXL3 worker unavailable at start — Admin will stay up");
+        }
+
         _watchdogCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _watchdogTask = Task.Run(() => WatchdogLoopAsync(_watchdogCts.Token), CancellationToken.None);
 
         try
         {
             var settings = await _settings.GetAsync(cancellationToken).ConfigureAwait(false);
-            if (_forceMock || _engine!.IsMock)
+            if (_forceMock)
             {
                 await LoadAsync("mock://default", cancellationToken: cancellationToken).ConfigureAwait(false);
-                _logger.LogInformation("Mock engine auto-loaded at mock://default");
+                _logger.LogWarning("Development mock engine auto-loaded");
+                return;
+            }
+
+            if (ProductionRuntime.IsSessionZero() && !ProductionRuntime.IsHeadless)
+            {
+                _lastLoadError =
+                    "GPU load refused in Session 0 (Windows service / LocalSystem). Use the Tray so the Server runs in the user session.";
+                _logger.LogError("{Error}", _lastLoadError);
                 return;
             }
 
@@ -145,6 +178,15 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
     public async Task LoadAsync(string modelPath, Guid? modelId = null, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(modelPath);
+        if (!_forceMock
+            && !modelPath.StartsWith("mock://", StringComparison.OrdinalIgnoreCase)
+            && ProductionRuntime.IsSessionZero()
+            && !ProductionRuntime.IsHeadless)
+        {
+            throw new InvalidOperationException(
+                "GPU load refused in Session 0 (Windows service / LocalSystem). Use the Tray (desktop) or a GPU-capable service account (headless).");
+        }
+
         await _loadLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -152,7 +194,7 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
 
             if (_engine!.IsLoaded)
             {
-                await UnloadAsync(cancellationToken).ConfigureAwait(false);
+                await UnloadCoreAsync(cancellationToken).ConfigureAwait(false);
                 EnsureEngine(modelPath);
             }
 
@@ -186,7 +228,7 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
             {
                 try
                 {
-                    await UnloadAsync(CancellationToken.None).ConfigureAwait(false);
+                    await UnloadCoreAsync(CancellationToken.None).ConfigureAwait(false);
                 }
                 catch
                 {
@@ -205,10 +247,19 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
 
             if (modelId is Guid id)
             {
-                await _settings.UpdateAsync(s =>
+                try
                 {
-                    s.LastLoadedModelId = id;
-                }, cancellationToken).ConfigureAwait(false);
+                    await _settings.UpdateAsync(s =>
+                    {
+                        s.LastLoadedModelId = id;
+                        s.LoadModelOnStartup = true;
+                    }, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    // Model is already in VRAM — do not unload just because persistence failed.
+                    _logger.LogWarning(ex, "Model loaded but failed to persist LastLoadedModelId");
+                }
             }
 
             _logger.LogInformation(
@@ -221,6 +272,119 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
         {
             _loadLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Queue a model load on a background task so Blazor circuits / HTTP callers are not blocked for minutes.
+    /// </summary>
+    public bool TryQueueLoad(string modelPath, Guid? modelId, out string? rejectReason)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(modelPath);
+        if (Interlocked.CompareExchange(ref _loadingFlag, 1, 0) != 0)
+        {
+            rejectReason = "A model load is already in progress.";
+            return false;
+        }
+
+        _lastLoadError = null;
+        _loadingModelId = modelId;
+        rejectReason = null;
+
+        var previous = Interlocked.Exchange(ref _loadCts, new CancellationTokenSource(TimeSpan.FromSeconds(90)));
+        try { previous?.Cancel(); } catch { /* ignore */ }
+        previous?.Dispose();
+        var cts = _loadCts;
+
+        _loadTask = Task.Run(async () =>
+        {
+            try
+            {
+                await LoadAsync(modelPath, modelId, cts.Token).ConfigureAwait(false);
+                _lastLoadError = null;
+            }
+            catch (OperationCanceledException)
+            {
+                _lastLoadError = cts.IsCancellationRequested && !cts.Token.CanBeCanceled
+                    ? "Model load cancelled."
+                    : "Model load timed out after 90 seconds. Session 0/LocalSystem CUDA often hangs — use the Tray.";
+                _logger.LogError("Background model load cancelled/timed out for {Path}", modelPath);
+                await ResetEngineAfterFailedLoadAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _lastLoadError = ex.Message;
+                _logger.LogError(ex, "Background model load failed for {Path}", modelPath);
+                await ResetEngineAfterFailedLoadAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _loadingFlag, 0);
+            }
+        });
+
+        return true;
+    }
+
+    /// <summary>Cancel a stuck background load and reset the worker.</summary>
+    public async Task CancelLoadAsync(CancellationToken cancellationToken = default)
+    {
+        _lastLoadError = "Load cancelled.";
+        try { _loadCts?.Cancel(); } catch { /* ignore */ }
+        var loadTask = _loadTask;
+        if (loadTask is not null)
+        {
+            try
+            {
+                await loadTask.WaitAsync(TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                // load may still hold the lock; reset below
+            }
+        }
+
+        await ResetEngineAfterFailedLoadAsync().ConfigureAwait(false);
+        Interlocked.Exchange(ref _loadingFlag, 0);
+    }
+
+    private async Task ResetEngineAfterFailedLoadAsync()
+    {
+        try
+        {
+            if (_loadLock.Wait(0))
+            {
+                try
+                {
+                    await UnloadCoreAsync(CancellationToken.None).ConfigureAwait(false);
+                    lock (_gate)
+                    {
+                        _engine?.Dispose();
+                        _engine = null;
+                    }
+                }
+                finally
+                {
+                    _loadLock.Release();
+                }
+            }
+            else
+            {
+                // Load holds the lock — dispose underneath as last resort.
+                lock (_gate)
+                {
+                    try { _engine?.Dispose(); } catch { /* ignore */ }
+                    _engine = null;
+                    _loadedModelPath = null;
+                    _loadedModelId = null;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Engine reset after failed load");
+        }
+
+        await Task.CompletedTask.ConfigureAwait(false);
     }
 
     /// <summary>Load by library id when A/B routes to a different model than the one currently loaded.</summary>
@@ -248,8 +412,27 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
 
     public async Task UnloadAsync(CancellationToken cancellationToken = default)
     {
+        await _loadLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await UnloadCoreAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _loadLock.Release();
+        }
+    }
+
+    private async Task UnloadCoreAsync(CancellationToken cancellationToken)
+    {
         if (_engine is null)
         {
+            lock (_gate)
+            {
+                _loadedModelPath = null;
+                _loadedModelId = null;
+            }
+
             return;
         }
 
@@ -306,32 +489,21 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
 
     private EngineKind SelectEngineKind(string? modelPath)
     {
-        if (_forceMock)
+        if (_environment.IsDevelopment()
+            && (_forceMock
+                || (!string.IsNullOrWhiteSpace(modelPath)
+                    && modelPath.StartsWith("mock://", StringComparison.OrdinalIgnoreCase))))
         {
             return EngineKind.Mock;
         }
 
-        if (!string.IsNullOrWhiteSpace(modelPath) &&
-            modelPath.StartsWith("mock://", StringComparison.OrdinalIgnoreCase))
+        if (!ExLlamaV3WorkerEngine.IsAvailable())
         {
-            return EngineKind.Mock;
+            throw new InvalidOperationException(
+                "EXL3 Python worker is not available. Install the venv (Setup-Exl3Python) and set exl3-runtime.json. Mock/native stub is disabled.");
         }
 
-        if (!string.IsNullOrWhiteSpace(modelPath) &&
-            ExLlamaV3WorkerEngine.LooksLikeExl3Directory(modelPath) &&
-            ExLlamaV3WorkerEngine.IsAvailable())
-        {
-            return EngineKind.Worker;
-        }
-
-        // Prefer worker whenever Python EXL3 stack is ready and no path yet
-        // (so first EXL3 load does not stick to a broken native placeholder).
-        if (string.IsNullOrWhiteSpace(modelPath) && ExLlamaV3WorkerEngine.IsAvailable())
-        {
-            return EngineKind.Worker;
-        }
-
-        return EngineKind.Native;
+        return EngineKind.Worker;
     }
 
     private static bool EngineMatches(IInferenceEngine engine, EngineKind kind) => kind switch
@@ -346,7 +518,7 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
     {
         EngineKind.Mock => ExLlamaEngine.Create(_logger, forceMock: true),
         EngineKind.Worker => new ExLlamaV3WorkerEngine(_logger, WorkerOptionsFromSettings()),
-        _ => ExLlamaEngine.Create(_logger, forceMock: false),
+        _ => throw new InvalidOperationException("Native stub engine is disabled. Use the EXL3 Python worker."),
     };
 
     private WorkerEngineOptions WorkerOptionsFromSettings() =>
@@ -391,7 +563,15 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
             {
                 await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
 
-                if (_engine is null || !_engine.IsLoaded)
+                if (_engine is ExLlamaV3WorkerEngine worker && !worker.IsWorkerAlive)
+                {
+                    throw new InvalidOperationException(
+                        IsLoading
+                            ? "Python worker process died while loading the model."
+                            : "Python worker process died while model was loaded.");
+                }
+
+                if (IsLoading || _engine is null || !_engine.IsLoaded)
                 {
                     continue;
                 }
@@ -429,7 +609,18 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
         var attempt = Interlocked.Increment(ref _restartAttempts);
         if (attempt > MaxRestarts)
         {
+            _lastLoadError =
+                $"Engine restart limit ({MaxRestarts}) exceeded. Load the model again from Models.";
             _logger.LogCritical("Engine restart limit ({Max}) exceeded; manual intervention required", MaxRestarts);
+            try
+            {
+                await UnloadAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                // best effort clear
+            }
+
             return;
         }
 

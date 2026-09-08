@@ -12,6 +12,7 @@
     <h1>Settings</h1>
     <p>Server configuration. Changes persist to the settings row.</p>
 </div>
+<ModelStatusBanner />
 
 <div class="tabs">
     @foreach (var t in _tabs)
@@ -36,14 +37,35 @@ else
                     <div><label class="form-label">CORS</label><input class="form-control" @bind="_s.Cors" /></div>
                     <div><label class="form-label">TLS cert path</label><input class="form-control" @bind="_s.TlsCertPath" /></div>
                 </div>
-                <p class="form-text mt-2 mb-0">Changing CORS or TLS requires a server restart to take effect.</p>
+                <p class="form-text mt-2 mb-2">
+                    Bind address, port, CORS, and TLS only apply after a server restart.
+                    Save first, then restart (Tray → Restart, or the button below).
+                </p>
+                <div class="d-flex flex-wrap gap-2 align-items-center">
+                    <button class="btn btn-outline-warning" disabled="@(_saving || _restarting)" @onclick="RestartServerAsync">
+                        @(_restarting ? "Restarting…" : "Restart server now")
+                    </button>
+                    @if (_portChanged)
+                    {
+                        <span class="badge-status badge-warn">Port changed — restart required</span>
+                    }
+                </div>
             }
             else if (Tab == "Performance")
             {
                 <div class="form-grid">
                     <div><label class="form-label">Max sequences</label><input type="number" class="form-control" @bind="_s.MaxNumSeqs" /></div>
                     <div><label class="form-label">Max chunk size</label><input type="number" class="form-control" @bind="_s.MaxChunkSize" /></div>
-                    <div><label class="form-label">Max batched tokens</label><input type="number" class="form-control" @bind="_s.MaxBatchedTokens" /></div>
+                    <div>
+                        <label class="form-label">Max batched tokens (num_ctx)</label>
+                        <input type="number" class="form-control" @bind="_s.MaxBatchedTokens" />
+                        <div class="form-text">Context window / KV cache. Requires model reload.</div>
+                    </div>
+                    <div>
+                        <label class="form-label">Default max tokens (num_predict)</label>
+                        <input type="number" class="form-control" min="64" max="128000" @bind="_s.DefaultMaxTokens" />
+                        <div class="form-text">Default reply length when the request omits max_tokens.</div>
+                    </div>
                     <div><label class="form-label">GPU memory util</label><input type="number" step="0.01" class="form-control" @bind="_s.GpuMemoryUtilization" /></div>
                     <div><label class="form-label">Request timeout (s)</label><input type="number" class="form-control" @bind="_s.RequestTimeoutSeconds" /></div>
                 </div>
@@ -243,6 +265,9 @@ else
     private bool _webhookTesting;
     private bool _saving;
     private bool _busy;
+    private bool _restarting;
+    private int _savedPort;
+    private bool _portChanged => _s is not null && _s.Port != _savedPort;
     private string _hfToken = "";
     private string _restorePath = "";
     private string _draftModelSelect = "";
@@ -266,6 +291,7 @@ else
         try
         {
             _s = await SettingsSvc.GetAsync();
+            _savedPort = _s.Port;
             _draftModelSelect = _s.DraftModelId?.ToString() ?? "";
             var tokenFile = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
@@ -280,6 +306,7 @@ else
         catch (Exception ex)
         {
             _s = new AppSettings();
+            _savedPort = _s.Port;
             _loadError = $"Using defaults ({ex.Message})";
         }
     }
@@ -494,6 +521,7 @@ else
             }
 
             var snap = _s;
+            var portNeedsRestart = snap.Port != _savedPort;
             await SettingsSvc.UpdateAsync(dest =>
             {
                 dest.BindAddress = snap.BindAddress;
@@ -503,6 +531,7 @@ else
                 dest.MaxNumSeqs = snap.MaxNumSeqs;
                 dest.MaxChunkSize = snap.MaxChunkSize;
                 dest.MaxBatchedTokens = snap.MaxBatchedTokens;
+                dest.DefaultMaxTokens = snap.DefaultMaxTokens;
                 dest.GpuMemoryUtilization = snap.GpuMemoryUtilization;
                 dest.RequestTimeoutSeconds = snap.RequestTimeoutSeconds;
                 dest.LoadModelOnStartup = snap.LoadModelOnStartup;
@@ -534,7 +563,12 @@ else
             }
             _msg = "Saved.";
             _s = await SettingsSvc.GetAsync();
+            _savedPort = _s.Port;
             _draftModelSelect = _s.DraftModelId?.ToString() ?? "";
+            if (portNeedsRestart)
+            {
+                _msg = $"Saved. Port is now {_s.Port} — restart the server to apply (button below or Tray).";
+            }
         }
         catch (Exception ex)
         {
@@ -543,6 +577,32 @@ else
         finally
         {
             _saving = false;
+        }
+    }
+
+    private async Task RestartServerAsync()
+    {
+        if (_s is null) return;
+        _restarting = true;
+        _msg = "Restarting server… the page may disconnect briefly.";
+        try
+        {
+            // Persist current form first so the new process picks up the port.
+            await SaveAsync();
+            var client = CreateApi();
+            var resp = await client.PostAsync("/api/v1/restart", null);
+            var body = await resp.Content.ReadAsStringAsync();
+            _msg = resp.IsSuccessStatusCode
+                ? $"Restart signaled. Reopen http://{_s.BindAddress}:{_s.Port}/ when ready."
+                : body;
+        }
+        catch (Exception ex)
+        {
+            _msg = $"Restart request sent (connection may drop): {ex.Message}";
+        }
+        finally
+        {
+            _restarting = false;
         }
     }
 }

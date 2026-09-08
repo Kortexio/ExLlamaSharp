@@ -27,11 +27,11 @@ function Pass([string]$Name, [string]$Detail) {
 }
 function Warn([string]$Name, [string]$Detail) {
     Write-Host "[WARN] $Name - $Detail" -ForegroundColor Yellow
-    $script:warnings.Add("$Name: $Detail") | Out-Null
+    $script:warnings.Add("${Name}: $Detail") | Out-Null
 }
 function Fail([string]$Name, [string]$Detail) {
     Write-Host "[FAIL] $Name - $Detail" -ForegroundColor Red
-    $script:failures.Add("$Name: $Detail") | Out-Null
+    $script:failures.Add("${Name}: $Detail") | Out-Null
 }
 
 Write-Host "ExLlamaSharp requirements check" -ForegroundColor Cyan

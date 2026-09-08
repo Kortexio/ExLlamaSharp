@@ -12,7 +12,7 @@ param(
     [ValidateSet("Release", "Debug")]
     [string]$Configuration = "Release",
 
-    [switch]$SelfContained = $true,
+    [switch]$SelfContained,
 
     [switch]$SkipNative,
 
@@ -45,24 +45,17 @@ function Write-Step([string]$m) { Write-Host "==> $m" -ForegroundColor Cyan }
 Write-Host "ExLlamaSharp installer build" -ForegroundColor Green
 Write-Host "Root: $Root"
 
-# --- native DLL (CUDA preferred, stub fallback) ---
+$SelfContained = $true
 if (-not $SkipNative) {
-    Write-Step "Building native CUDA DLL (falls back to stub if needed)"
+    Write-Step "Building native CUDA DLL (stub payload is not shipped)"
     $cudaScript = Join-Path $PSScriptRoot "build-native-cuda.ps1"
-    $stubScript = Join-Path $PSScriptRoot "build-native-stub.ps1"
-    $builtCuda = $false
     if (Test-Path $cudaScript) {
         try {
             & powershell -NoProfile -ExecutionPolicy Bypass -File $cudaScript
-            if ($LASTEXITCODE -eq 0) { $builtCuda = $true }
         }
         catch {
-            Write-Warning "CUDA native build failed: $_"
+            Write-Warning "CUDA native build failed (inference uses EXL3 Python worker): $_"
         }
-    }
-    if (-not $builtCuda -and (Test-Path $stubScript)) {
-        Write-Step "Building native stub DLL (no CUDA toolkit required)"
-        & powershell -NoProfile -ExecutionPolicy Bypass -File $stubScript
     }
 }
 
@@ -99,7 +92,7 @@ finally {
 }
 
 # --- tray companion (system notification area) ---
-Write-Step "dotnet publish ExLlamaSharp.Tray (.NET 9 single-file)"
+Write-Step "dotnet publish ExLlamaSharp.Tray (.NET 10 single-file)"
 $trayProj = Join-Path $Root "src\ExLlamaSharp.Tray\ExLlamaSharp.Tray.csproj"
 $trayOut = Join-Path $env:TEMP "exllamasharp-tray-publish"
 if (Test-Path $trayOut) { Remove-Item $trayOut -Recurse -Force }
@@ -113,7 +106,7 @@ $trayExe = Join-Path $trayOut "ExLlamaSharp.Tray.exe"
 if (Test-Path $trayExe) {
     Copy-Item $trayExe (Join-Path $Payload "ExLlamaSharp.Tray.exe") -Force
     $sizeMB = [math]::Round((Get-Item $trayExe).Length / 1MB, 1)
-    Write-Step "Included ExLlamaSharp.Tray.exe (.NET 9 single-file, $sizeMB MB)"
+    Write-Step "Included ExLlamaSharp.Tray.exe (.NET 10 single-file, $sizeMB MB)"
 } else {
     throw "Tray exe not found after publish"
 }
@@ -124,7 +117,6 @@ $dllCandidates = @(
     (Join-Path $Root "src\ExLlamaSharp\runtimes\win-x64\native\exllamasharp_native.dll"),
     (Join-Path $Root "src\ExLlamaSharp\runtimes\win-x64\native\exllamasharp.dll"),
     (Join-Path $Root "native\exllamasharp\build-cuda\bin\Release\exllamasharp.dll"),
-    (Join-Path $Root "native\exllamasharp\build-stub\bin\Release\exllamasharp.dll"),
     (Join-Path $Root "native\exllamasharp\build\bin\Release\exllamasharp.dll")
 )
 foreach ($dll in $dllCandidates) {
@@ -141,7 +133,7 @@ foreach ($dll in $dllCandidates) {
     }
 }
 
-# Never delete "exllamasharp.dll" by name — on Windows that removes managed ExLlamaSharp.dll too.
+# Never delete "exllamasharp.dll" by name - on Windows that removes managed ExLlamaSharp.dll too.
 # Native must always be published as exllamasharp_native.dll only.
 if (-not (Test-Path (Join-Path $Payload "ExLlamaSharp.dll"))) {
     throw "Managed ExLlamaSharp.dll missing from payload after publish."
@@ -154,7 +146,8 @@ $scripts = @(
     "Setup-Exl3Python.ps1",
     "Repair-Exl3Ext.ps1",
     "Download-DemoModel.ps1",
-    "Cleanup-BrokenInstall.ps1"
+    "Cleanup-BrokenInstall.ps1",
+    "Verify-Install.ps1"
 )
 $stageScripts = Join-Path $Stage "scripts"
 $payloadScripts = Join-Path $Payload "scripts"
@@ -225,6 +218,7 @@ if (Test-Path $iconSrc) {
 }
 
 Copy-Item (Join-Path $PSScriptRoot "Install-ExLlamaSharp.ps1") (Join-Path $Stage "Install.ps1") -Force
+Copy-Item (Join-Path $PSScriptRoot "Uninstall.ps1") (Join-Path $Stage "Uninstall.ps1") -Force
 Copy-Item (Join-Path $PSScriptRoot "Install.bat") (Join-Path $Stage "Install.bat") -Force
 Copy-Item (Join-Path $PSScriptRoot "Uninstall.bat") (Join-Path $Stage "Uninstall.bat") -Force -ErrorAction SilentlyContinue
 Write-Host "  Included Install.ps1 / Install.bat" -ForegroundColor Gray
@@ -259,10 +253,10 @@ Run Uninstall.bat as Administrator.
 
 ## GPU repair (optional)
 
-Setup-Exl3Python.bat — reinstall PyTorch into Program Files\ExLlamaSharp\venv
+Setup-Exl3Python.bat - reinstall PyTorch into Program Files\ExLlamaSharp\venv
 "@ | Set-Content -Path (Join-Path $Stage "README.txt") -Encoding UTF8
 
-$version = "1.2.1-beta"
+$version = "1.3.0"
 $info = @{
     product = "ExLlamaSharp"
     version = $version
@@ -290,13 +284,13 @@ if (-not $SkipExe) {
     )
     $iscc = $isccCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
     if (-not $iscc) {
-        Write-Warning "ISCC.exe not found — ZIP only. Install Inno Setup 6 or pass -SkipExe."
+        Write-Warning "ISCC.exe not found - ZIP only. Install Inno Setup 6 or pass -SkipExe."
     }
     else {
         Write-Host "  ISCC: $iscc" -ForegroundColor Gray
         $iss = Join-Path $PSScriptRoot "ExLlamaSharp.iss"
         if (-not (Test-Path (Join-Path $Payload "ExLlamaSharp.Server.exe"))) {
-            throw "Stage payload missing Server.exe — cannot compile Setup.exe"
+            throw "Stage payload missing Server.exe - cannot compile Setup.exe"
         }
         Copy-Item (Join-Path $PSScriptRoot "Install-Clean.bat") (Join-Path $Stage "Install-Clean.bat") -Force -ErrorAction SilentlyContinue
 
@@ -309,6 +303,22 @@ if (-not $SkipExe) {
             throw "ISCC succeeded but Setup.exe not found at $OutExe"
         }
     }
+}
+
+$pfx = $env:EXLLAMASHARP_SIGN_PFX
+if ($pfx -and (Test-Path $pfx) -and (Get-Command signtool -ErrorAction SilentlyContinue)) {
+    Write-Step "Authenticode signing"
+    $signTargets = @(
+        (Join-Path $Payload "ExLlamaSharp.Server.exe"),
+        (Join-Path $Payload "ExLlamaSharp.Tray.exe"),
+        $OutExe
+    ) | Where-Object { $_ -and (Test-Path $_) }
+    foreach ($t in $signTargets) {
+        & signtool sign /fd SHA256 /f $pfx /p $env:EXLLAMASHARP_SIGN_PFX_PASSWORD /tr http://timestamp.digicert.com /td SHA256 $t
+    }
+}
+else {
+    Write-Host "Signing skipped (set EXLLAMASHARP_SIGN_PFX + signtool for Authenticode)." -ForegroundColor Yellow
 }
 
 Write-Host ""

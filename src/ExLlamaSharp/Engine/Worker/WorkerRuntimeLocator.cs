@@ -61,41 +61,6 @@ internal static class WorkerRuntimeLocator
             }
         }
 
-        foreach (var name in new[] { "py", "python" })
-        {
-            try
-            {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = name,
-                    Arguments = name == "py"
-                        ? "-3 -c \"import sys; print(sys.executable)\""
-                        : "-c \"import sys; print(sys.executable)\"",
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                };
-                using var p = Process.Start(psi);
-                if (p is null)
-                {
-                    continue;
-                }
-
-                var output = p.StandardOutput.ReadToEnd().Trim();
-                p.WaitForExit(5000);
-                if (p.ExitCode == 0 && File.Exists(output))
-                {
-                    python = output;
-                    return true;
-                }
-            }
-            catch
-            {
-                // try next
-            }
-        }
-
         return false;
     }
 

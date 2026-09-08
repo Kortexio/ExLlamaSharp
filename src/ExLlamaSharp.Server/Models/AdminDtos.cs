@@ -25,6 +25,15 @@ public sealed class SettingsDto
     [JsonPropertyName("max_batched_tokens")]
     public int? MaxBatchedTokens { get; set; }
 
+    [JsonPropertyName("default_max_tokens")]
+    public int? DefaultMaxTokens { get; set; }
+
+    [JsonPropertyName("num_ctx")]
+    public int? NumCtx { get; set; }
+
+    [JsonPropertyName("num_predict")]
+    public int? NumPredict { get; set; }
+
     [JsonPropertyName("gpu_memory_utilization")]
     public double? GpuMemoryUtilization { get; set; }
 

@@ -15,6 +15,9 @@ public sealed class HuggingFaceModelHit
     public string Tags { get; set; } = "";
     public string? ParameterLabel { get; set; }
     public long? SizeBytes { get; set; }
+    public bool? HasSafetensors { get; set; }
+    public bool? HasTokenizer { get; set; }
+    public bool? HasConfig { get; set; }
 }
 
 public sealed class HuggingFaceRevisionInfo
@@ -23,6 +26,9 @@ public sealed class HuggingFaceRevisionInfo
     public string Revision { get; init; } = "main";
     public long BytesTotal { get; init; }
     public string? ParameterLabel { get; init; }
+    public bool HasSafetensors { get; init; }
+    public bool HasTokenizer { get; init; }
+    public bool HasConfig { get; init; }
 }
 
 public sealed class HuggingFaceCatalogService
@@ -77,6 +83,9 @@ public sealed class HuggingFaceCatalogService
         return null;
     }
 
+    /// <summary>Minimum total tree size after revision resolve (excludes README-only clones).</summary>
+    public const long MinLoadableBytes = 40L * 1024 * 1024;
+
     public async Task<IReadOnlyList<HuggingFaceModelHit>> SearchAsync(
         string query,
         int limit = 40,
@@ -86,11 +95,18 @@ public sealed class HuggingFaceCatalogService
         {
             query = "exl3";
         }
+        else if (!query.Contains("exl3", StringComparison.OrdinalIgnoreCase))
+        {
+            // Bias HF search toward EXL3 repos even when the user types "qwen", "llama", etc.
+            query = $"{query.Trim()} exl3";
+        }
 
         limit = Math.Clamp(limit, 1, 80);
+        // Oversample: many EXL3 hits are drafts / incomplete and get filtered client-side.
+        var fetchLimit = Math.Clamp(limit * 3, limit, 100);
         var url =
             $"https://huggingface.co/api/models?search={Uri.EscapeDataString(query)}" +
-            $"&sort=downloads&direction=-1&limit={limit}";
+            $"&sort=downloads&direction=-1&limit={fetchLimit}";
 
         var client = _http.CreateClient("huggingface");
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
@@ -133,7 +149,7 @@ public sealed class HuggingFaceCatalogService
             }
 
             var display = id.Contains('/', StringComparison.Ordinal) ? id[(id.LastIndexOf('/') + 1)..] : id;
-            hits.Add(new HuggingFaceModelHit
+            var hit = new HuggingFaceModelHit
             {
                 RepoId = id,
                 DisplayName = display,
@@ -141,10 +157,183 @@ public sealed class HuggingFaceCatalogService
                 PipelineTag = tag,
                 Tags = tags ?? "",
                 ParameterLabel = InferParameterLabel(id) ?? InferParameterLabel(tags),
-            });
+            };
+
+            if (!IsStandaloneExl3Candidate(hit))
+            {
+                continue;
+            }
+
+            hits.Add(hit);
+            if (hits.Count >= limit)
+            {
+                break;
+            }
         }
 
         return hits;
+    }
+
+    /// <summary>
+    /// Metadata gate for Library search: EXL3 chat/VLM targets only (no drafts / DFlash / wrong formats).
+    /// </summary>
+    public static bool IsStandaloneExl3Candidate(HuggingFaceModelHit hit)
+    {
+        var id = hit.RepoId ?? "";
+        var display = hit.DisplayName ?? "";
+        var tags = hit.Tags ?? "";
+        var haystack = $"{id} {display} {tags}";
+
+        if (!LooksLikeExl3(haystack))
+        {
+            return false;
+        }
+
+        if (IsExcludedDraftOrAuxiliary(haystack, tags))
+        {
+            return false;
+        }
+
+        if (!IsAllowedPipeline(hit.PipelineTag))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// After tree enrichment: require real EXL3 weights + tokenizer (drafts often lack a tokenizer).
+    /// Hits still pending enrichment (null flags) pass so the UI can show them while sizes load.
+    /// </summary>
+    public static bool PassesWeightGate(HuggingFaceModelHit hit)
+    {
+        if (hit.HasSafetensors is null && hit.HasTokenizer is null && hit.HasConfig is null)
+        {
+            return true;
+        }
+
+        if (hit.HasSafetensors != true || hit.HasTokenizer != true || hit.HasConfig != true)
+        {
+            return false;
+        }
+
+        if (hit.SizeBytes is long size && size > 0 && size < MinLoadableBytes)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    public static IReadOnlyList<HuggingFaceModelHit> FilterLoadableHits(IEnumerable<HuggingFaceModelHit> hits) =>
+        hits.Where(h => IsStandaloneExl3Candidate(h) && PassesWeightGate(h)).ToList();
+
+    private static bool LooksLikeExl3(string haystack) =>
+        haystack.Contains("exl3", StringComparison.OrdinalIgnoreCase);
+
+    private static readonly string[] DraftNameNeedles =
+    [
+        "dflash",
+        "dflash2",
+        "draft-model",
+        "-draft-",
+        "_draft_",
+        "-draft_",
+        "_draft-",
+        "/draft-",
+        "mtp-draft",
+        "speculative-draft",
+        "drafter",
+    ];
+
+    private static readonly string[] DraftTagNeedles =
+    [
+        "draft-model",
+        "dflash",
+        "dflash2",
+        "block-diffusion",
+    ];
+
+    private static bool IsExcludedDraftOrAuxiliary(string haystack, string tags)
+    {
+        foreach (var needle in DraftNameNeedles)
+        {
+            if (haystack.Contains(needle, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        foreach (var needle in DraftTagNeedles)
+        {
+            if (tags.Contains(needle, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        // Name ends with -draft / _draft (common HF convention)
+        if (Regex.IsMatch(haystack, @"[-_]draft(?:\b|[-_]|\d)", RegexOptions.IgnoreCase))
+        {
+            return true;
+        }
+
+        // Wrong primary format in the repo id (even if the card mentions exl3)
+        if (Regex.IsMatch(haystack, @"(^|[\s/])[^\s]*gguf[^\s]*", RegexOptions.IgnoreCase)
+            || Regex.IsMatch(haystack, @"[-_]exl2(?:[-_.]|$)", RegexOptions.IgnoreCase)
+            || haystack.Contains("-GGUF", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static readonly HashSet<string> AllowedPipelines = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "text-generation",
+        "image-text-to-text",
+        "any-to-any",
+        "conversational",
+    };
+
+    private static readonly HashSet<string> BlockedPipelines = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "text-to-image",
+        "image-to-image",
+        "text-to-audio",
+        "text-to-speech",
+        "automatic-speech-recognition",
+        "feature-extraction",
+        "sentence-similarity",
+        "fill-mask",
+        "token-classification",
+        "translation",
+        "summarization",
+        "reinforcement-learning",
+    };
+
+    private static bool IsAllowedPipeline(string? pipelineTag)
+    {
+        if (string.IsNullOrWhiteSpace(pipelineTag))
+        {
+            return true;
+        }
+
+        if (BlockedPipelines.Contains(pipelineTag))
+        {
+            return false;
+        }
+
+        if (AllowedPipelines.Contains(pipelineTag))
+        {
+            return true;
+        }
+
+        // Unknown tags: keep only if not obviously non-LLM
+        return !pipelineTag.Contains("image", StringComparison.OrdinalIgnoreCase)
+            || pipelineTag.Contains("text", StringComparison.OrdinalIgnoreCase);
     }
 
     public async Task EnrichHitsAsync(IEnumerable<HuggingFaceModelHit> hits, CancellationToken ct = default)
@@ -159,10 +348,16 @@ public sealed class HuggingFaceCatalogService
                 var info = await GetRevisionInfoAsync(hit.RepoId, revision, ct).ConfigureAwait(false);
                 hit.SizeBytes = info.BytesTotal;
                 hit.ParameterLabel ??= info.ParameterLabel;
+                hit.HasSafetensors = info.HasSafetensors;
+                hit.HasTokenizer = info.HasTokenizer;
+                hit.HasConfig = info.HasConfig;
             }
             catch (Exception ex)
             {
                 hit.SizeBytes ??= 0;
+                hit.HasSafetensors ??= false;
+                hit.HasTokenizer ??= false;
+                hit.HasConfig ??= false;
                 _logger.LogDebug(ex, "Could not enrich HF hit {Repo}", hit.RepoId);
             }
             finally
@@ -184,13 +379,16 @@ public sealed class HuggingFaceCatalogService
             return cached;
         }
 
-        var bytes = await SumTreeBytesAsync(repoId, revision, ct).ConfigureAwait(false);
+        var tree = await AnalyzeTreeAsync(repoId, revision, ct).ConfigureAwait(false);
         var info = new HuggingFaceRevisionInfo
         {
             RepoId = repoId,
             Revision = revision,
-            BytesTotal = bytes,
+            BytesTotal = tree.BytesTotal,
             ParameterLabel = InferParameterLabel(repoId),
+            HasSafetensors = tree.HasSafetensors,
+            HasTokenizer = tree.HasTokenizer,
+            HasConfig = tree.HasConfig,
         };
         _revisionCache[key] = info;
         return info;
@@ -303,7 +501,9 @@ public sealed class HuggingFaceCatalogService
         return names;
     }
 
-    private async Task<long> SumTreeBytesAsync(string repoId, string revision, CancellationToken ct)
+    private sealed record TreeAnalysis(long BytesTotal, bool HasSafetensors, bool HasTokenizer, bool HasConfig);
+
+    private async Task<TreeAnalysis> AnalyzeTreeAsync(string repoId, string revision, CancellationToken ct)
     {
         var encodedRepo = string.Join('/', repoId.Split('/', StringSplitOptions.RemoveEmptyEntries).Select(Uri.EscapeDataString));
         var url =
@@ -312,16 +512,19 @@ public sealed class HuggingFaceCatalogService
         if (!res.IsSuccessStatusCode)
         {
             _logger.LogWarning("HF tree failed for {Repo}@{Rev}: {Status}", repoId, revision, (int)res.StatusCode);
-            return 0;
+            return new TreeAnalysis(0, false, false, false);
         }
 
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
         if (doc.RootElement.ValueKind != JsonValueKind.Array)
         {
-            return 0;
+            return new TreeAnalysis(0, false, false, false);
         }
 
         long total = 0;
+        var hasSafetensors = false;
+        var hasTokenizer = false;
+        var hasConfig = false;
         foreach (var el in doc.RootElement.EnumerateArray())
         {
             var type = el.TryGetProperty("type", out var t) ? t.GetString() : null;
@@ -330,13 +533,30 @@ public sealed class HuggingFaceCatalogService
                 continue;
             }
 
+            var path = el.TryGetProperty("path", out var pathEl) ? pathEl.GetString() ?? "" : "";
+            var fileName = Path.GetFileName(path);
             if (el.TryGetProperty("size", out var sizeEl) && sizeEl.TryGetInt64(out var size) && size > 0)
             {
                 total += size;
             }
+
+            if (fileName.EndsWith(".safetensors", StringComparison.OrdinalIgnoreCase))
+            {
+                hasSafetensors = true;
+            }
+            else if (fileName.Equals("tokenizer.json", StringComparison.OrdinalIgnoreCase)
+                     || fileName.Equals("tokenizer.model", StringComparison.OrdinalIgnoreCase)
+                     || fileName.Equals("tokenizer_config.json", StringComparison.OrdinalIgnoreCase))
+            {
+                hasTokenizer = true;
+            }
+            else if (fileName.Equals("config.json", StringComparison.OrdinalIgnoreCase))
+            {
+                hasConfig = true;
+            }
         }
 
-        return total;
+        return new TreeAnalysis(total, hasSafetensors, hasTokenizer, hasConfig);
     }
 
     private async Task<HttpResponseMessage> SendHfGetAsync(string url, CancellationToken ct)

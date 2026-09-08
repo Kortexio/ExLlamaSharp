@@ -464,7 +464,7 @@ spec = importlib.util.find_spec("exllamav3_ext")
 origin = spec.origin if spec else ""
 print("ext=", origin)
 if not origin or not origin.endswith((".pyd", ".so")):
-    raise SystemExit("exllamav3_ext native module missing — install the official CUDA wheel, not the PyPI source package")
+    raise SystemExit("exllamav3_ext native module missing - install the official CUDA wheel, not the PyPI source package")
 from exllamav3 import Config, Model, Cache, Tokenizer, Generator
 print("exllamav3 OK; cuda=", torch.cuda.is_available(), "; torch=", torch.__version__)
 "@)

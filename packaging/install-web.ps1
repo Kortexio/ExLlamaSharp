@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Bootstrap ExLlamaSharp (Ollama-style one-liner).
@@ -6,7 +6,7 @@
 .DESCRIPTION
   Downloads the latest Windows Setup.exe and launches it (UAC).
 
-  Usage (from an elevated OR normal PowerShell — Setup requests Admin):
+  Usage (from an elevated OR normal PowerShell - Setup requests Admin):
     irm https://YOUR_HOST/install.ps1 | iex
 
   Or point at a specific release:
@@ -21,7 +21,7 @@ param(
     # Direct URL to ExLlamaSharp-Setup-win-x64.exe (GitHub Release / CDN / file share)
     [string]$SetupUrl = $env:EXLLAMASHARP_SETUP_URL,
 
-    # Local path (skips download) — for testing
+    # Local path (skips download) - for testing
     [string]$SetupExePath,
 
     [switch]$Silent
@@ -30,7 +30,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
-# Default release URL — replace ORG/REPO when you publish to GitHub Releases
+# Default release URL - replace ORG/REPO when you publish to GitHub Releases
 if ([string]::IsNullOrWhiteSpace($SetupUrl)) {
     $SetupUrl = "https://github.com/vitorcastro78/ExLlamaSharp/releases/latest/download/ExLlamaSharp-Setup-win-x64.exe"
 }
@@ -70,7 +70,7 @@ Write-Host "Launching Setup (UAC / Admin)..." -ForegroundColor Cyan
 $args = @()
 if ($Silent) { $args = @("/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES") }
 
-# Inno Setup EXE — always elevate via ShellExecute
+# Inno Setup EXE - always elevate via ShellExecute
 Start-Process -FilePath $dest -ArgumentList $args -Verb RunAs -Wait
 
 Write-Host ""

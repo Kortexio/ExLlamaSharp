@@ -6,17 +6,127 @@ namespace ExLlamaSharp.Server.Data;
 
 public static class DbInitializer
 {
-    public static async Task InitializeAsync(AppDbContext db, ILogger logger, CancellationToken cancellationToken = default)
+    public static async Task InitializeAsync(
+        AppDbContext db,
+        ILogger logger,
+        Microsoft.Extensions.Hosting.IHostEnvironment? environment = null,
+        CancellationToken cancellationToken = default)
     {
         await db.Database.EnsureCreatedAsync(cancellationToken).ConfigureAwait(false);
+        await EnsureSchemaPatchesAsync(db, logger, cancellationToken).ConfigureAwait(false);
 
         await SeedTenantAsync(db, cancellationToken).ConfigureAwait(false);
         await SeedSettingsAsync(db, cancellationToken).ConfigureAwait(false);
         await SeedModelLibraryAsync(db, cancellationToken).ConfigureAwait(false);
-        await SeedDevAdminAsync(db, logger, cancellationToken).ConfigureAwait(false);
+        if (environment?.IsDevelopment() == true)
+        {
+            await SeedDevAdminAsync(db, logger, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            logger.LogInformation("Production start: not seeding admin/changeme or sk-exllamasharp-dev");
+        }
+
+        await RecoverInterruptedJobsAsync(db, logger, cancellationToken).ConfigureAwait(false);
 
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         logger.LogInformation("Database initialized at {Path}", db.Database.GetDbConnection().DataSource);
+    }
+
+    /// <summary>
+    /// After a process crash, pull/quantize jobs can stay forever in pending/running.
+    /// Mark them failed so the UI and operators can retry cleanly.
+    /// </summary>
+    private static async Task RecoverInterruptedJobsAsync(AppDbContext db, ILogger logger, CancellationToken cancellationToken)
+    {
+        var interrupted = await db.ModelJobs
+            .Where(j => j.Status == "pending" || j.Status == "running")
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (interrupted.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var job in interrupted)
+        {
+            job.Status = "failed";
+            job.Error = "Interrupted by server restart.";
+            job.UpdatedAt = DateTime.UtcNow;
+        }
+
+        logger.LogWarning("Marked {Count} interrupted model job(s) as failed", interrupted.Count);
+    }
+
+    /// <summary>
+    /// EnsureCreated does not add columns to existing SQLite tables — patch known additive Settings fields.
+    /// </summary>
+    private static async Task EnsureSchemaPatchesAsync(AppDbContext db, ILogger logger, CancellationToken cancellationToken)
+    {
+        var patches = new (string Column, string SqlType, string DefaultSql)[]
+        {
+            ("EstimatedCostPerMillionTokens", "TEXT", "0"),
+            ("DefaultMaxTokens", "INTEGER", "2048"),
+            ("SpeculativeEnabled", "INTEGER", "0"),
+            ("DraftModelId", "TEXT", "NULL"),
+            ("DraftK", "INTEGER", "5"),
+            ("WebhookUrl", "TEXT", "NULL"),
+            ("WebhookSecret", "TEXT", "NULL"),
+            ("ContentModerationEnabled", "INTEGER", "0"),
+            ("MultiTenancyEnabled", "INTEGER", "0"),
+            ("ShowAdvancedMetrics", "INTEGER", "0"),
+            ("CudaVisibleDevices", "TEXT", "'0'"),
+            ("ParallelismMode", "TEXT", "'none'"),
+            ("TlsCertPath", "TEXT", "NULL"),
+            ("LastLoadedModelId", "TEXT", "NULL"),
+            ("AutoBackupSchedule", "TEXT", "'disabled'"),
+        };
+
+        var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var conn = db.Database.GetDbConnection();
+        if (conn.State != System.Data.ConnectionState.Open)
+        {
+            await conn.OpenAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "PRAGMA table_info(\"Settings\")";
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                // cid, name, type, notnull, dflt_value, pk
+                existing.Add(reader.GetString(1));
+            }
+        }
+
+        foreach (var (column, sqlType, defaultSql) in patches)
+        {
+            if (existing.Contains(column))
+            {
+                continue;
+            }
+
+            try
+            {
+#pragma warning disable EF1002
+                await db.Database.ExecuteSqlRawAsync(
+                    $"ALTER TABLE \"Settings\" ADD COLUMN \"{column}\" {sqlType} DEFAULT {defaultSql}",
+                    cancellationToken).ConfigureAwait(false);
+#pragma warning restore EF1002
+                logger.LogInformation("SQLite schema patch: added Settings.{Column}", column);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Schema patch failed for Settings.{Column}", column);
+                throw new InvalidOperationException(
+                    $"Cannot patch Settings.{column} on app.db. " +
+                    "The data folder must be writable by the account that runs the Server " +
+                    "(not LocalSystem-owned + user-session readonly). " +
+                    $"Data root: %ProgramData%\\ExLlamaSharp. Inner: {ex.Message}",
+                    ex);
+            }
+        }
     }
 
     private static async Task SeedTenantAsync(AppDbContext db, CancellationToken cancellationToken)
@@ -69,13 +179,14 @@ public static class DbInitializer
             Id = 1,
             BindAddress = "127.0.0.1",
             Port = 14563,
-            Cors = "*",
+            Cors = "http://127.0.0.1:14563,http://localhost:14563",
             MaxNumSeqs = 256,
             MaxChunkSize = 2048,
             MaxBatchedTokens = 8192,
+            DefaultMaxTokens = 2048,
             GpuMemoryUtilization = 0.90,
             RequestTimeoutSeconds = 300,
-            LoadModelOnStartup = false,
+            LoadModelOnStartup = true,
             AutoBackupSchedule = "disabled",
             ContentModerationEnabled = false,
             MultiTenancyEnabled = false,

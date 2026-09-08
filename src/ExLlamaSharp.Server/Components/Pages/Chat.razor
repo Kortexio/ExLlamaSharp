@@ -1,6 +1,7 @@
 @page "/chat"
 @inject IHttpClientFactory HttpClientFactory
 @inject EngineHostService Engine
+@inject SettingsService SettingsSvc
 @inject NavigationManager Nav
 @using System.Text.Json
 @using Microsoft.AspNetCore.Components.Forms
@@ -9,9 +10,13 @@
 
 <div class="page-header">
     <h1>Chat playground</h1>
-    <p>Stream completions via <code>/v1/chat/completions</code>.</p>
+    <p>
+        OpenAI <code>/v1/chat/completions</code> with Ollama-style <code>options</code>
+        (<code>num_predict</code>, <code>num_ctx</code>, …).
+    </p>
     <p class="small mb-0 @(_modelReady ? "text-success" : "text-danger")">@_modelStatus</p>
 </div>
+<ModelStatusBanner />
 
 <div class="card mb-3">
     <div class="card-body">
@@ -30,6 +35,39 @@
                 </select>
             </div>
             <div>
+                <label class="form-label">Max tokens (max_tokens / num_predict)</label>
+                <input type="number" class="form-control" min="64" max="128000" step="64" @bind="_maxTokens" />
+                <div class="form-text">Reply length. Sent as OpenAI <code>max_tokens</code> and <code>options.num_predict</code>.</div>
+            </div>
+            <div>
+                <label class="form-label">Context (num_ctx)</label>
+                <input type="number" class="form-control" min="512" max="128000" step="256" @bind="_numCtx" />
+                <div class="form-text">
+                    KV / context window. Must match Settings → Max batched tokens after a <strong>model reload</strong>.
+                </div>
+            </div>
+            <div>
+                <label class="form-label">Temperature</label>
+                <input type="number" class="form-control" min="0" max="2" step="0.05" @bind="_temperature" />
+            </div>
+            <div>
+                <label class="form-label">Top P</label>
+                <input type="number" class="form-control" min="0" max="1" step="0.05" @bind="_topP" />
+            </div>
+            <div>
+                <label class="form-label">Top K</label>
+                <input type="number" class="form-control" min="0" max="200" step="1" @bind="_topK" />
+            </div>
+            <div>
+                <label class="form-label">Min P</label>
+                <input type="number" class="form-control" min="0" max="1" step="0.01" @bind="_minP" />
+            </div>
+            <div>
+                <label class="form-label">Repeat penalty</label>
+                <input type="number" class="form-control" min="0" max="2" step="0.05" @bind="_repeatPenalty" />
+                <div class="form-text">Ollama <code>options.repeat_penalty</code> (alias for frequency_penalty).</div>
+            </div>
+            <div>
                 <label class="form-label">Image (vision)</label>
                 @if (_visionReady)
                 {
@@ -43,7 +81,6 @@
                 {
                     <p class="form-text mb-0">
                         Load an EXL3 VLM (Qwen3-VL / Gemma VL, etc.) to enable <code>image_url</code>.
-                        Text-only models return <code>400 vision_not_supported</code>.
                     </p>
                 }
             </div>
@@ -72,6 +109,8 @@
     <div class="chat-input">
         <input class="form-control" placeholder="Ask something…" @bind="_input" @bind:event="oninput"
                @onkeydown="OnKey" disabled="@_streaming" />
+        <button class="btn btn-outline-secondary" disabled="@_streaming" @onclick="ClearChat">Clear</button>
+        <button class="btn btn-outline-danger" disabled="@(!_streaming)" @onclick="StopChat">Stop</button>
         <button class="btn btn-primary" disabled="@_streaming" @onclick="SendAsync">Send</button>
     </div>
 </div>
@@ -84,7 +123,7 @@
 @code {
     private readonly List<UiMsg> _messages =
     [
-        new("system", "Playground ready. Messages stream from the OpenAI-compatible API."),
+        new("system", "Playground ready. Requests use OpenAI fields plus Ollama-style options."),
     ];
     private string _input = "";
     private bool _streaming;
@@ -97,10 +136,36 @@
     private string _selectedModel = "";
     private string _toolsJson = "";
     private string? _imageDataUrl;
+    private int _maxTokens = 2048;
+    private int _numCtx = 8192;
+    private float _temperature = 0.7f;
+    private float _topP = 0.9f;
+    private int _topK = 40;
+    private float _minP;
+    private float _repeatPenalty = 1.0f;
+    private CancellationTokenSource? _sendCts;
 
     protected override async Task OnInitializedAsync()
     {
         RefreshModelStatus();
+        try
+        {
+            var settings = await SettingsSvc.GetAsync();
+            if (settings.DefaultMaxTokens > 0)
+            {
+                _maxTokens = Math.Clamp(settings.DefaultMaxTokens, 64, 128_000);
+            }
+
+            if (settings.MaxBatchedTokens > 0)
+            {
+                _numCtx = Math.Clamp(settings.MaxBatchedTokens, 512, 128_000);
+            }
+        }
+        catch
+        {
+            // keep built-in defaults
+        }
+
         await LoadModelsAsync();
     }
 
@@ -197,6 +262,23 @@
 
     private void ClearImage() => _imageDataUrl = null;
 
+    private void StopChat()
+    {
+        try { _sendCts?.Cancel(); } catch { /* ignore */ }
+    }
+
+    private void ClearChat()
+    {
+        if (_streaming)
+        {
+            return;
+        }
+
+        _messages.Clear();
+        _messages.Add(new("system", "Playground ready. Requests use OpenAI fields plus Ollama-style options."));
+        _error = null;
+    }
+
     private async Task OnKey(KeyboardEventArgs e)
     {
         if (e.Key == "Enter" && !e.ShiftKey)
@@ -223,6 +305,9 @@
         var assistant = new UiMsg("assistant", "");
         _messages.Add(assistant);
         _streaming = true;
+        _sendCts?.Dispose();
+        _sendCts = new CancellationTokenSource();
+        var ct = _sendCts.Token;
 
         try
         {
@@ -250,11 +335,35 @@
                 }
             }
 
+            var maxTokens = Math.Clamp(_maxTokens, 64, 128_000);
+            var numCtx = Math.Clamp(_numCtx, 512, 128_000);
+            var temperature = Math.Clamp(_temperature, 0f, 2f);
+            var topP = Math.Clamp(_topP, 0f, 1f);
+            var topK = Math.Clamp(_topK, 0, 200);
+            var minP = Math.Clamp(_minP, 0f, 1f);
+            var repeatPenalty = Math.Clamp(_repeatPenalty, 0f, 2f);
+
+            // OpenAI top-level + Ollama options (same values mirrored for dual-compatible clients).
             var payload = new Dictionary<string, object?>
             {
                 ["model"] = string.IsNullOrWhiteSpace(_selectedModel) ? "default" : _selectedModel,
                 ["stream"] = true,
                 ["messages"] = history,
+                ["max_tokens"] = maxTokens,
+                ["temperature"] = temperature,
+                ["top_p"] = topP,
+                ["top_k"] = topK,
+                ["min_p"] = minP,
+                ["options"] = new Dictionary<string, object?>
+                {
+                    ["num_predict"] = maxTokens,
+                    ["num_ctx"] = numCtx,
+                    ["temperature"] = temperature,
+                    ["top_p"] = topP,
+                    ["top_k"] = topK,
+                    ["min_p"] = minP,
+                    ["repeat_penalty"] = repeatPenalty,
+                },
             };
             if (tools is not null)
             {
@@ -266,7 +375,7 @@
                 Content = JsonContent.Create(payload),
             };
 
-            using var res = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
+            using var res = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
             if (!res.IsSuccessStatusCode)
             {
                 var body = await res.Content.ReadAsStringAsync();
@@ -290,11 +399,12 @@
             }
 
             var toolCallsAcc = new List<string>();
-            await using var stream = await res.Content.ReadAsStreamAsync();
+            var finishReason = (string?)null;
+            await using var stream = await res.Content.ReadAsStreamAsync(ct);
             using var reader = new StreamReader(stream);
             while (!reader.EndOfStream)
             {
-                var line = await reader.ReadLineAsync();
+                var line = await reader.ReadLineAsync(ct);
                 if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
@@ -315,6 +425,13 @@
                     }
 
                     var choice = choices[0];
+                    if (choice.TryGetProperty("finish_reason", out var fr)
+                        && fr.ValueKind == JsonValueKind.String
+                        && !string.IsNullOrWhiteSpace(fr.GetString()))
+                    {
+                        finishReason = fr.GetString();
+                    }
+
                     if (choice.TryGetProperty("delta", out var delta))
                     {
                         if (delta.TryGetProperty("content", out var content))
@@ -352,6 +469,19 @@
             {
                 assistant.Text = "(empty response)";
             }
+            else if (string.Equals(finishReason, "length", StringComparison.OrdinalIgnoreCase))
+            {
+                _error = $"Reply hit Max tokens ({maxTokens}). Increase max_tokens / num_predict for longer answers.";
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            if (string.IsNullOrEmpty(assistant.Text))
+            {
+                assistant.Text = "(stopped)";
+            }
+
+            _error = "Generation stopped.";
         }
         catch (Exception ex)
         {

@@ -160,19 +160,24 @@ public static class OpenAiEndpoints
         }
 
         var timeoutCts = await CreateTimeoutCtsAsync(settingsService, http.RequestAborted).ConfigureAwait(false);
+        await NoteNumCtxAsync(request.Options?.NumCtx, settingsService, http.RequestAborted).ConfigureAwait(false);
+        var appSettings = await settingsService.GetAsync(http.RequestAborted).ConfigureAwait(false);
         var engineRequest = new CompletionRequest
         {
             Prompt = prompt,
             Messages = messages,
-            StopStrings = ReadStopStrings(request.Stop),
-            MaxNewTokens = request.MaxTokens ?? 256,
-            Temperature = request.Temperature ?? 0.7f,
-            TopP = request.TopP ?? 0.9f,
-            TopK = request.TopK ?? 40,
-            MinP = request.MinP ?? 0f,
-            PresencePenalty = request.PresencePenalty ?? 0f,
-            FrequencyPenalty = request.FrequencyPenalty ?? 0f,
-            Seed = request.Seed,
+            StopStrings = MergeStopStrings(request.Stop, request.Options?.Stop),
+            MaxNewTokens = ResolveMaxNewTokens(request.MaxTokens, request.MaxCompletionTokens, request.Options, appSettings.DefaultMaxTokens),
+            Temperature = request.Temperature ?? request.Options?.Temperature ?? 0.7f,
+            TopP = request.TopP ?? request.Options?.TopP ?? 0.9f,
+            TopK = request.TopK ?? request.Options?.TopK ?? 40,
+            MinP = request.MinP ?? request.Options?.MinP ?? 0f,
+            PresencePenalty = request.PresencePenalty ?? request.Options?.PresencePenalty ?? 0f,
+            FrequencyPenalty = request.FrequencyPenalty
+                ?? request.Options?.FrequencyPenalty
+                ?? request.Options?.RepeatPenalty
+                ?? 0f,
+            Seed = request.Seed ?? request.Options?.Seed,
             Priority = InvertPriority(http.GetPriority()),
             JobId = jobId,
             ToolsJson = toolsJson,
@@ -394,13 +399,23 @@ public static class OpenAiEndpoints
         }
 
         var timeoutCts = await CreateTimeoutCtsAsync(settingsService, http.RequestAborted).ConfigureAwait(false);
+        await NoteNumCtxAsync(request.Options?.NumCtx, settingsService, http.RequestAborted).ConfigureAwait(false);
+        var appSettings = await settingsService.GetAsync(http.RequestAborted).ConfigureAwait(false);
         var engineRequest = new CompletionRequest
         {
             Prompt = prompt,
-            MaxNewTokens = request.MaxTokens ?? 256,
-            Temperature = request.Temperature ?? 0.7f,
-            TopP = request.TopP ?? 0.9f,
-            TopK = request.TopK ?? 40,
+            StopStrings = MergeStopStrings(request.Stop, request.Options?.Stop),
+            MaxNewTokens = ResolveMaxNewTokens(request.MaxTokens, request.MaxCompletionTokens, request.Options, appSettings.DefaultMaxTokens),
+            Temperature = request.Temperature ?? request.Options?.Temperature ?? 0.7f,
+            TopP = request.TopP ?? request.Options?.TopP ?? 0.9f,
+            TopK = request.TopK ?? request.Options?.TopK ?? 40,
+            MinP = request.MinP ?? request.Options?.MinP ?? 0f,
+            PresencePenalty = request.PresencePenalty ?? request.Options?.PresencePenalty ?? 0f,
+            FrequencyPenalty = request.FrequencyPenalty
+                ?? request.Options?.FrequencyPenalty
+                ?? request.Options?.RepeatPenalty
+                ?? 0f,
+            Seed = request.Seed ?? request.Options?.Seed,
             Priority = InvertPriority(http.GetPriority()),
             JobId = jobId,
         };
@@ -767,9 +782,17 @@ public static class OpenAiEndpoints
                     && !string.Equals(loadedAlias, requested, StringComparison.OrdinalIgnoreCase)
                     && !string.Equals(engineHost.LoadedModelId?.ToString("N"), requested, StringComparison.OrdinalIgnoreCase);
 
-                if (differsFromLoaded || !engineHost.IsLoaded)
+                if (!engineHost.IsLoaded)
                 {
-                    await engineHost.EnsureModelIdLoadedAsync(record.Id, ct).ConfigureAwait(false);
+                    throw new InvalidOperationException(
+                        "No model loaded. Open Admin → Models and click Load.");
+                }
+
+                if (differsFromLoaded)
+                {
+                    throw new InvalidOperationException(
+                        $"Requested model '{requestedName}' is not the loaded model. " +
+                        "Load it in Admin → Models first (hot-swap mid-request is disabled).");
                 }
 
                 return requestedName;
@@ -797,6 +820,20 @@ public static class OpenAiEndpoints
         }
 
         return "default";
+    }
+
+    private static List<string> MergeStopStrings(JsonElement? openAiStop, JsonElement? optionsStop)
+    {
+        var list = ReadStopStrings(openAiStop);
+        foreach (var s in ReadStopStrings(optionsStop))
+        {
+            if (!list.Contains(s, StringComparer.Ordinal))
+            {
+                list.Add(s);
+            }
+        }
+
+        return list;
     }
 
     private static List<string> ReadStopStrings(JsonElement? stop)
@@ -843,6 +880,44 @@ public static class OpenAiEndpoints
 
     /// <summary>API key priority 1 (highest) â†’ engine priority higher number scheduled sooner.</summary>
     private static int InvertPriority(int apiKeyPriority) => Math.Clamp(11 - apiKeyPriority, 1, 10);
+
+    /// <summary>
+    /// OpenAI <c>max_tokens</c> / <c>max_completion_tokens</c> and Ollama <c>options.num_predict</c>
+    /// all mean generation length — not context window.
+    /// </summary>
+    private static int ResolveMaxNewTokens(
+        int? maxTokens,
+        int? maxCompletionTokens,
+        OllamaStyleOptions? options,
+        int defaultMaxTokens)
+    {
+        var fallback = defaultMaxTokens > 0 ? defaultMaxTokens : 2048;
+        var value = maxTokens ?? maxCompletionTokens ?? options?.NumPredict ?? fallback;
+        return Math.Clamp(value, 1, 128_000);
+    }
+
+    /// <summary>
+    /// Ollama <c>num_ctx</c> is the KV/context size. In ExLlamaSharp that is fixed at model load
+    /// (Settings → Max batched tokens). Per-request num_ctx cannot resize the live cache.
+    /// </summary>
+    private static async Task NoteNumCtxAsync(int? numCtx, SettingsService settingsService, CancellationToken ct)
+    {
+        if (numCtx is null or <= 0)
+        {
+            return;
+        }
+
+        var settings = await settingsService.GetAsync(ct).ConfigureAwait(false);
+        if (numCtx.Value != settings.MaxBatchedTokens)
+        {
+            // Intentionally not throwing: clients often send num_ctx with every Ollama-style request.
+            // Changing context requires unload/reload with a new cache size.
+            Console.WriteLine(
+                $"[ExLlamaSharp] options.num_ctx={numCtx} ignored for this request; " +
+                $"loaded context is MaxBatchedTokens={settings.MaxBatchedTokens}. " +
+                "Change Settings → Performance → Max batched tokens and reload the model.");
+        }
+    }
 
     private static async Task<CancellationTokenSource> CreateTimeoutCtsAsync(
         SettingsService settingsService,

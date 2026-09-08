@@ -12,7 +12,10 @@ public sealed class AppSettings
 
     public int MaxNumSeqs { get; set; } = 256;
     public int MaxChunkSize { get; set; } = 2048;
+    /// <summary>KV / context window at model load (Ollama <c>num_ctx</c>).</summary>
     public int MaxBatchedTokens { get; set; } = 8192;
+    /// <summary>Default max tokens to generate when the request omits max_tokens (Ollama <c>num_predict</c>).</summary>
+    public int DefaultMaxTokens { get; set; } = 2048;
     public double GpuMemoryUtilization { get; set; } = 0.90;
     public int RequestTimeoutSeconds { get; set; } = 300;
 

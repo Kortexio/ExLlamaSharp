@@ -7,7 +7,7 @@ Positioning: **Ollama’s ease + strong local NVIDIA EXL3 serving + Windows admi
 | Windows native | Yes | No (WSL/limited) | No (Linux-first) | Yes |
 | Multi-user (shared GPU host) | Yes (API keys, RPM/TPM, audit) | Limited | Yes | Limited |
 | Web UI admin | Yes (Blazor) | No | No (API only) | Yes (desktop) |
-| OpenAI-compatible API | Yes (chat/completions/tools; images/audio **501**) | Yes | Yes | Yes |
+| OpenAI-compatible API | Yes (`/v1` + Ollama-style `options`) | Yes | Yes | Yes |
 | No Docker required | Yes | Yes* | Typically containers/Linux | Yes |
 | Multi-GPU TP / PP / MP | **No** (rejected in Settings); `CUDA_VISIBLE_DEVICES` only | Limited | Yes | Limited |
 | Non-technical friendly | Yes (wizard + UI) | Yes | No | Yes |

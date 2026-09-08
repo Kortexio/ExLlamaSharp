@@ -97,7 +97,9 @@ internal sealed class WorkerJsonlClient : IDisposable
         {
             FileName = python,
             Arguments = $"\"{script}\"",
-            WorkingDirectory = WorkerRuntimeLocator.FindRepoRoot() ?? Environment.CurrentDirectory,
+            WorkingDirectory = Path.GetDirectoryName(script)
+                ?? WorkerRuntimeLocator.FindRepoRoot()
+                ?? Environment.CurrentDirectory,
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,

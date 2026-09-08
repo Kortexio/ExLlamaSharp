@@ -25,6 +25,12 @@
                 <tr><td>GET</td><td><code>/v1/metrics</code></td><td>JSON engine metrics</td></tr>
             </tbody>
         </table>
+        <p class="mb-0 mt-3 small text-muted">
+            Same routes accept Ollama-style extras under <code>options</code>
+            (<code>num_predict</code>, <code>num_ctx</code>, <code>top_k</code>, <code>min_p</code>,
+            <code>repeat_penalty</code>, ù). OpenAI fields win when both are set.
+            There is no separate <code>/api/chat</code> Ollama server.
+        </p>
     </div>
 </div>
 
@@ -94,9 +100,9 @@
     <div class="card-body">
         <h5 class="card-title">Ops (no API key)</h5>
         <ul class="mb-0">
-            <li><code>GET /health</code> ó liveness</li>
-            <li><code>GET /ready</code> ó readiness (model / engine)</li>
-            <li><code>GET /metrics</code> ó Prometheus text</li>
+            <li><code>GET /health</code> ù liveness</li>
+            <li><code>GET /ready</code> ù readiness (model / engine)</li>
+            <li><code>GET /metrics</code> ù Prometheus text</li>
         </ul>
         <p class="form-text mt-3 mb-0">Live dashboard metrics: SignalR hub <code>/hubs/dashboard</code> (method <code>metrics</code>).</p>
     </div>

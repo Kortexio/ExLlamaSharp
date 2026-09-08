@@ -34,7 +34,7 @@
             }
             <button class="btn btn-primary" @onclick="LoginAsync">Sign in</button>
         </div>
-        <p class="text-muted small mt-3 mb-0">Seed credentials: admin / changeme (salted SHA-256 via PasswordHasher; legacy hex still accepted).</p>
+        <p class="text-muted small mt-3 mb-0">Use the account created in Setup. There is no default production password.</p>
     </div>
 </div>
 
@@ -92,10 +92,11 @@
             Session.ApiKey = raw;
             try
             {
-                await Js.InvokeVoidAsync("exLlamaSharpAdmin.setApiKeyCookie", raw);
+                await Js.InvokeVoidAsync("exLlamaSharpAdmin.openSession", raw);
             }
             catch (JSException)
             {
+                try { await Js.InvokeVoidAsync("exLlamaSharpAdmin.setApiKeyCookie", raw); } catch (JSException) { }
             }
 
             Nav.NavigateTo("/", forceLoad: true);
