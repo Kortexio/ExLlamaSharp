@@ -13,7 +13,7 @@ public sealed class GpuInfoService
             {
                 FileName = "nvidia-smi",
                 Arguments =
-                    "--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits",
+                    "--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,uuid --format=csv,noheader,nounits",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -55,6 +55,7 @@ public sealed class GpuInfoService
                         MemoryUsedMb = ParseDouble(parts[3]),
                         MemoryTotalMb = ParseDouble(parts[4]),
                         TemperatureC = ParseDouble(parts[5]),
+                        Uuid = parts.Length > 6 ? parts[6] : "",
                         IsMock = false,
                     });
                 }
@@ -76,7 +77,50 @@ public sealed class GpuInfoService
     public async Task<GpuSnapshot?> GetPrimaryAsync(CancellationToken cancellationToken = default)
     {
         var gpus = await GetGpusAsync(cancellationToken).ConfigureAwait(false);
-        return gpus.FirstOrDefault();
+        return gpus
+            .OrderByDescending(g => g.MemoryTotalMb)
+            .ThenBy(g => g.Index)
+            .FirstOrDefault();
+    }
+
+    /// <summary>
+    /// GPUs in <paramref name="cudaVisibleDevices"/> (PCI indices), strongest-first.
+    /// Empty/null CVD means every nvidia-smi device.
+    /// </summary>
+    public static IReadOnlyList<GpuSnapshot> FilterVisible(
+        IReadOnlyList<GpuSnapshot> gpus,
+        string? cudaVisibleDevices)
+    {
+        if (gpus.Count == 0)
+        {
+            return gpus;
+        }
+
+        IEnumerable<GpuSnapshot> selected;
+        if (string.IsNullOrWhiteSpace(cudaVisibleDevices))
+        {
+            selected = gpus;
+        }
+        else
+        {
+            var ids = new HashSet<int>();
+            foreach (var part in cudaVisibleDevices.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (int.TryParse(part, out var id))
+                {
+                    ids.Add(id);
+                }
+            }
+
+            selected = ids.Count == 0
+                ? gpus
+                : gpus.Where(g => ids.Contains(g.Index));
+        }
+
+        return selected
+            .OrderByDescending(g => g.MemoryTotalMb)
+            .ThenBy(g => g.Index)
+            .ToList();
     }
 
     private static double ParseDouble(string value) =>
@@ -91,6 +135,7 @@ public sealed class GpuSnapshot
     public double MemoryUsedMb { get; init; }
     public double MemoryTotalMb { get; init; }
     public double TemperatureC { get; init; }
+    public string Uuid { get; init; } = "";
     public bool IsMock { get; init; }
 
     public double MemoryPct => MemoryTotalMb <= 0 ? 0 : MemoryUsedMb / MemoryTotalMb * 100;

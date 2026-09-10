@@ -16,18 +16,18 @@
 │  ├─ EF Core + SQLite (ProgramData)      │
 │  ├─ Auth (API keys), rate limit, audit  │
 │  └─ ExLlamaSharp C# library             │
-│       LibraryImport → exllamasharp.dll  │
+│       EXL3 Python worker (production)   │
 └─────────────────────────────────────────┘
-              │  C ABI / P/Invoke
+              │  JSONL stdin/stdout
 ┌─────────────────────────────────────────┐
-│  native/exllamasharp (C++ / optional CUDA)│
-│  ├─ Scheduler (continuous batching)     │
-│  ├─ PageTable (KV pages / prefix cache) │
-│  └─ Kernels / EXL3 path (non-stub)      │
+│  tools/exl3_worker + ExLlamaV3          │
+│  ├─ Model.load (tensor_p / autosplit)   │
+│  ├─ Cache / Generator / Tokenizer       │
+│  └─ CUDA kernels from the venv          │
 └─────────────────────────────────────────┘
 ```
 
-Optional later: `third_party/exllamav3` git submodule for upstream EXL3 kernels (see `third_party/README.md`).
+Production inference is the **EXL3 Python worker**, not `exllamasharp_native.dll` (that stub is disabled). Multi-GPU TP / layer autosplit goes through `model.load`.
 
 ## .NET 10 host
 
@@ -46,26 +46,28 @@ Performance knobs: Server GC, sustained low-latency mode at startup, in-memory k
 | Mode | CMake | Behavior |
 |------|-------|----------|
 | Stub | `-DEXL_STUB=ON` | No CUDA/LibTorch; deterministic fake generate; real scheduler ABI |
-| CUDA | `-DEXL_STUB=OFF` + LibTorch + toolkit | Full path toward EXL3 GEMM / multi-GPU |
+| CUDA | `-DEXL_STUB=OFF` + LibTorch + toolkit | Optional native experiment — **not** the production multi-GPU path |
 
 Build helper: `packaging/build-native-stub.ps1`. Details: `native/exllamasharp/README.md`.
 
-C ABI (`exllamasharp.h`) is the stability boundary — .NET uses source-generated `LibraryImport` (`NativeMethods`).
+The native DLL is **disabled** at runtime (`EngineHostService`). Multi-GPU TP / autosplit is ExLlamaV3 `model.load` in the Python worker.
+
+C ABI (`exllamasharp.h`) is the leftover native boundary — .NET still has `LibraryImport` (`NativeMethods`) but the Server does not load that DLL for inference.
 
 ## Request path (chat)
 
 1. Client → `POST /v1/chat/completions` with Bearer key.
 2. Middleware: auth + rate limit; optional moderation.
 3. Chat template formats messages → token ids.
-4. `EngineHostService` submits a job to `ExLlamaEngine` (native or mock).
-5. Native scheduler batches; tokens stream back as SSE chunks if requested.
+4. `EngineHostService` submits a job to `ExLlamaV3WorkerEngine` (or mock in Development).
+5. The Python worker iterates the ExLlamaV3 Generator; tokens stream back as SSE chunks if requested.
 6. Audit / webhooks / metrics updated asynchronously.
 
 ## Multi-GPU & advanced
 
 Server-side helpers prepare config for the engine:
 
-- `MultiGpuPlanner` — TP / PP / MP from `CudaVisibleDevices` + `ParallelismMode` (validated; worker receives `CUDA_VISIBLE_DEVICES`)
+- `MultiGpuPlanner` — validates `none` / `tensor` / `pipeline` + device list + optional `GpuSplitGb`; worker spawn remaps `CUDA_VISIBLE_DEVICES` strongest-first and `model.load` gets `tensor_p` / `use_per_device`
 - `SpeculativeDecodingOptions` — draft model + `DraftK` (forwarded to EXL3 worker)
 - `ArchitectureDetector` — llama / qwen / mixtral / llava from `config.json`
 - `QuantizationModes` — EXL3 convert via `exllamav3.conversion.convert_model`

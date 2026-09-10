@@ -1,4 +1,4 @@
-﻿# ExLlamaSharp Troubleshooting
+# ExLlamaSharp Troubleshooting
 
 Aligns with the UI page **Diagnostics** (`/diagnostics`) and `GET /health`.
 
@@ -69,6 +69,20 @@ Components reported by `HealthService`:
 - Ensure only intended devices in `CudaVisibleDevices`.
 - Close other GPU apps (browsers with HW accel, games).
 
+### Tensor parallel: Timed out waiting for worker
+
+**Symptom:** Load with `parallelism_mode=tensor` fails with `TimeoutError: Timed out waiting for worker` (ExLlamaV3 `model_tp.py`). nvidia-smi stays almost idle; leftover `python ... spawn_main` processes sit at ~8 MB.
+
+**Cause:** Tensor parallel starts extra Python processes. On Windows those children re-enter the worker script and never become TP workers when the host is the long-lived JSONL process. A console `python -c` load can succeed while the Admin/Server load fails. Pipeline mode does not spawn those children.
+
+**Fix:** Use **pipeline** (and a KV cache that fits) to load across both GPUs. For Qwen3-32B 4.0bpw on 12 GB + 8 GB use `GpuSplitGb=10.8,6.2` and keep **Max batched tokens** around 2048–4096 — 16384 plus the 32B weights does not fit. Recycle the worker after a failed load (Save on Settings, or restart the Server) so zombie `spawn_main` processes are gone.
+
+### VLM + multi-GPU: vision skipped
+
+**Symptom:** Models such as `Qwen3.8-27B-exl3` (`Qwen3_5ForConditionalGeneration` + `vision_config`) used to fail load under tensor/pipeline with `vision models are not supported…`.
+
+**Behaviour now:** The language model still loads across GPUs; the vision tower is skipped (`vision_capable=false`). Text chat works. Image/video inputs need **ParallelismMode=none** (and enough VRAM on one card), then reload.
+
 ### Slow tokens / queue buildup
 
 - Check `GET /metrics` (`jobs_waiting`, `tokens_per_second`).
@@ -83,9 +97,16 @@ Components reported by `HealthService`:
 
 ### Multi-GPU not used
 
-- Mode still `none`, or only one device in `CudaVisibleDevices`.
-- Stub/mock builds ignore real TP/PP — need CUDA native `exllamasharp.dll`.
-- Restart after Settings changes.
+- `ParallelismMode` still `none`, or only one index in `CudaVisibleDevices`.
+- `nvidia-smi` index is **not** `cuda:N` after remap — check worker log (`cuda:0` = highest VRAM).
+- Production path is the **EXL3 Python worker**, not `exllamasharp_native.dll` / mock.
+- After Settings save the worker should recycle automatically; if VRAM is still on one UUID only, reload the model and read `use_per_device` in the worker log.
+
+### OOM on the smaller GPU
+
+- Auto-split is `VRAM[i] × GpuMemoryUtilization`. A 6 GB card with util 0.9 only has ~5.4 GB for weights.
+- Display GPU keeps 1.5 GB (others 0.5 GB) folded into `use_per_device` — ExLlamaV3 does not accept use and reserve together. Lower util or set `GpuSplitGb` (remapped order, e.g. `10,4.5`).
+- Tensor / pipeline need ≥2 devices. Speculative, vision, and LoRA are rejected under those modes.
 
 ## Quick CLI checks
 

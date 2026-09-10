@@ -40,9 +40,25 @@ else
             @if (_info.Gpu.Available)
             {
                 <ul class="mb-0">
-                    <li>@_info.Gpu.Name</li>
-                    <li>VRAM: @(_info.Gpu.VramTotalMb?.ToString("0") ?? "?") MB</li>
-                    <li>Compute: @(_info.Gpu.ComputeCapability ?? "—")</li>
+                    @if (_info.Gpu.Devices.Count > 0)
+                    {
+                        @foreach (var g in _info.Gpu.Devices)
+                        {
+                            <li>
+                                PCI @g.Index
+                                @(g.CudaIndex is int cuda ? $" — cuda:{cuda}" : " — not in CUDA_VISIBLE_DEVICES")
+                                — @g.Name — @g.VramUsedMb.ToString("0") / @g.VramTotalMb.ToString("0") MB
+                                @(string.IsNullOrEmpty(g.Uuid) ? "" : $" — {g.Uuid}")
+                                @(g.DisplayActive == true ? " — display" : "")
+                            </li>
+                        }
+                    }
+                    else
+                    {
+                        <li>@_info.Gpu.Name</li>
+                        <li>VRAM: @(_info.Gpu.VramTotalMb?.ToString("0") ?? "?") MB</li>
+                    }
+                    <li>Primary (highest VRAM): @_info.Gpu.Name</li>
                 </ul>
             }
             else

@@ -51,7 +51,19 @@
             <div class="stat-label">GPU</div>
             <div class="stat-value">@_gpuPct.ToString("0")%</div>
             <div class="progress-thin mt-2"><span style="width:@_gpuPct.ToString("0")%"></span></div>
-            <div class="small text-muted mt-1">@_gpuName</div>
+            <div class="small text-muted mt-1">
+                @if (_gpus.Count == 0)
+                {
+                    @_gpuName
+                }
+                else
+                {
+                    @foreach (var g in _gpus)
+                    {
+                        <div>PCI @g.Index · @g.Name</div>
+                    }
+                }
+            </div>
         </div>
     </div>
 </div>
@@ -82,6 +94,15 @@
             <div class="card-body">
                 <div class="stat-label">VRAM</div>
                 <div class="stat-value" style="font-size:1.1rem">@_vramLabel</div>
+                @if (_gpus.Count > 1)
+                {
+                    <div class="small text-muted mt-1">
+                        @foreach (var g in _gpus)
+                        {
+                            <div>PCI @g.Index · @g.MemoryUsedMb.ToString("0")/@g.MemoryTotalMb.ToString("0") MB</div>
+                        }
+                    </div>
+                }
             </div>
         </div>
     </div>
@@ -127,6 +148,7 @@
     private string _modelLabel = "—";
     private double _gpuPct;
     private string _gpuName = "—";
+    private IReadOnlyList<GpuSnapshot> _gpus = [];
     private double _tps;
     private int _jobsWaiting;
     private int _jobsRunning;
@@ -347,12 +369,27 @@
             _requestsToday = 0;
         }
 
-        var gpu = await GpuInfo.GetPrimaryAsync();
-        if (gpu is not null)
+        try
         {
-            _gpuPct = gpu.UtilizationPct;
-            _gpuName = gpu.Name;
-            _vramLabel = $"{gpu.MemoryUsedMb:0}/{gpu.MemoryTotalMb:0} MB";
+            var all = await GpuInfo.GetGpusAsync();
+            string? cvd = null;
+            try { cvd = (await Settings.GetAsync()).CudaVisibleDevices; } catch { }
+            _gpus = GpuInfoService.FilterVisible(all, cvd);
+        }
+        catch
+        {
+            _gpus = [];
+        }
+
+        if (_gpus.Count > 0)
+        {
+            _gpuPct = _gpus.Max(g => g.UtilizationPct);
+            _gpuName = _gpus.Count == 1
+                ? _gpus[0].Name
+                : $"{_gpus.Count} GPUs";
+            var used = _gpus.Sum(g => g.MemoryUsedMb);
+            var total = _gpus.Sum(g => g.MemoryTotalMb);
+            _vramLabel = $"{used:0}/{total:0} MB";
         }
     }
 

@@ -1,4 +1,4 @@
-﻿# ExLlamaSharp
+# ExLlamaSharp
 
 **Local LLM server for Windows with NVIDIA GPUs.**
 
@@ -11,7 +11,7 @@ Inspired by:
 - **ExLlamaV3** — fast EXL3 inference on NVIDIA
 - **Open WebUI** — browser-based administration
 
-**Current release: 1.2.1** — product-final (4 bars at 100%): Core EXL3 OpenAI chat, Models/Jobs/Keys, Admin avançado (LoRA, speculative, multi-GPU honesty, webhooks, tenants), Agentic tools + vision multimodal chat. OpenAI **images/audio generation** remain **501** (separate media track). Setup.exe bundles the ExLlamaV3 CUDA `.pyd`, worker deps, Python installer and VC++. PyTorch CUDA is downloaded during install. Admin → Models shows a VRAM fit badge (Fits / Tight / Too large; estimate only).
+**Current release: 1.4.0-beta** — real Multi-GPU (pipeline / tensor), combined VRAM fit in Admin, CUDA device remap (strongest GPU first), and faster fail for oversized prompts (`prompt_too_long` instead of hanging to 408). Core EXL3 OpenAI chat, Models/Jobs/Keys, LoRA, speculative, webhooks, tenants, agentic tools. Vision models skip the vision tower under multi-GPU (text-only). OpenAI **images/audio generation** remain **501**. Setup.exe bundles the ExLlamaV3 CUDA `.pyd`, worker deps, Python installer and VC++.
 
 Default after install: **http://127.0.0.1:14563**
 
@@ -24,12 +24,12 @@ Default after install: **http://127.0.0.1:14563**
 
 ## Download (Windows x64)
 
-[**ExLlamaSharp-Setup-win-x64.exe**](https://github.com/vitorcastro78/ExLlamaSharp/releases/latest/download/ExLlamaSharp-Setup-win-x64.exe) — latest GitHub Release.
+[**ExLlamaSharp-Setup-win-x64.exe**](https://github.com/Kortexio/ExLlamaSharp/releases/latest/download/ExLlamaSharp-Setup-win-x64.exe) — latest GitHub Release.
 
 One-liner (downloads Setup and launches UAC):
 
 ```powershell
-irm https://raw.githubusercontent.com/vitorcastro78/ExLlamaSharp/main/packaging/install-web.ps1 | iex
+irm https://raw.githubusercontent.com/Kortexio/ExLlamaSharp/main/packaging/install-web.ps1 | iex
 ```
 
 Double-click the Setup.exe → allow UAC → PyTorch CUDA downloads into the venv, ExLlamaV3 extension installs from the package → open **http://127.0.0.1:14563**.
@@ -220,7 +220,7 @@ Persisted server settings:
 |-----|----------|
 | Network | Bind address, port, CORS, TLS cert path |
 | Performance | Max sequences, chunk size, batched tokens, GPU memory util, request timeout |
-| Multi-GPU | `CUDA_VISIBLE_DEVICES`, parallelism mode (validated; worker gets device list) |
+| Multi-GPU | PCI devices, `none` / `tensor` / `pipeline`, GPU memory util, optional `GpuSplitGb`. Save recycles the worker. |
 | Speculative | Enable + draft model + draft K (forwarded to worker) |
 | Startup | Load last model on startup, models path |
 | Hugging Face | Optional `hf_…` token (also reads `HF_TOKEN`) |
@@ -261,7 +261,7 @@ By design (not product gaps for the EXL3 text + vision chat product):
 - **OpenAI images / audio generation** — **501**; separate Media track
 - **Native DLL generate** — worker-only for production text; DLL remains CI / scheduler ABI
 - **MCP / hosted ReAct agent** — not embedded; use OpenAI `tools` / `tool_calls` with your own agent loop
-- **Multi-GPU TP/PP/MP** — not supported by the EXL3 worker; Settings reject those modes. Multi-GPU visibility via `CUDA_VISIBLE_DEVICES` only
+- **Multi-GPU model-parallel (MP)** — not supported. **Tensor** and **layer autosplit** (`pipeline`) are supported via the EXL3 worker on N NVIDIA GPUs (VRAM-proportional split, optional `GpuSplitGb`).
 
 A/B tests: create via `/api/v1/ab`, then send `X-Ab-Test-Id` (or `model: "ab:<guid>"`) on chat/completions. The server assigns A/B via consistent hash, may load the selected model when it differs from the one currently on the GPU, tags audit, and returns `X-Ab-Variant`.
 

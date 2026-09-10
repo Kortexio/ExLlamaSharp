@@ -1,18 +1,20 @@
-using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using ExLlamaSharp.Engine;
+using ExLlamaSharp.Engine.Worker;
 
 namespace ExLlamaSharp.Server.Services;
 
 public sealed class AboutService
 {
     private readonly EngineHostService _engineHost;
+    private readonly SettingsService _settings;
 
-    public AboutService(EngineHostService engineHost)
+    public AboutService(EngineHostService engineHost, SettingsService settings)
     {
         _engineHost = engineHost;
+        _settings = settings;
     }
 
     public AboutInfo GetAbout()
@@ -85,52 +87,45 @@ public sealed class AboutService
         return null;
     }
 
-    private static GpuInfo DetectGpu()
+    private GpuInfo DetectGpu()
     {
-        try
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = "nvidia-smi",
-                Arguments = "--query-gpu=name,memory.total,compute_cap --format=csv,noheader,nounits",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-
-            using var process = Process.Start(psi);
-            if (process is null)
-            {
-                return new GpuInfo { Available = false };
-            }
-
-            var output = process.StandardOutput.ReadToEnd();
-            process.WaitForExit(3000);
-            if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(output))
-            {
-                return new GpuInfo { Available = false };
-            }
-
-            var line = output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault();
-            if (line is null)
-            {
-                return new GpuInfo { Available = false };
-            }
-
-            var parts = line.Split(',', StringSplitOptions.TrimEntries);
-            return new GpuInfo
-            {
-                Available = true,
-                Name = parts.ElementAtOrDefault(0),
-                VramTotalMb = parts.Length > 1 && double.TryParse(parts[1], out var mb) ? mb : null,
-                ComputeCapability = parts.ElementAtOrDefault(2),
-            };
-        }
-        catch
+        var gpus = CudaDeviceEnvironment.QueryGpus();
+        if (gpus.Count == 0)
         {
             return new GpuInfo { Available = false };
         }
+
+        var remappedCsv = CudaDeviceEnvironment.Normalize(_settings.PeekOrDefault().CudaVisibleDevices, out _);
+        var remapped = string.IsNullOrWhiteSpace(remappedCsv)
+            ? []
+            : remappedCsv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(s => int.TryParse(s, out var id) ? id : -1)
+                .Where(id => id >= 0)
+                .ToList();
+        var cudaOf = remapped
+            .Select((pci, i) => (pci, i))
+            .ToDictionary(x => x.pci, x => x.i);
+        var strongest = gpus.OrderByDescending(g => g.MemoryTotalMiB).ThenBy(g => g.Index).First();
+        return new GpuInfo
+        {
+            Available = true,
+            Name = strongest.Name,
+            VramTotalMb = strongest.MemoryTotalMiB,
+            ComputeCapability = strongest.ComputeCapability > 0
+                ? strongest.ComputeCapability.ToString("0.0")
+                : null,
+            Devices = gpus.Select(g => new GpuDeviceInfo
+            {
+                Index = g.Index,
+                Name = g.Name,
+                VramTotalMb = g.MemoryTotalMiB,
+                VramUsedMb = g.MemoryUsedMiB,
+                Uuid = g.Uuid,
+                DisplayActive = g.DisplayActive,
+                CudaIndex = cudaOf.TryGetValue(g.Index, out var cuda) ? cuda : null,
+                InVisibleSet = cudaOf.ContainsKey(g.Index),
+            }).ToList(),
+        };
     }
 }
 
@@ -169,4 +164,17 @@ public sealed class GpuInfo
     public string? Name { get; init; }
     public double? VramTotalMb { get; init; }
     public string? ComputeCapability { get; init; }
+    public IReadOnlyList<GpuDeviceInfo> Devices { get; init; } = [];
+}
+
+public sealed class GpuDeviceInfo
+{
+    public int Index { get; init; }
+    public string Name { get; init; } = "";
+    public double VramTotalMb { get; init; }
+    public double VramUsedMb { get; init; }
+    public string Uuid { get; init; } = "";
+    public bool? DisplayActive { get; init; }
+    public int? CudaIndex { get; init; }
+    public bool InVisibleSet { get; init; }
 }

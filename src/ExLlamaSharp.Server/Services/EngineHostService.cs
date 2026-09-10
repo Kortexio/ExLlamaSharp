@@ -1,6 +1,7 @@
 using ExLlamaSharp.Engine;
 using ExLlamaSharp.Engine.Worker;
 using ExLlamaSharp.Server.Data;
+using ExLlamaSharp.Server.Data.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -430,6 +431,36 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
         await LoadAsync(rec.Path, rec.Id, cancellationToken).ConfigureAwait(false);
     }
 
+    public static bool GpuRuntimeSettingsChanged(AppSettings before, AppSettings after)
+    {
+        ArgumentNullException.ThrowIfNull(before);
+        ArgumentNullException.ThrowIfNull(after);
+        return !string.Equals(before.CudaVisibleDevices, after.CudaVisibleDevices, StringComparison.Ordinal)
+            || !string.Equals(before.ParallelismMode, after.ParallelismMode, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(before.GpuSplitGb ?? "", after.GpuSplitGb ?? "", StringComparison.Ordinal)
+            || Math.Abs(before.GpuMemoryUtilization - after.GpuMemoryUtilization) > 1e-9;
+    }
+
+    /// <summary>Kill the Python worker (CVD is process-env) and reload the current model if any.</summary>
+    public async Task RecycleWorkerForGpuSettingsAsync(CancellationToken cancellationToken = default)
+    {
+        var path = LoadedModelPath;
+        var id = LoadedModelId;
+        await UnloadAsync(cancellationToken).ConfigureAwait(false);
+        lock (_gate)
+        {
+            _engine?.Dispose();
+            _engine = null;
+        }
+
+        Interlocked.Exchange(ref _loadingFlag, 0);
+
+        if (!string.IsNullOrWhiteSpace(path) && !TryQueueLoad(path, id, out var reject))
+        {
+            _logger.LogWarning("GPU settings applied but reload was rejected: {Reason}", reject);
+        }
+    }
+
     public async Task UnloadAsync(CancellationToken cancellationToken = default)
     {
         await _loadLock.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -575,6 +606,8 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
             MaxBatchedTokens = Math.Max(256, s.MaxBatchedTokens),
             CudaVisibleDevices = cuda,
             ParallelismMode = s.ParallelismMode ?? "none",
+            GpuMemoryUtilization = s.GpuMemoryUtilization,
+            GpuSplitGb = s.GpuSplitGb,
             SpeculativeEnabled = s.SpeculativeEnabled,
             DraftModelPath = draftPath,
             DraftK = SpeculativeDecodingOptions.ClampDraftK(s.DraftK),

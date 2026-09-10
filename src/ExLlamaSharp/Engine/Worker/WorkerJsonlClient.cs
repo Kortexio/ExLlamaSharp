@@ -32,6 +32,7 @@ internal sealed class WorkerJsonlClient : IDisposable
     private Task? _pumpTask;
     private int _nextId = 1;
     private bool _disposed;
+    private string? _startedCudaVisible;
 
     public WorkerJsonlClient(ILogger logger, WorkerEngineOptions options)
     {
@@ -84,12 +85,25 @@ internal sealed class WorkerJsonlClient : IDisposable
     public async Task EnsureStartedAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        var desiredCuda = CudaDeviceEnvironment.Normalize(_options.CudaVisibleDevices, out _);
         lock (_gate)
         {
             if (_process is not null && !_process.HasExited)
             {
-                return;
+                if (string.Equals(_startedCudaVisible, desiredCuda, StringComparison.Ordinal))
+                {
+                    return;
+                }
             }
+        }
+
+        if (IsAlive)
+        {
+            _logger.LogInformation(
+                "Recycling EXL3 worker (CUDA_VISIBLE_DEVICES {Old} -> {New})",
+                _startedCudaVisible ?? "(none)",
+                desiredCuda ?? "(default)");
+            Stop();
         }
 
         var python = WorkerRuntimeLocator.ResolvePython(_options);
@@ -115,6 +129,7 @@ internal sealed class WorkerJsonlClient : IDisposable
         var cudaEnv = psi.Environment.TryGetValue("CUDA_VISIBLE_DEVICES", out var cudaVal) && !string.IsNullOrWhiteSpace(cudaVal)
             ? cudaVal
             : "(default)";
+        _startedCudaVisible = desiredCuda;
 
         _logger.LogInformation(
             "Starting EXL3 worker: {Python} {Script} (CUDA_VISIBLE_DEVICES={Cuda})",
@@ -211,6 +226,7 @@ internal sealed class WorkerJsonlClient : IDisposable
 
     public void Stop()
     {
+        _startedCudaVisible = null;
         try
         {
             _pumpCts?.Cancel();
@@ -369,6 +385,32 @@ internal sealed class WorkerJsonlClient : IDisposable
                 if (WorkerEvent.TryReadId(root, out var id) && _pending.TryRemove(id, out var tcs))
                 {
                     tcs.TrySetResult(root);
+                    continue;
+                }
+
+                // Submit jobs open a stream channel for the same id. Worker _ok/_err control
+                // replies are not wrapped in "events", so route failures onto the stream or the
+                // HTTP client waits until timeout (408) instead of seeing prompt_too_long / etc.
+                if (WorkerEvent.TryReadId(root, out id)
+                    && _streams.ContainsKey(id)
+                    && root.TryGetProperty("ok", out var okEl)
+                    && okEl.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                {
+                    if (!okEl.GetBoolean())
+                    {
+                        var parsed = WorkerEvent.FromJson(root);
+                        DispatchEvent(new WorkerEvent
+                        {
+                            Id = parsed.Id,
+                            Ok = false,
+                            Eos = true,
+                            EosReason = "error",
+                            Error = parsed.Error ?? "worker error",
+                            PromptTokens = parsed.PromptTokens,
+                            CompletionTokens = parsed.CompletionTokens,
+                        });
+                    }
+
                     continue;
                 }
 

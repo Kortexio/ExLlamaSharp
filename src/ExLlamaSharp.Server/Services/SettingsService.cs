@@ -96,6 +96,7 @@ public sealed class SettingsService
         ShowAdvancedMetrics = s.ShowAdvancedMetrics,
         CudaVisibleDevices = s.CudaVisibleDevices,
         ParallelismMode = s.ParallelismMode,
+        GpuSplitGb = s.GpuSplitGb,
         SpeculativeEnabled = s.SpeculativeEnabled,
         DraftModelId = s.DraftModelId,
         DraftK = s.DraftK,

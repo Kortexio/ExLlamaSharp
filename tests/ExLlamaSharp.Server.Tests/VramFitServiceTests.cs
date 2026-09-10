@@ -55,4 +55,33 @@ public class VramFitServiceTests
         Assert.Equal("Too large", result.Label);
         Assert.Contains("estimated", result.Detail, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public void Combined_visible_gpus_are_not_judged_by_the_display_card_alone()
+    {
+        var gpus = new[]
+        {
+            new GpuSnapshot { Index = 0, Name = "RTX 3050", MemoryTotalMb = 8192 },
+            new GpuSnapshot { Index = 1, Name = "RTX 3060", MemoryTotalMb = 12288 },
+        };
+        var onDisplayOnly = _fit.EvaluateGb(10, gpus[0], 0.90);
+        var onBoth = _fit.EvaluateGb(10, gpus, 0.90, "10.8,6.2");
+        Assert.Equal(VramFitKind.TooLarge, onDisplayOnly.Kind);
+        Assert.Equal(VramFitKind.Fits, onBoth.Kind);
+        Assert.Contains("visible GPUs", onBoth.Detail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void FilterVisible_keeps_requested_pci_indices_strongest_first()
+    {
+        var gpus = new[]
+        {
+            new GpuSnapshot { Index = 0, Name = "RTX 3050", MemoryTotalMb = 8192 },
+            new GpuSnapshot { Index = 1, Name = "RTX 3060", MemoryTotalMb = 12288 },
+        };
+        var visible = GpuInfoService.FilterVisible(gpus, "0,1");
+        Assert.Equal(2, visible.Count);
+        Assert.Equal(1, visible[0].Index);
+        Assert.Equal(0, visible[1].Index);
+    }
 }

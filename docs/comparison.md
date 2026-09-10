@@ -9,7 +9,7 @@ Positioning: **Ollama’s ease + strong local NVIDIA EXL3 serving + Windows admi
 | Web UI admin | Yes (Blazor) | No | No (API only) | Yes (desktop) |
 | OpenAI-compatible API | Yes (`/v1` + Ollama-style `options`) | Yes | Yes | Yes |
 | No Docker required | Yes | Yes* | Typically containers/Linux | Yes |
-| Multi-GPU TP / PP / MP | **No** (rejected in Settings); `CUDA_VISIBLE_DEVICES` only | Limited | Yes | Limited |
+| Multi-GPU TP / layer autosplit | **Yes** (ExLlamaV3 `tensor` / `pipeline`; N NVIDIA, split by VRAM). MP not supported | Limited | Yes | Limited |
 | Non-technical friendly | Yes (wizard + UI) | Yes | No | Yes |
 | Team / tenant management | Yes (optional MultiTenancy) | No | DIY | No |
 | API keys, quotas, audit | Yes | Basic | DIY / gateway | Basic |

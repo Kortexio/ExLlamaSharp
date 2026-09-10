@@ -227,6 +227,7 @@ public static class AdminEndpoints
         SettingsDto body,
         SettingsService settings,
         MultiGpuPlanner planner,
+        EngineHostService engine,
         CancellationToken ct)
     {
         try
@@ -243,6 +244,11 @@ public static class AdminEndpoints
             }
 
             MaybeRequestFirewall(before, updated);
+            if (EngineHostService.GpuRuntimeSettingsChanged(before, updated))
+            {
+                await engine.RecycleWorkerForGpuSettingsAsync(ct).ConfigureAwait(false);
+            }
+
             return Results.Json(ToSettingsDto(updated), JsonOptions);
         }
         catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
@@ -257,6 +263,7 @@ public static class AdminEndpoints
         SettingsDto body,
         SettingsService settings,
         MultiGpuPlanner planner,
+        EngineHostService engine,
         CancellationToken ct)
     {
         try
@@ -273,6 +280,11 @@ public static class AdminEndpoints
             }
 
             MaybeRequestFirewall(before, updated);
+            if (EngineHostService.GpuRuntimeSettingsChanged(before, updated))
+            {
+                await engine.RecycleWorkerForGpuSettingsAsync(ct).ConfigureAwait(false);
+            }
+
             return Results.Json(ToSettingsDto(updated), JsonOptions);
         }
         catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
@@ -932,17 +944,25 @@ public static class AdminEndpoints
             Engine = info.Engine.Name,
             IsMock = info.Engine.IsMock,
             Cuda = info.Gpu.ComputeCapability,
-            Gpus = info.Gpu.Available
-                ?
-                [
-                    new GpuInfoDto
-                    {
-                        Index = 0,
-                        Name = info.Gpu.Name ?? "unknown",
-                        VramTotalMb = info.Gpu.VramTotalMb is double mb ? (long)mb : null,
-                    },
-                ]
-                : [],
+            Gpus = info.Gpu.Devices.Count > 0
+                ? info.Gpu.Devices.Select(g => new GpuInfoDto
+                {
+                    Index = g.Index,
+                    Name = g.Name,
+                    VramTotalMb = (long)g.VramTotalMb,
+                    VramFreeMb = (long)Math.Max(0, g.VramTotalMb - g.VramUsedMb),
+                }).ToList()
+                : info.Gpu.Available
+                    ?
+                    [
+                        new GpuInfoDto
+                        {
+                            Index = 0,
+                            Name = info.Gpu.Name ?? "unknown",
+                            VramTotalMb = info.Gpu.VramTotalMb is double mb ? (long)mb : null,
+                        },
+                    ]
+                    : [],
         }, JsonOptions);
     }
 
@@ -1305,6 +1325,7 @@ public static class AdminEndpoints
         ShowAdvancedMetrics = s.ShowAdvancedMetrics,
         CudaVisibleDevices = s.CudaVisibleDevices,
         ParallelismMode = s.ParallelismMode,
+        GpuSplitGb = s.GpuSplitGb,
         SpeculativeEnabled = s.SpeculativeEnabled,
         DraftModelId = s.DraftModelId,
         DraftK = s.DraftK,
@@ -1337,6 +1358,7 @@ public static class AdminEndpoints
         if (body.ShowAdvancedMetrics is bool sam) s.ShowAdvancedMetrics = sam;
         if (body.CudaVisibleDevices is not null) s.CudaVisibleDevices = body.CudaVisibleDevices;
         if (body.ParallelismMode is not null) s.ParallelismMode = body.ParallelismMode;
+        if (body.GpuSplitGb is not null || replace) s.GpuSplitGb = body.GpuSplitGb;
         if (body.SpeculativeEnabled is bool se) s.SpeculativeEnabled = se;
         if (body.DraftModelId is not null || replace) s.DraftModelId = body.DraftModelId;
         if (body.DraftK is int dk) s.DraftK = dk;

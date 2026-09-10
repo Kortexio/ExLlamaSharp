@@ -1,4 +1,4 @@
-﻿using ExLlamaSharp.Server.Data.Entities;
+using ExLlamaSharp.Server.Data.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -77,6 +77,7 @@ public static class DbInitializer
             ("ShowAdvancedMetrics", "INTEGER", "0"),
             ("CudaVisibleDevices", "TEXT", "'0'"),
             ("ParallelismMode", "TEXT", "'none'"),
+            ("GpuSplitGb", "TEXT", "NULL"),
             ("TlsCertPath", "TEXT", "NULL"),
             ("LastLoadedModelId", "TEXT", "NULL"),
             ("AutoBackupSchedule", "TEXT", "'disabled'"),

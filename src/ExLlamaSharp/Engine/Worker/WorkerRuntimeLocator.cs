@@ -75,21 +75,36 @@ internal static class WorkerRuntimeLocator
         }
 
         var root = repoRoot ?? FindRepoRoot();
-        if (root is not null)
+        if (root is not null && TryPickWorkerScript(Path.Combine(root, "tools", "exl3_worker"), out script))
         {
-            var path = Path.Combine(root, "tools", "exl3_worker", "worker.py");
+            return true;
+        }
+
+        if (TryPickWorkerScript(Path.Combine(AppContext.BaseDirectory, "tools", "exl3_worker"), out script))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryPickWorkerScript(string directory, out string script)
+    {
+        script = "";
+        if (!Directory.Exists(directory))
+        {
+            return false;
+        }
+
+        // Prefer launch.py so Windows TP children do not re-import the JSONL server as __main__.
+        foreach (var name in new[] { "launch.py", "worker.py" })
+        {
+            var path = Path.Combine(directory, name);
             if (File.Exists(path))
             {
                 script = path;
                 return true;
             }
-        }
-
-        var beside = Path.Combine(AppContext.BaseDirectory, "tools", "exl3_worker", "worker.py");
-        if (File.Exists(beside))
-        {
-            script = beside;
-            return true;
         }
 
         return false;
@@ -131,6 +146,11 @@ internal static class WorkerRuntimeLocator
         psi.Environment["PYTHONUNBUFFERED"] = "1";
         psi.Environment["PYTHONIOENCODING"] = "utf-8";
         psi.Environment["EXL3_BC_DSA"] = "0";
+        // ExLlamaV3 default is 20s; Windows spawn+CUDA in TP children needs more.
+        if (!psi.Environment.ContainsKey("EXL3_TP_DISPATCH_TIMEOUT"))
+        {
+            psi.Environment["EXL3_TP_DISPATCH_TIMEOUT"] = "180";
+        }
         PrependNativeSearchPath(psi, python);
         TryAddDonorExtPath(psi, python);
     }

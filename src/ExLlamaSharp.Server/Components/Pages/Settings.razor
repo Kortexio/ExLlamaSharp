@@ -3,6 +3,9 @@
 @inject AppDbContext Db
 @inject IHttpClientFactory HttpClientFactory
 @inject NavigationManager Nav
+@inject MultiGpuPlanner Planner
+@inject EngineHostService EngineHost
+@inject GpuInfoService GpuInfo
 @using Microsoft.EntityFrameworkCore
 @using System.Text.Json
 
@@ -110,23 +113,51 @@ else
             {
                 <div class="form-grid">
                     <div>
-                        <label class="form-label">CUDA_VISIBLE_DEVICES</label>
-                        <input class="form-control" @bind="_s.CudaVisibleDevices" placeholder="0" />
+                        <label class="form-label">CUDA devices (PCI / nvidia-smi indices)</label>
+                        <input class="form-control" @bind="_s.CudaVisibleDevices" placeholder="0,1" />
                         <div class="form-text">
-                            GPU <strong>indices</strong> (e.g. <code>0</code> or <code>0,1</code>), not the GPU count.
-                            Empty = all GPUs. <code>1</code> on a single GPU hides the only device and Load fails.
+                            Which GPUs to use, e.g. <code>0</code> or <code>0,1</code>. Empty = all.
+                            The worker remaps so <code>cuda:0</code> is the highest-VRAM card in that set.
                         </div>
                     </div>
                     <div>
-                        <label class="form-label">Parallelism mode</label>
+                        <label class="form-label">Parallelism</label>
                         <select class="form-select" @bind="_s.ParallelismMode">
-                            <option value="none">none</option>
-                            <option value="tensor">tensor</option>
-                            <option value="pipeline">pipeline</option>
-                            <option value="model">model</option>
+                            <option value="none">none (single GPU — cuda:0)</option>
+                            <option value="tensor">tensor (ExLlamaV3 TP)</option>
+                            <option value="pipeline">pipeline (layer autosplit)</option>
                         </select>
+                        <div class="form-text">tensor and pipeline need at least two indices. Saving reloads the model.</div>
+                    </div>
+                    <div>
+                        <label class="form-label">GPU memory util</label>
+                        <input type="number" step="0.01" min="0.05" max="1" class="form-control" @bind="_s.GpuMemoryUtilization" />
+                        <div class="form-text">Fraction of each GPU's VRAM for auto-split (0–1). Used when split GB is empty.</div>
+                    </div>
+                    <div>
+                        <label class="form-label">GPU split GB (optional)</label>
+                        <input class="form-control" @bind="_s.GpuSplitGb" placeholder="auto" />
+                        <div class="form-text">
+                            After remap, one value per visible GPU (e.g. <code>10,10</code> or <code>10,4.5</code>).
+                            Empty = VRAM × GPU memory util.
+                        </div>
                     </div>
                 </div>
+                @if (_gpus.Count > 0)
+                {
+                    <div class="form-text mt-3">Detected (PCI order) and worker remap (<code>cuda:0</code> = highest VRAM in the set):</div>
+                    <ul class="small mb-0">
+                        @foreach (var row in GpuRemapPreview())
+                        {
+                            <li>
+                                PCI @row.Gpu.Index
+                                @(row.CudaIndex is int cuda ? $" → cuda:{cuda}" : " — excluded")
+                                — @row.Gpu.Name — @row.Gpu.MemoryUsedMb.ToString("0") / @row.Gpu.MemoryTotalMb.ToString("0") MB
+                                @(string.IsNullOrEmpty(row.Gpu.Uuid) ? "" : $" — {row.Gpu.Uuid}")
+                            </li>
+                        }
+                    </ul>
+                }
             }
             else if (Tab == "Speculative")
             {
@@ -337,6 +368,53 @@ else
     private string _rulePattern = "";
     private string _ruleAction = "block";
     private string _ruleCategory = "offensive";
+    private IReadOnlyList<GpuSnapshot> _gpus = [];
+    private string _savedCuda = "0";
+    private string _savedParallelism = "none";
+    private string _savedGpuSplit = "";
+    private double _savedGpuUtil = 0.90;
+
+    private IReadOnlyList<(int? CudaIndex, GpuSnapshot Gpu)> GpuRemapPreview()
+    {
+        if (_gpus.Count == 0)
+        {
+            return [];
+        }
+
+        var raw = _s?.CudaVisibleDevices;
+        List<int> requested;
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            requested = _gpus.Select(g => g.Index).ToList();
+        }
+        else
+        {
+            requested = [];
+            foreach (var part in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (int.TryParse(part, out var id) && id >= 0)
+                {
+                    requested.Add(id);
+                }
+            }
+        }
+
+        var byIndex = _gpus.ToDictionary(g => g.Index);
+        var remapped = requested
+            .Where(byIndex.ContainsKey)
+            .Distinct()
+            .OrderByDescending(id => byIndex[id].MemoryTotalMb)
+            .ThenBy(id => id)
+            .Select((id, i) => (CudaIndex: (int?)i, Gpu: byIndex[id]))
+            .ToList();
+        var seen = remapped.Select(r => r.Gpu.Index).ToHashSet();
+        foreach (var g in _gpus.Where(g => !seen.Contains(g.Index)))
+        {
+            remapped.Add((null, g));
+        }
+
+        return remapped;
+    }
 
     private sealed class ModerationRuleRow
     {
@@ -359,6 +437,11 @@ else
             _hostMode = ProductionRuntime.ReadHostMode();
             _savedHostMode = _hostMode;
             _draftModelSelect = _s.DraftModelId?.ToString() ?? "";
+            _savedCuda = _s.CudaVisibleDevices;
+            _savedParallelism = _s.ParallelismMode;
+            _savedGpuSplit = _s.GpuSplitGb ?? "";
+            _savedGpuUtil = _s.GpuMemoryUtilization;
+            try { _gpus = await GpuInfo.GetGpusAsync(); } catch { _gpus = []; }
             var tokenFile = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
                 "ExLlamaSharp", "hf-token.txt");
@@ -628,6 +711,11 @@ else
             }
 
             var snap = _s;
+            Planner.BuildPlan(snap);
+            var gpuChanged = !string.Equals(snap.CudaVisibleDevices, _savedCuda, StringComparison.Ordinal)
+                || !string.Equals(snap.ParallelismMode, _savedParallelism, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(snap.GpuSplitGb ?? "", _savedGpuSplit, StringComparison.Ordinal)
+                || Math.Abs(snap.GpuMemoryUtilization - _savedGpuUtil) > 1e-9;
             var portNeedsRestart = snap.Port != _savedPort;
             var bindNeedsRestart = !string.Equals(snap.BindAddress, _savedBind, StringComparison.OrdinalIgnoreCase);
             var wasLan = ProductionRuntime.IsLanBind(_savedBind);
@@ -654,6 +742,7 @@ else
                 dest.ShowAdvancedMetrics = snap.ShowAdvancedMetrics;
                 dest.CudaVisibleDevices = snap.CudaVisibleDevices;
                 dest.ParallelismMode = snap.ParallelismMode;
+                dest.GpuSplitGb = string.IsNullOrWhiteSpace(snap.GpuSplitGb) ? null : snap.GpuSplitGb.Trim();
                 dest.SpeculativeEnabled = snap.SpeculativeEnabled;
                 dest.DraftModelId = snap.DraftModelId;
                 dest.DraftK = snap.DraftK;
@@ -686,30 +775,50 @@ else
 
             _msg = "Saved.";
             _s = await SettingsSvc.GetAsync();
+            _savedCuda = _s.CudaVisibleDevices;
+            _savedParallelism = _s.ParallelismMode;
+            _savedGpuSplit = _s.GpuSplitGb ?? "";
+            _savedGpuUtil = _s.GpuMemoryUtilization;
             _savedPort = _s.Port;
             _savedBind = _s.BindAddress;
             _lanAccess = ProductionRuntime.IsLanBind(_s.BindAddress);
             _lanIps = ProductionRuntime.GetLanIpv4Addresses();
             _draftModelSelect = _s.DraftModelId?.ToString() ?? "";
+            string? gpuMsg = null;
+            if (gpuChanged)
+            {
+                await EngineHost.RecycleWorkerForGpuSettingsAsync();
+                gpuMsg = EngineHost.IsLoaded || EngineHost.IsLoading
+                    ? "GPU settings applied — reloading the model on the new device map."
+                    : "GPU settings applied (worker will use them on the next Load).";
+            }
+            string? restartMsg = null;
             if (portNeedsRestart || bindNeedsRestart || hostModeChanged)
             {
                 if (hostModeChanged)
                 {
-                    _msg = $"Saved. Host mode is now {_hostMode} — Restart the server (button below or Tray). Headless still needs a GPU service account from Setup.";
+                    restartMsg = $"Host mode is now {_hostMode} — Restart the server (button below or Tray). Headless still needs a GPU service account from Setup.";
                 }
                 else if (bindNeedsRestart && nowLan)
                 {
-                    _msg = "Saved. LAN access enabled — approve the Firewall UAC prompt if shown, then restart the server.";
+                    restartMsg = "LAN access enabled — approve the Firewall UAC prompt if shown, then restart the server.";
                 }
                 else if (bindNeedsRestart)
                 {
-                    _msg = "Saved. Bind address changed — restart the server to apply.";
+                    restartMsg = "Bind address changed — restart the server to apply.";
                 }
                 else
                 {
-                    _msg = $"Saved. Port is now {_s.Port} — restart the server to apply (button below or Tray).";
+                    restartMsg = $"Port is now {_s.Port} — restart the server to apply (button below or Tray).";
                 }
             }
+            _msg = (gpuMsg, restartMsg) switch
+            {
+                (not null, not null) => $"Saved. {gpuMsg} {restartMsg}",
+                (not null, null) => $"Saved. {gpuMsg}",
+                (null, not null) => $"Saved. {restartMsg}",
+                _ => "Saved.",
+            };
         }
         catch (Exception ex)
         {

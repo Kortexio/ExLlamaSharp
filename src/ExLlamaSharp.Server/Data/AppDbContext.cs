@@ -61,6 +61,7 @@ public sealed class AppDbContext : DbContext
             e.Property(x => x.AutoBackupSchedule).HasMaxLength(32).IsRequired();
             e.Property(x => x.CudaVisibleDevices).HasMaxLength(64).IsRequired();
             e.Property(x => x.ParallelismMode).HasMaxLength(32).IsRequired();
+            e.Property(x => x.GpuSplitGb).HasMaxLength(128);
             e.Property(x => x.ModelsPath).HasMaxLength(1024).IsRequired();
             e.Property(x => x.EstimatedCostPerMillionTokens).HasPrecision(18, 6);
         });

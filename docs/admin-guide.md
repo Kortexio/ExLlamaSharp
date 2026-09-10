@@ -1,4 +1,4 @@
-﻿# ExLlamaSharp Admin Guide
+# ExLlamaSharp Admin Guide
 
 Operational guide for administrators of the Windows service and Blazor UI.
 
@@ -44,11 +44,11 @@ Important fields:
 | Backup | `AutoBackupSchedule` (`disabled` / `daily` / `weekly`) |
 | Webhooks | `WebhookUrl`, `WebhookSecret` |
 | Features | content moderation, multi-tenancy, advanced metrics |
-| GPU | `CudaVisibleDevices` (e.g. `0` or `0,1`), `ParallelismMode` (`none` / `tensor` / `pipeline` / `model`) |
+| GPU | `CudaVisibleDevices` (PCI indices, e.g. `0,1`), `ParallelismMode` (`none` / `tensor` / `pipeline`), `GpuMemoryUtilization`, optional `GpuSplitGb` |
 | Speculative | `SpeculativeEnabled`, `DraftModelId`, `DraftK` |
 | Paths | `ModelsPath` |
 
-After changing GPU / parallelism / bind address, restart the Windows service so the process picks up the new host environment.
+Saving GPU / parallelism settings recycles the Python worker and reloads the model. Bind address / port still need a Server restart.
 
 ## Backup & restore
 
@@ -60,16 +60,26 @@ Backups do **not** include multi‑GB weight files — back up the `models\` fol
 
 ## Multi-GPU
 
-1. Confirm GPUs with `nvidia-smi` and **About** / Diagnostics.
-2. Set `CudaVisibleDevices` to the device indices to expose (e.g. `0,1`).
-3. Set `ParallelismMode`:
-   - `none` — single GPU
-   - `tensor` (TP) — split layers across GPUs (latency / large models)
-   - `pipeline` (PP) — pipeline stages across GPUs
-   - `model` (MP) — whole models on different devices (routing / multi-model)
-4. Restart service and load the model again.
+Works with any mix of NVIDIA GPUs (equal or different VRAM). No SKU is hardcoded.
 
-Server helpers: `MultiGpuPlanner` validates device lists and maps modes for the native engine config. NCCL / full TP-PP production paths depend on the native CUDA build (not stub).
+1. Confirm cards on **About** (PCI index, name, VRAM, UUID) or `nvidia-smi`.
+2. Set `CudaVisibleDevices` to the **PCI / nvidia-smi** indices to use (`0,1` or `0,2`, …). Empty = all.
+3. The worker process is started with `CUDA_DEVICE_ORDER=PCI_BUS_ID` and `CUDA_VISIBLE_DEVICES` **reordered** so `cuda:0` is the highest-VRAM GPU in that set.
+4. `ParallelismMode`:
+   - `none` — load on `cuda:0` only
+   - `tensor` — ExLlamaV3 tensor parallelism (`tensor_p=True`, backend `native`)
+   - `pipeline` — layer autosplit (`tensor_p=False` + `use_per_device`)
+   - `model` is **rejected** (not implemented)
+5. Split: auto `VRAM[i] × GpuMemoryUtilization`, or override `GpuSplitGb` in **remapped** order (e.g. `10,4.5` for a 12 GB + 6 GB pair). Count must match visible GPUs.
+6. Save Settings (or PATCH `/api/v1/settings`) — the worker is recycled and the loaded model is queued again.
+
+`tensor` / `pipeline` require at least two indices. OOM usually hits the smallest card first — lower util or set `GpuSplitGb` with more reserve on the display GPU.
+
+Examples (docs only — no SKU is hardcoded):
+
+- Two equal 12 GB cards: `CudaVisibleDevices=0,1`, `tensor`, empty `GpuSplitGb`, util `0.85` → about `10.2,10.2`.
+- 12 GB + 6 GB: same devices, or `GpuSplitGb=10,4.5` in **remapped** order (`cuda:0` is the 12 GB card even if `nvidia-smi` lists it as index 1).
+- Three cards: `0,1,2` and a 3-value split. Same code path.
 
 ## Webhooks
 

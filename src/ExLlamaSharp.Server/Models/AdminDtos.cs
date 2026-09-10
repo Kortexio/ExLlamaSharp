@@ -70,6 +70,9 @@ public sealed class SettingsDto
     [JsonPropertyName("parallelism_mode")]
     public string? ParallelismMode { get; set; }
 
+    [JsonPropertyName("gpu_split_gb")]
+    public string? GpuSplitGb { get; set; }
+
     [JsonPropertyName("speculative_enabled")]
     public bool? SpeculativeEnabled { get; set; }
 

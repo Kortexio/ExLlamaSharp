@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 ExLlamaSharp EXL3 Python worker â€” JSON-lines over stdin/stdout.
 
@@ -19,6 +19,7 @@ import json
 import os
 import queue
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -163,6 +164,7 @@ class WorkerState:
         self.draft_k: int = 5
         self.vision_model = None
         self.vision_capable: bool = False
+        self.parallelism_mode: str = "none"
 
     @property
     def loaded(self) -> bool:
@@ -204,6 +206,7 @@ def _unload() -> None:
             _log(f"vision unload: {ex}")
     STATE.vision_model = None
     STATE.vision_capable = False
+    STATE.parallelism_mode = "none"
     if STATE.model is not None:
         try:
             STATE.model.unload()
@@ -219,6 +222,65 @@ def _unload() -> None:
     STATE.draft_model_path = None
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+def _harden_tp_spawn() -> None:
+    """Windows JSONL worker + ExLlamaV3 TP children.
+
+    The library default DISPATCH_TIMEOUT is 20s. A spawned child must boot a
+    fresh Python, import torch/CUDA and answer the first VRAM probe. That often
+    exceeds 20s when stdin/stdout are redirected to the .NET host. Failed loads
+    also left TP children alive because STATE.model is only assigned after success.
+    """
+    import multiprocessing
+
+    multiprocessing.freeze_support()
+    try:
+        multiprocessing.set_start_method("spawn", force=True)
+    except RuntimeError:
+        pass
+
+    try:
+        multiprocessing.set_executable(sys.executable)
+    except Exception:
+        pass
+
+    # Route ExLlamaV3 TP logs to stderr so they do not corrupt JSONL stdout.
+    try:
+        from exllamav3.util import debug as _exl_debug
+
+        def _tp_log(device, t: str) -> None:
+            who = "main" if device is None else ("cpu" if device == -1 else f"cuda:{device}")
+            _log(f"tp {who}: {t}")
+
+        _exl_debug.log_tp = _tp_log
+    except Exception as ex:
+        _log(f"could not hook TP logs: {ex}")
+
+    raw = os.environ.get("EXL3_TP_DISPATCH_TIMEOUT", "180").strip()
+    try:
+        timeout = max(20, int(raw))
+    except ValueError:
+        timeout = 180
+    try:
+        from exllamav3.model import model_tp
+
+        old = int(getattr(model_tp, "DISPATCH_TIMEOUT", 20))
+        model_tp.DISPATCH_TIMEOUT = max(old, timeout)
+        _log(f"TP DISPATCH_TIMEOUT={model_tp.DISPATCH_TIMEOUT}s (library default was {old})")
+    except Exception as ex:
+        _log(f"could not raise TP dispatch timeout: {ex}")
+
+
+def _unload_failed_model(model: Any, what: str) -> None:
+    """Destroy TP children / CUDA shards after a failed load (not yet in STATE)."""
+    if model is None:
+        return
+    try:
+        model.unload()
+        _log(f"unloaded {what} after failed load")
+    except Exception as ex:
+        _log(f"unload {what} after failed load: {ex}")
 
 
 def _preload_torch_dlls() -> None:
@@ -240,15 +302,243 @@ def _preload_torch_dlls() -> None:
         _log(f"torch DLL preload skipped: {ex}")
 
 
+def _parse_gpu_split_gb(raw: Any, device_count: int) -> list[float] | None:
+    if raw is None or str(raw).strip() == "":
+        return None
+    parts = [p.strip() for p in str(raw).split(",") if p.strip()]
+    values: list[float] = []
+    for p in parts:
+        values.append(float(p))
+    if len(values) != device_count:
+        raise RuntimeError(
+            f"gpu_split_gb has {len(values)} value(s) but {device_count} visible CUDA device(s)"
+        )
+    return values
+
+
+def _smi_inventory() -> list[dict[str, Any]]:
+    try:
+        out = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,name,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            text=True,
+            timeout=4,
+        )
+    except Exception:
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 3 or not parts[0].isdigit():
+            continue
+        try:
+            rows.append(
+                {
+                    "index": int(parts[0]),
+                    "name": parts[1],
+                    "memory_mib": float(parts[2]),
+                }
+            )
+        except ValueError:
+            continue
+    return rows
+
+
+def _smi_uuid_by_pci() -> dict[int, str]:
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader"],
+            text=True,
+            timeout=4,
+        )
+    except Exception:
+        return {}
+    mapping: dict[int, str] = {}
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 2 and parts[0].isdigit():
+            mapping[int(parts[0])] = parts[1]
+    return mapping
+
+
+def _visible_pci_ids(device_count: int) -> list[int]:
+    vis = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    if vis.strip():
+        ids = [int(x) for x in vis.split(",") if x.strip().isdigit()]
+        return ids[:device_count]
+    return list(range(device_count))
+
+
+def _assert_env_cvd_strongest_first() -> None:
+    """Abort before torch if spawn CVD is not VRAM-desc (C# must remap)."""
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=index,memory.total", "--format=csv,noheader,nounits"],
+            text=True,
+            timeout=4,
+        )
+    except Exception as ex:
+        _log(f"CVD strongest-first precheck skipped: {ex}")
+        return
+    mem: dict[int, float] = {}
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 2 and parts[0].isdigit():
+            mem[int(parts[0])] = float(parts[1])
+    if len(mem) < 2:
+        return
+    vis = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    if not vis:
+        raise RuntimeError(
+            "cuda0_not_strongest: CUDA_VISIBLE_DEVICES is empty. "
+            "The server must spawn the worker with a strongest-first remap."
+        )
+    ids = [int(x) for x in vis.split(",") if x.strip().isdigit()]
+    if len(ids) < 2:
+        return
+    vis_mems = [mem.get(i, 0.0) for i in ids]
+    if any(vis_mems[0] < m for m in vis_mems[1:]):
+        raise RuntimeError(
+            "cuda0_not_strongest: CUDA_VISIBLE_DEVICES is not strongest-first "
+            f"(PCI order {ids}, VRAM MiB {vis_mems})."
+        )
+
+
+def _assert_cuda0_strongest() -> list[float]:
+    """VRAM list in CUDA index order. Prefer nvidia-smi so we do not create
+    a CUDA context on every device before tensor-parallel children spawn."""
+    import torch
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("torch.cuda.is_available() is false")
+    n = int(torch.cuda.device_count())
+    if n < 1:
+        raise RuntimeError("no CUDA devices visible")
+
+    uuids = _smi_uuid_by_pci()
+    pci_ids = _visible_pci_ids(n)
+    smi = _smi_inventory()
+    smi_by_pci = {int(g["index"]): g for g in smi}
+    mems: list[float] = []
+    for i in range(n):
+        pci = pci_ids[i] if i < len(pci_ids) else i
+        g = smi_by_pci.get(pci)
+        if g is not None:
+            name = str(g["name"])
+            mem = float(g["memory_mib"]) * (1024**2)
+        else:
+            mem = float(torch.cuda.get_device_properties(i).total_memory)
+            name = f"cuda:{i}"
+        mems.append(mem)
+        uuid = uuids.get(pci, "")
+        extra = f" uuid={uuid}" if uuid else ""
+        _log(f"cuda:{i} {name} vram={mem / (1024**3):.2f} GiB pci={pci}{extra}")
+    if any(mems[0] < m for m in mems[1:]):
+        raise RuntimeError(
+            "cuda0_not_strongest: cuda:0 is not the highest-VRAM GPU in the visible set. "
+            "The server must spawn the worker with CUDA_DEVICE_ORDER=PCI_BUS_ID and "
+            "CUDA_VISIBLE_DEVICES remapped strongest-first."
+        )
+    return mems
+
+
+def _reserve_per_device(device_count: int) -> list[float]:
+    """1.5 GiB on display GPUs (or all if unknown), 0.5 GiB otherwise."""
+    display_by_index: dict[int, bool] = {}
+    try:
+        import subprocess
+
+        out = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,display_active",
+                "--format=csv,noheader",
+            ],
+            text=True,
+            timeout=4,
+        )
+        vis = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+        pci_ids = [int(x) for x in vis.split(",") if x.strip().isdigit()] if vis.strip() else list(range(device_count))
+        flags: dict[int, bool] = {}
+        for line in out.splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 2:
+                continue
+            idx = int(parts[0])
+            flags[idx] = parts[1].lower().startswith("enabled")
+        for vis_i, pci in enumerate(pci_ids[:device_count]):
+            display_by_index[vis_i] = bool(flags.get(pci))
+    except Exception as ex:
+        _log(f"display_active probe skipped: {ex}")
+    if not display_by_index:
+        return [1.5] * device_count
+    return [1.5 if display_by_index.get(i) else 0.5 for i in range(device_count)]
+
+
+def _build_weight_load_kwargs(
+    mode: str,
+    gpu_split_gb: Any,
+    util: float,
+    max_chunk_size: int,
+) -> dict[str, Any]:
+    mode = (mode or "none").strip().lower()
+    mems = _assert_cuda0_strongest()
+    n = len(mems)
+    util = min(1.0, max(0.05, float(util)))
+    override = _parse_gpu_split_gb(gpu_split_gb, n)
+    reserve = _reserve_per_device(n)
+    # ExLlamaV3 forbids use_per_device and reserve_per_device together — fold reserve into use.
+    if override is not None:
+        use = override
+    else:
+        use = [
+            max(0.25, m / (1024**3) * util - r)
+            for m, r in zip(mems, reserve)
+        ]
+    _log(f"parallelism_mode={mode} use_per_device={use} reserve_folded={reserve} util={util}")
+
+    if mode in ("none", "single", ""):
+        return {"device": 0}
+    if mode in ("model", "mp"):
+        raise RuntimeError("parallelism_mode=model is not supported")
+    if n < 2:
+        raise RuntimeError(f"parallelism_mode={mode} requires at least 2 visible CUDA devices")
+    if mode in ("tensor", "tp"):
+        return {
+            "tensor_p": True,
+            "tp_backend": "native",
+            "tp_output_device": 0,
+            "use_per_device": use,
+            "max_chunk_size": int(max_chunk_size),
+        }
+    if mode in ("pipeline", "pipe", "pp"):
+        return {
+            "tensor_p": False,
+            "use_per_device": use,
+            "max_chunk_size": int(max_chunk_size),
+        }
+    raise RuntimeError(f"unknown parallelism_mode={mode}")
+
+
 def _load(
     path: str,
     max_num_tokens: int = 8192,
     max_batch_size: int = 256,
     max_chunk_size: int = 2048,
+    parallelism_mode: str = "none",
+    gpu_memory_utilization: float = 0.90,
+    gpu_split_gb: Any = None,
 ) -> None:
     _preload_torch_dlls()
     # Import here is safe only after warm-import in main(); keep for clarity.
     from exllamav3 import Config, Model, Cache, Tokenizer, Generator
+
+    mode_norm = (parallelism_mode or "none").strip().lower()
+    if mode_norm in ("tensor", "tp"):
+        _harden_tp_spawn()
 
     _unload()
     path = str(Path(path).resolve())
@@ -259,9 +549,14 @@ def _load(
     max_batch_size = max(1, int(max_batch_size))
     max_chunk_size = max(1, int(max_chunk_size))
 
+    multi_gpu = mode_norm in ("tensor", "tp", "pipeline", "pipe", "pp")
     speculative = bool(STATE.draft_model_path)
     draft_path = STATE.draft_model_path
     draft_k = max(1, int(STATE.draft_k or 5))
+    if multi_gpu and speculative:
+        raise RuntimeError(
+            "speculative decoding is not supported with tensor/pipeline parallelism"
+        )
 
     _log(
         f"Loading EXL3 model from {path} "
@@ -276,17 +571,33 @@ def _load(
         while not hb_stop.wait(1.5):
             _progress(STATE.load_phase or "weights", STATE.load_pct or 40, heartbeat=True)
 
-    hb = threading.Thread(target=_hb, daemon=True)
-    hb.start()
+    # Heartbeat writes JSONL on a side thread. On Windows that races multiprocessing
+    # spawn of TP children and they freeze in spawn_main (~8 MB, never import torch).
+    start_heartbeat = mode_norm not in ("tensor", "tp")
+    if start_heartbeat:
+        hb = threading.Thread(target=_hb, daemon=True)
+        hb.start()
+    else:
+        hb = None
+        _log("TP load: heartbeat disabled until weights are on the GPUs")
+    model = None
+    draft_model = None
     try:
         _progress("config", 10)
         config = Config.from_directory(path)
         _progress("model", 20)
         model = Model.from_config(config)
-        _progress("cache", 30)
+        _progress("cache", 25)
+        # Cache must exist before model.load so TP workers receive split cache layers.
         cache = Cache(model, max_num_tokens=max_num_tokens)
-        _progress("weights", 40)
-        _try_load_weights(model, phase="weights", base=40, span=40)
+        _progress("weights", 30)
+        load_kw = _build_weight_load_kwargs(
+            parallelism_mode, gpu_split_gb, gpu_memory_utilization, max_chunk_size
+        )
+        _try_load_weights(model, phase="weights", base=30, span=45, load_kwargs=load_kw)
+        if hb is None:
+            hb = threading.Thread(target=_hb, daemon=True)
+            hb.start()
         _progress("tokenizer", 85)
         tokenizer = Tokenizer.from_config(config)
 
@@ -301,7 +612,7 @@ def _load(
             draft_config = Config.from_directory(draft_path)
             draft_model = Model.from_config(draft_config)
             draft_cache = Cache(draft_model, max_num_tokens=max_num_tokens)
-            _try_load_weights(draft_model, phase="draft", base=86, span=4)
+            _try_load_weights(draft_model, phase="draft", base=86, span=4, load_kwargs={"device": 0})
 
         gen_kwargs = dict(
             model=model,
@@ -340,13 +651,27 @@ def _load(
         try:
             _progress("vision", 90)
             vision_model = Model.from_config(config, component="vision")
-            _try_load_weights(vision_model, phase="vision", base=90, span=8)
-            vision_capable = True
-            _log("Vision component loaded (multimodal capable)")
         except Exception as ex:
             vision_model = None
             vision_capable = False
             _log(f"No vision component (text-only): {ex}")
+        else:
+            if multi_gpu:
+                # Text tower can still use tensor/pipeline; vision shards are not TP-safe here.
+                try:
+                    vision_model.unload()
+                except Exception:
+                    pass
+                vision_model = None
+                vision_capable = False
+                _log(
+                    "Skipping vision tower under tensor/pipeline parallelism "
+                    "(text chat works; multimodal needs ParallelismMode=none)."
+                )
+            else:
+                _try_load_weights(vision_model, phase="vision", base=90, span=8)
+                vision_capable = True
+                _log("Vision component loaded (multimodal capable)")
 
         STATE.config = config
         STATE.model = model
@@ -355,6 +680,7 @@ def _load(
         STATE.generator = generator
         STATE.vision_model = vision_model
         STATE.vision_capable = vision_capable
+        STATE.parallelism_mode = mode_norm
         STATE.model_path = path
         STATE.max_num_tokens = max_num_tokens
         STATE.max_batch_size = max_batch_size
@@ -363,6 +689,10 @@ def _load(
         _progress("ready", 100)
         _log(f"Loaded in {time.perf_counter() - t0:.2f}s vision_capable={vision_capable}")
         _warmup_generator()
+    except Exception:
+        _unload_failed_model(draft_model, "draft")
+        _unload_failed_model(model, "model")
+        raise
     finally:
         hb_stop.set()
 
@@ -397,8 +727,15 @@ def _warmup_generator() -> None:
             pass
 
 
-def _try_load_weights(model: Any, phase: str, base: int, span: int) -> None:
+def _try_load_weights(
+    model: Any,
+    phase: str,
+    base: int,
+    span: int,
+    load_kwargs: dict[str, Any] | None = None,
+) -> None:
     """Load tensors; use a progress callback when ExLlamaV3 exposes one."""
+    extra = dict(load_kwargs or {})
 
     def cb(*args: Any) -> None:
         pct = base
@@ -408,13 +745,12 @@ def _try_load_weights(model: Any, phase: str, base: int, span: int) -> None:
             pct = base + int(span * float(args[0]))
         _progress(phase, min(base + span, pct))
 
-    for kwargs in ({"callback": cb}, {"progress": cb}, {"progress_fn": cb}):
-        try:
-            model.load(**kwargs)
-            return
-        except TypeError:
-            continue
-    model.load()
+    try:
+        model.load(callback=cb, **extra)
+        return
+    except TypeError:
+        pass
+    model.load(**extra)
 
 
 _MAX_IMAGE_BYTES = 16 * 1024 * 1024
@@ -1013,13 +1349,20 @@ def handle(msg: dict[str, Any]) -> None:
             max_tok = int(msg.get("max_num_tokens") or msg.get("max_tokens") or 8192)
             max_batch = int(msg.get("max_batch_size") or msg.get("max_num_seqs") or 256)
             max_chunk = int(msg.get("max_chunk_size") or 2048)
-            devices = msg.get("cuda_visible_devices")
-            if devices:
-                os.environ["CUDA_VISIBLE_DEVICES"] = str(devices)
-                _log(f"CUDA_VISIBLE_DEVICES={devices}")
+            env_cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+            _log(
+                f"CUDA_VISIBLE_DEVICES={env_cvd!r} CUDA_DEVICE_ORDER={os.environ.get('CUDA_DEVICE_ORDER')!r} "
+                f"(load payload cuda_visible_devices={msg.get('cuda_visible_devices')!r} — env from spawn wins)"
+            )
             mode = (msg.get("parallelism_mode") or "none").lower()
-            if mode not in ("none", "single", "") and "," not in str(devices or ""):
-                _log(f"parallelism_mode={mode} requested but only one device visible; continuing single-GPU")
+            util = float(msg.get("gpu_memory_utilization") or 0.90)
+            split = msg.get("gpu_split_gb")
+            if mode in ("tensor", "tp", "pipeline", "pipe", "pp") and msg.get("speculative_enabled"):
+                _err(
+                    "speculative decoding is not supported with tensor/pipeline parallelism",
+                    req_id,
+                )
+                return
             if msg.get("speculative_enabled"):
                 draft = msg.get("draft_model_path")
                 draft_k = int(msg.get("draft_k") or 5)
@@ -1032,7 +1375,15 @@ def handle(msg: dict[str, Any]) -> None:
             else:
                 STATE.draft_model_path = None
                 STATE.draft_k = 5
-            _load(path, max_tok, max_batch, max_chunk)
+            _load(
+                path,
+                max_tok,
+                max_batch,
+                max_chunk,
+                parallelism_mode=mode,
+                gpu_memory_utilization=util,
+                gpu_split_gb=split,
+            )
             _ok(
                 req_id,
                 loaded=True,
@@ -1053,6 +1404,12 @@ def handle(msg: dict[str, Any]) -> None:
         if cmd == "load_adapter":
             if not STATE.loaded or STATE.model is None:
                 _err("No model loaded", req_id)
+                return
+            if STATE.parallelism_mode in ("tensor", "tp", "pipeline", "pipe", "pp"):
+                _err(
+                    "LoRA adapters are not supported with tensor/pipeline parallelism",
+                    req_id,
+                )
                 return
             path = msg.get("path")
             if not path:
@@ -1171,6 +1528,23 @@ def handle(msg: dict[str, Any]) -> None:
                     _enqueue(req_id, str(prompt), msg)
                 except Exception as ex:
                     err_type = "vision_not_supported" if "vision_not_supported" in str(ex) else type(ex).__name__
+                    _log(f"submit failed id={req_id} type={err_type}: {ex}")
+                    # Also emit a stream event so .NET OpenStream clients fail fast (not 408).
+                    _reply(
+                        {
+                            "events": [
+                                {
+                                    "id": req_id,
+                                    "ok": False,
+                                    "eos": True,
+                                    "eos_reason": "error",
+                                    "error": str(ex),
+                                    "type": err_type,
+                                }
+                            ],
+                            "stats": _stats(),
+                        }
+                    )
                     _err(str(ex), req_id, type=err_type)
                     return
                 _ok(req_id, accepted=True, streaming=True)
@@ -1274,6 +1648,7 @@ def main() -> None:
     # On Windows, first-time torch import while another thread is blocked on
     # stdin/pipe I/O can deadlock and leave Admin UI stuck on "Loading…".
     try:
+        _assert_env_cvd_strongest_first()
         _preload_torch_dlls()
         import torch  # noqa: F401
         from exllamav3 import Config, Model, Cache, Tokenizer, Generator  # noqa: F401
@@ -1302,4 +1677,13 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import multiprocessing
+
+    multiprocessing.freeze_support()
+    # Windows spawn re-runs this file as __main__ inside the TP child.
+    inheriting = bool(getattr(multiprocessing.current_process(), "_inheriting", False))
+    spawn_argv = any("spawn_main" in a for a in sys.argv)
+    if inheriting or spawn_argv:
+        _log(f"prepare-only TP child inheriting={inheriting} argv0={sys.argv[:2]!r}")
+    else:
+        main()

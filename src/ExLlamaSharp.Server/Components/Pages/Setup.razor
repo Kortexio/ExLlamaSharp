@@ -37,12 +37,25 @@
             else
             {
                 <div class="alert-soft mb-3">
-                    <div><strong>@_gpu.Name</strong> @(_gpu.IsMock ? "(mock)" : "")</div>
-                    <div class="text-muted small">
-                        Util @_gpu.UtilizationPct.ToString("0")% ?
-                        VRAM @_gpu.MemoryUsedMb.ToString("0") / @_gpu.MemoryTotalMb.ToString("0") MB ?
-                        @_gpu.TemperatureC.ToString("0")?C
-                    </div>
+                    @if (_gpus.Count > 0)
+                    {
+                        @foreach (var g in _gpus)
+                        {
+                            <div><strong>PCI @g.Index · @g.Name</strong> @(g.IsMock ? "(mock)" : "")</div>
+                            <div class="text-muted small mb-1">
+                                Util @g.UtilizationPct.ToString("0")% ·
+                                VRAM @g.MemoryUsedMb.ToString("0") / @g.MemoryTotalMb.ToString("0") MB
+                            </div>
+                        }
+                    }
+                    else
+                    {
+                        <div><strong>@_gpu.Name</strong> @(_gpu.IsMock ? "(mock)" : "")</div>
+                        <div class="text-muted small">
+                            Util @_gpu.UtilizationPct.ToString("0")% ·
+                            VRAM @_gpu.MemoryUsedMb.ToString("0") / @_gpu.MemoryTotalMb.ToString("0") MB
+                        </div>
+                    }
                 </div>
             }
             <button class="btn btn-primary" @onclick="Next">Continue</button>
@@ -144,6 +157,7 @@
 @code {
     private int Step = 1;
     private GpuSnapshot? _gpu;
+    private IReadOnlyList<GpuSnapshot> _gpus = [];
     private string _adminUser = "admin";
     private string _adminPass = "";
     private string _modelsPath = "";
@@ -164,7 +178,17 @@
         }
 
         Step = Math.Clamp(Onboarding.SetupStep is 0 ? 1 : Onboarding.SetupStep, 1, 5);
-        _gpu = await GpuInfo.GetPrimaryAsync();
+        try
+        {
+            _gpus = await GpuInfo.GetGpusAsync();
+            _gpu = GpuInfoService.FilterVisible(_gpus, null).FirstOrDefault()
+                ?? _gpus.FirstOrDefault();
+        }
+        catch
+        {
+            _gpus = [];
+            _gpu = null;
+        }
         try
         {
             var s = await Settings.GetAsync();

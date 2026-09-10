@@ -32,6 +32,13 @@ public sealed class VramFitService
     public const double FitsUsableFraction = 0.85;
 
     public VramFitResult Evaluate(long? weightBytes, GpuSnapshot? gpu, double gpuUtilization = DefaultGpuUtilization)
+        => Evaluate(weightBytes, gpu is null ? null : new[] { gpu }, gpuUtilization);
+
+    public VramFitResult Evaluate(
+        long? weightBytes,
+        IReadOnlyList<GpuSnapshot>? gpus,
+        double gpuUtilization = DefaultGpuUtilization,
+        string? gpuSplitGb = null)
     {
         if (weightBytes is null)
         {
@@ -48,12 +55,19 @@ public sealed class VramFitService
         }
 
         var weightGb = weightBytes.Value / (1024d * 1024d * 1024d);
-        return EvaluateGb(weightGb, gpu, gpuUtilization);
+        return EvaluateGb(weightGb, gpus, gpuUtilization, gpuSplitGb);
     }
 
     public VramFitResult EvaluateGb(double weightGb, GpuSnapshot? gpu, double gpuUtilization = DefaultGpuUtilization)
+        => EvaluateGb(weightGb, gpu is null ? null : new[] { gpu }, gpuUtilization);
+
+    public VramFitResult EvaluateGb(
+        double weightGb,
+        IReadOnlyList<GpuSnapshot>? gpus,
+        double gpuUtilization = DefaultGpuUtilization,
+        string? gpuSplitGb = null)
     {
-        if (!TryUsableGb(gpu, gpuUtilization, out var totalGb, out var usableGb))
+        if (!TryUsableGb(gpus, gpuUtilization, gpuSplitGb, out var totalGb, out var usableGb))
         {
             return UnknownGpu();
         }
@@ -78,38 +92,101 @@ public sealed class VramFitService
             _ => ("Too large", "badge-err"),
         };
 
+        var multi = (gpus?.Count ?? 0) > 1;
         var detail = kind == VramFitKind.TooLarge
-            ? $"~{Gb(requiredGb)} GB estimated to load; this GPU has {Gb(usableGb)} GB usable ({Gb(totalGb)} GB × {gpuUtilization:P0}). Estimate only — not a guarantee."
-            : $"~{Gb(requiredGb)} GB estimated of {Gb(usableGb)} GB usable ({Gb(totalGb)} GB × {gpuUtilization:P0}). Estimate only — not a guarantee.";
+            ? $"~{Gb(requiredGb)} GB estimated to load; {(multi ? "visible GPUs have" : "this GPU has")} {Gb(usableGb)} GB usable ({Gb(totalGb)} GB × {gpuUtilization:P0}). Estimate only — not a guarantee."
+            : $"~{Gb(requiredGb)} GB estimated of {Gb(usableGb)} GB usable on {(multi ? "visible GPUs" : "this GPU")} ({Gb(totalGb)} GB × {gpuUtilization:P0}). Estimate only — not a guarantee.";
 
         return new VramFitResult(kind, label, detail, badge);
     }
 
     public static string FormatGpuCaption(GpuSnapshot? gpu, double gpuUtilization = DefaultGpuUtilization)
+        => FormatGpuCaption(gpu is null ? null : new[] { gpu }, gpuUtilization);
+
+    public static string FormatGpuCaption(
+        IReadOnlyList<GpuSnapshot>? gpus,
+        double gpuUtilization = DefaultGpuUtilization,
+        string? cudaVisibleDevices = null,
+        string? gpuSplitGb = null)
     {
-        if (gpu is null || gpu.IsMock || gpu.MemoryTotalMb < 256)
+        if (gpus is null || gpus.Count == 0 || gpus.All(g => g.IsMock || g.MemoryTotalMb < 256))
         {
             return "GPU VRAM could not be read (nvidia-smi unavailable). Fit stays Unknown until a real GPU is detected. Models are not filtered or auto-selected.";
         }
 
-        var totalGb = gpu.MemoryTotalMb / 1024d;
+        var real = gpus.Where(g => !g.IsMock && g.MemoryTotalMb >= 256).ToList();
+        TryUsableGb(real, gpuUtilization, gpuSplitGb, out var totalGb, out var usableGb);
         var util = ClampUtilization(gpuUtilization);
-        var usableGb = totalGb * util;
-        return $"This GPU: {gpu.Name} · {Gb(totalGb)} GB total ({Gb(usableGb)} GB usable at {util:P0}). Fit is an estimate from weights + runtime + KV cache against total VRAM — it does not pick a model for you.";
+        var names = string.Join(" + ", real.Select(g => $"{g.Name} {Gb(g.MemoryTotalMb / 1024d)} GB"));
+        var cvd = string.IsNullOrWhiteSpace(cudaVisibleDevices) ? "all" : cudaVisibleDevices.Trim();
+        if (real.Count == 1)
+        {
+            return $"This GPU: {real[0].Name} · {Gb(totalGb)} GB total ({Gb(usableGb)} GB usable at {util:P0}). Fit is an estimate from weights + runtime + KV cache against total VRAM — it does not pick a model for you.";
+        }
+
+        return $"{real.Count} GPUs (CUDA_VISIBLE_DEVICES={cvd}): {names} · {Gb(totalGb)} GB combined ({Gb(usableGb)} GB usable at {util:P0}). Fit uses the visible set, not only the display GPU.";
     }
 
-    private static bool TryUsableGb(GpuSnapshot? gpu, double gpuUtilization, out double totalGb, out double usableGb)
+    private static bool TryUsableGb(
+        IReadOnlyList<GpuSnapshot>? gpus,
+        double gpuUtilization,
+        string? gpuSplitGb,
+        out double totalGb,
+        out double usableGb)
     {
         totalGb = 0;
         usableGb = 0;
-        if (gpu is null || gpu.IsMock || gpu.MemoryTotalMb < 256)
+        if (gpus is null || gpus.Count == 0)
         {
             return false;
         }
 
-        totalGb = gpu.MemoryTotalMb / 1024d;
-        usableGb = totalGb * ClampUtilization(gpuUtilization);
+        var real = gpus.Where(g => !g.IsMock && g.MemoryTotalMb >= 256).ToList();
+        if (real.Count == 0)
+        {
+            return false;
+        }
+
+        totalGb = real.Sum(g => g.MemoryTotalMb) / 1024d;
+        var util = ClampUtilization(gpuUtilization);
+        if (TryParseSplitGb(gpuSplitGb, real.Count, out var split))
+        {
+            usableGb = split.Sum();
+        }
+        else
+        {
+            usableGb = totalGb * util;
+        }
+
         return usableGb > 0;
+    }
+
+    private static bool TryParseSplitGb(string? raw, int deviceCount, out double[] values)
+    {
+        values = [];
+        if (string.IsNullOrWhiteSpace(raw) || deviceCount < 1)
+        {
+            return false;
+        }
+
+        var parts = raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length != deviceCount)
+        {
+            return false;
+        }
+
+        values = new double[parts.Length];
+        for (var i = 0; i < parts.Length; i++)
+        {
+            if (!double.TryParse(parts[i], NumberStyles.Float, CultureInfo.InvariantCulture, out var v) || v <= 0)
+            {
+                return false;
+            }
+
+            values[i] = v;
+        }
+
+        return true;
     }
 
     private static double ClampUtilization(double gpuUtilization)

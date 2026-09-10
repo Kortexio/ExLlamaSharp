@@ -1,4 +1,4 @@
-﻿namespace ExLlamaSharp.Server.Data.Entities;
+namespace ExLlamaSharp.Server.Data.Entities;
 
 /// <summary>Single-row application settings (Id always 1).</summary>
 public sealed class AppSettings
@@ -32,8 +32,10 @@ public sealed class AppSettings
     public bool ShowAdvancedMetrics { get; set; }
 
     public string CudaVisibleDevices { get; set; } = "0";
-    /// <summary>none | tensor | pipeline | model</summary>
+    /// <summary>none | tensor | pipeline</summary>
     public string ParallelismMode { get; set; } = "none";
+    /// <summary>Optional GB per visible GPU after remap (CSV). Empty = auto from VRAM × util.</summary>
+    public string? GpuSplitGb { get; set; }
 
     public bool SpeculativeEnabled { get; set; }
     public Guid? DraftModelId { get; set; }

@@ -23,11 +23,17 @@ public sealed class WorkerEngineOptions
     /// <summary>Override Python executable.</summary>
     public string? PythonPath { get; init; }
 
-    /// <summary>Comma-separated CUDA device ids (sets CUDA_VISIBLE_DEVICES for the worker).</summary>
+    /// <summary>Comma-separated CUDA device ids (PCI / nvidia-smi). Remapped strongest-first at spawn.</summary>
     public string? CudaVisibleDevices { get; init; }
 
-    /// <summary>Parallelism mode label for logging / worker hints (none|tp|pp|mp).</summary>
+    /// <summary>none | tensor | pipeline</summary>
     public string ParallelismMode { get; init; } = "none";
+
+    /// <summary>Fraction of each GPU's VRAM for auto split (0, 1].</summary>
+    public double GpuMemoryUtilization { get; init; } = 0.90;
+
+    /// <summary>Optional GB per remapped visible GPU (CSV). Empty = auto.</summary>
+    public string? GpuSplitGb { get; init; }
 
     public bool SpeculativeEnabled { get; init; }
     public string? DraftModelPath { get; init; }

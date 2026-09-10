@@ -65,7 +65,7 @@
                     }
                     @foreach (var m in _hfHits)
                     {
-                        var fit = VramFit.Evaluate(m.SizeBytes, _gpu, _gpuUtil);
+                        var fit = VramFit.Evaluate(m.SizeBytes, _gpus, _gpuUtil, _gpuSplitGb);
                         <tr>
                             <td>@m.DisplayName</td>
                             <td><code>@m.RepoId</code></td>
@@ -116,7 +116,7 @@ else if (Tab == "mine")
                     }
                     @foreach (var m in _mine)
                     {
-                        var fit = VramFit.EvaluateGb(m.SizeGb, _gpu, _gpuUtil);
+                        var fit = VramFit.EvaluateGb(m.SizeGb, _gpus, _gpuUtil, _gpuSplitGb);
                         var isLoaded = IsLoadedModel(m);
                         var isLoading = _loadingId == m.Id;
                         var folderName = Path.GetFileName(m.Path.TrimEnd(Path.DirectorySeparatorChar));
@@ -269,8 +269,10 @@ else
     private string _quantizeModelId = "";
     private string _quantizePath = "";
     private double _quantizeBits = 4.0;
-    private GpuSnapshot? _gpu;
+    private IReadOnlyList<GpuSnapshot> _gpus = [];
     private double _gpuUtil = VramFitService.DefaultGpuUtilization;
+    private string? _gpuSplitGb;
+    private string? _cudaVisible;
     private string _gpuCaption = "Reading GPU VRAM…";
 
     protected override async Task OnInitializedAsync()
@@ -337,10 +339,14 @@ else
 
     private async Task LoadGpuAsync()
     {
+        _gpuSplitGb = null;
+        _cudaVisible = null;
         try
         {
             var settings = await Settings.GetAsync();
             _gpuUtil = settings.GpuMemoryUtilization;
+            _gpuSplitGb = settings.GpuSplitGb;
+            _cudaVisible = settings.CudaVisibleDevices;
         }
         catch
         {
@@ -349,14 +355,15 @@ else
 
         try
         {
-            _gpu = await GpuInfo.GetPrimaryAsync();
+            var all = await GpuInfo.GetGpusAsync();
+            _gpus = GpuInfoService.FilterVisible(all, _cudaVisible);
         }
         catch
         {
-            _gpu = null;
+            _gpus = [];
         }
 
-        _gpuCaption = VramFitService.FormatGpuCaption(_gpu, _gpuUtil);
+        _gpuCaption = VramFitService.FormatGpuCaption(_gpus, _gpuUtil, _cudaVisible, _gpuSplitGb);
     }
 
     private async Task OnSearchKey(KeyboardEventArgs e)
