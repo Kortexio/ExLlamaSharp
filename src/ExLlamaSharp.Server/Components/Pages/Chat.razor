@@ -12,18 +12,12 @@
 
 <PageTitle>Chat — ExLlamaSharp</PageTitle>
 
-<div class="page-header">
-    <h1>Chat playground</h1>
-    <p>
-        OpenAI <code>/v1/chat/completions</code> with Ollama-style <code>options</code>
-        (<code>num_predict</code>, <code>num_ctx</code>, …).
-    </p>
-    <p class="small mb-0 @(_modelReady ? "text-success" : "text-danger")">@_modelStatus</p>
-</div>
+<PageHeader Title="Chat" Subtitle="Playground for the loaded model." />
 <ModelStatusBanner />
 
-<div class="card mb-3">
-    <div class="card-body">
+<details class="card card-outline card-secondary mb-3 kx-panel-collapsible">
+    <summary class="card-body py-2 px-3">Generation parameters</summary>
+    <div class="card-body pt-0">
         <div class="form-grid">
             <div>
                 <label class="form-label">Model</label>
@@ -39,16 +33,13 @@
                 </select>
             </div>
             <div>
-                <label class="form-label">Max tokens (max_tokens / num_predict)</label>
+                <label class="form-label">Max tokens</label>
                 <input type="number" class="form-control" min="64" max="128000" step="64" @bind="_maxTokens" />
-                <div class="form-text">Reply length. Sent as OpenAI <code>max_tokens</code> and <code>options.num_predict</code>.</div>
             </div>
             <div>
                 <label class="form-label">Context (num_ctx)</label>
                 <input type="number" class="form-control" min="512" max="128000" step="256" @bind="_numCtx" />
-                <div class="form-text">
-                    KV / context window. Must match Settings → Max batched tokens after a <strong>model reload</strong>.
-                </div>
+                <div class="form-text kx-help-short">Must match Max batched tokens after reload.</div>
             </div>
             <div>
                 <label class="form-label">Temperature</label>
@@ -69,7 +60,6 @@
             <div>
                 <label class="form-label">Repeat penalty</label>
                 <input type="number" class="form-control" min="0" max="2" step="0.05" @bind="_repeatPenalty" />
-                <div class="form-text">Ollama <code>options.repeat_penalty</code> (alias for frequency_penalty).</div>
             </div>
             <div>
                 <label class="form-label">Image (vision)</label>
@@ -83,21 +73,19 @@
                 }
                 else
                 {
-                    <p class="form-text mb-0">
-                        Load an EXL3 VLM (Qwen3-VL / Gemma VL, etc.) to enable <code>image_url</code>.
-                    </p>
+                    <p class="form-text mb-0">Load a VLM to enable images.</p>
                 }
             </div>
             <div style="grid-column:1/-1">
                 <label class="form-label">Tools JSON (optional)</label>
-                <textarea class="form-control font-monospace" rows="3" @bind="_toolsJson"
+                <textarea class="form-control font-monospace" rows="2" @bind="_toolsJson"
                           placeholder='[{"type":"function","function":{"name":"…","parameters":{}}}]'></textarea>
             </div>
         </div>
     </div>
-</div>
+</details>
 
-<div class="card chat-layout">
+<div class="card card-outline card-primary chat-layout">
     <div class="chat-messages" @ref="_scroll">
         @foreach (var m in _messages)
         {
@@ -113,10 +101,10 @@
     <div class="chat-input">
         <input class="form-control" placeholder="Ask something…" @bind="_input" @bind:event="oninput"
                @onkeydown="OnKey" disabled="@_streaming" />
-        <button class="btn btn-outline-secondary" disabled="@_streaming" @onclick="ClearChat">Clear</button>
-        <button class="btn btn-outline-danger" disabled="@(!_streaming)" @onclick="StopChat">Stop</button>
-        <button class="btn btn-outline-primary" disabled="@(_streaming || !_canRetry)" @onclick="RetryAsync">Retry</button>
-        <button class="btn btn-primary" disabled="@_streaming" @onclick="SendAsync">Send</button>
+        <button class="btn btn-sm btn-outline-secondary" disabled="@_streaming" @onclick="ClearChat">Clear</button>
+        <button class="btn btn-sm btn-outline-danger" disabled="@(!_streaming)" @onclick="StopChat">Stop</button>
+        <button class="btn btn-sm btn-outline-primary" disabled="@(_streaming || !_canRetry)" @onclick="RetryAsync">Retry</button>
+        <button class="btn btn-sm btn-primary" disabled="@_streaming" @onclick="SendAsync"><i class="fas fa-paper-plane"></i> Send</button>
     </div>
 </div>
 

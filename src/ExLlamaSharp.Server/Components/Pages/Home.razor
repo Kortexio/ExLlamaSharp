@@ -13,103 +13,144 @@
 
 <PageTitle>Dashboard — ExLlamaSharp</PageTitle>
 
-<div class="page-header d-flex justify-content-between align-items-start flex-wrap gap-2">
-    <div>
-        <h1>Dashboard</h1>
-        <p>Server overview for your business.</p>
-    </div>
-</div>
+<PageHeader Title="Dashboard" Breadcrumb="Dashboard" Subtitle="Status, requests, and GPU at a glance." />
 <ModelStatusBanner />
-<div class="d-flex justify-content-end mb-3">
-    <button class="btn btn-outline-secondary btn-sm" @onclick="ToggleAdvanced">
-        @(ShowAdvanced ? "Hide advanced metrics" : "Show advanced metrics")
-    </button>
-</div>
 
-<div class="stat-grid mb-3">
-    <div class="card stat-card">
-        <div class="card-body">
-            <div class="stat-label">Status</div>
-            <div class="stat-value">@_statusEmoji</div>
-            <div class="small text-muted">@_statusText</div>
+@if (!ShowAdvanced)
+{
+    <div class="row exl-actions">
+        <div class="col-lg-3 col-md-6 mb-3 d-flex">
+            <a class="exl-action-card" href="/models">
+                <span class="exl-action-icon bg-models"><i class="fas fa-cube"></i></span>
+                <span class="exl-action-body">
+                    <strong>Load a model</strong>
+                    <span class="exl-action-desc">VRAM profile and start serving</span>
+                </span>
+            </a>
+        </div>
+        <div class="col-lg-3 col-md-6 mb-3 d-flex">
+            <a class="exl-action-card" href="/chat">
+                <span class="exl-action-icon bg-chat"><i class="fas fa-comments"></i></span>
+                <span class="exl-action-body">
+                    <strong>Try chat</strong>
+                    <span class="exl-action-desc">Playground against loaded model</span>
+                </span>
+            </a>
+        </div>
+        <div class="col-lg-3 col-md-6 mb-3 d-flex">
+            <a class="exl-action-card" href="/settings">
+                <span class="exl-action-icon bg-settings"><i class="fas fa-cog"></i></span>
+                <span class="exl-action-body">
+                    <strong>Settings</strong>
+                    <span class="exl-action-desc">Network, context and multi-GPU</span>
+                </span>
+            </a>
+        </div>
+        <div class="col-lg-3 col-md-6 mb-3 d-flex">
+            <a class="exl-action-card" href="/jobs">
+                <span class="exl-action-icon bg-jobs"><i class="fas fa-tasks"></i></span>
+                <span class="exl-action-body">
+                    <strong>Jobs</strong>
+                    <span class="exl-action-desc">Download and quantize progress</span>
+                </span>
+            </a>
         </div>
     </div>
-    <div class="card stat-card">
-        <div class="card-body">
-            <div class="stat-label">Requests today</div>
-            <div class="stat-value">@_requestsToday</div>
-        </div>
-    </div>
-    <div class="card stat-card">
-        <div class="card-body">
-            <div class="stat-label">Model</div>
-            <div class="stat-value" style="font-size:1.15rem">@_modelLabel</div>
-        </div>
-    </div>
-    <div class="card stat-card">
-        <div class="card-body">
-            <div class="stat-label">GPU</div>
-            <div class="stat-value">@_gpuPct.ToString("0")%</div>
-            <div class="progress-thin mt-2"><span style="width:@_gpuPct.ToString("0")%"></span></div>
-            <div class="small text-muted mt-1">
-                @if (_gpus.Count == 0)
-                {
-                    @_gpuName
-                }
-                else
-                {
-                    @foreach (var g in _gpus)
-                    {
-                        <div>PCI @g.Index · @g.Name</div>
-                    }
-                }
+}
+
+<div class="row exl-stat-row">
+    <div class="col-lg-3 col-sm-6 mb-3 d-flex">
+        <div class="small-box exl-stat-@_statusTone">
+            <div class="inner">
+                <h3>@_statusLabel</h3>
+                <p>@_statusText</p>
             </div>
+            <div class="icon"><i class="fas fa-heartbeat"></i></div>
+            <a href="/diagnostics" class="small-box-footer">Diagnostics <i class="fas fa-arrow-circle-right"></i></a>
+        </div>
+    </div>
+    <div class="col-lg-3 col-sm-6 mb-3 d-flex">
+        <div class="small-box exl-stat-teal">
+            <div class="inner">
+                <h3>@_requestsToday</h3>
+                <p>Requests today</p>
+            </div>
+            <div class="icon"><i class="fas fa-exchange-alt"></i></div>
+            <a href="/usage" class="small-box-footer">Usage <i class="fas fa-arrow-circle-right"></i></a>
+        </div>
+    </div>
+    <div class="col-lg-3 col-sm-6 mb-3 d-flex">
+        <div class="small-box exl-stat-slate">
+            <div class="inner">
+                <h3 class="exl-stat-model text-truncate" title="@_modelLabel">@_modelLabel</h3>
+                <p>Loaded model</p>
+            </div>
+            <div class="icon"><i class="fas fa-cube"></i></div>
+            <a href="/models" class="small-box-footer">Models <i class="fas fa-arrow-circle-right"></i></a>
+        </div>
+    </div>
+    <div class="col-lg-3 col-sm-6 mb-3 d-flex">
+        <div class="small-box exl-stat-info">
+            <div class="inner">
+                <h3>@_gpuPct.ToString("0")<sup class="exl-stat-sup">%</sup></h3>
+                <p class="exl-stat-sub text-truncate" title="@_gpuSubtitle">@_gpuSubtitle</p>
+                <div class="exl-stat-progress">
+                    <span style="width:@_gpuPct.ToString("0")%"></span>
+                </div>
+            </div>
+            <div class="icon"><i class="fas fa-microchip"></i></div>
+            <a href="/about" class="small-box-footer">Hardware <i class="fas fa-arrow-circle-right"></i></a>
         </div>
     </div>
 </div>
 
 @if (ShowAdvanced)
 {
-    <div class="stat-grid mb-3">
-        <div class="card stat-card">
-            <div class="card-body">
-                <div class="stat-label">Tokens / sec</div>
-                <div class="stat-value">@_tps.ToString("0.0")</div>
+    <div class="row">
+        <div class="col-md-3 col-sm-6">
+            <div class="info-box">
+                <span class="info-box-icon bg-info"><i class="fas fa-tachometer-alt"></i></span>
+                <div class="info-box-content">
+                    <span class="info-box-text">Tokens / sec</span>
+                    <span class="info-box-number">@_tps.ToString("0.0")</span>
+                </div>
             </div>
         </div>
-        <div class="card stat-card">
-            <div class="card-body">
-                <div class="stat-label">Engine queue waiting</div>
-                <div class="stat-value">@_jobsWaiting</div>
-                <div class="small text-muted">Inference queue (not pull/quantize Jobs)</div>
+        <div class="col-md-3 col-sm-6">
+            <div class="info-box">
+                <span class="info-box-icon bg-warning"><i class="fas fa-hourglass-half"></i></span>
+                <div class="info-box-content">
+                    <span class="info-box-text">Queue waiting</span>
+                    <span class="info-box-number">@_jobsWaiting</span>
+                </div>
             </div>
         </div>
-        <div class="card stat-card">
-            <div class="card-body">
-                <div class="stat-label">Jobs running</div>
-                <div class="stat-value">@_jobsRunning</div>
+        <div class="col-md-3 col-sm-6">
+            <div class="info-box">
+                <span class="info-box-icon bg-success"><i class="fas fa-play"></i></span>
+                <div class="info-box-content">
+                    <span class="info-box-text">Jobs running</span>
+                    <span class="info-box-number">@_jobsRunning</span>
+                </div>
             </div>
         </div>
-        <div class="card stat-card">
-            <div class="card-body">
-                <div class="stat-label">VRAM</div>
-                <div class="stat-value" style="font-size:1.1rem">@_vramLabel</div>
-                @if (_gpus.Count > 1)
-                {
-                    <div class="small text-muted mt-1">
-                        @foreach (var g in _gpus)
-                        {
-                            <div>PCI @g.Index · @g.MemoryUsedMb.ToString("0")/@g.MemoryTotalMb.ToString("0") MB</div>
-                        }
-                    </div>
-                }
+        <div class="col-md-3 col-sm-6">
+            <div class="info-box">
+                <span class="info-box-icon bg-danger"><i class="fas fa-memory"></i></span>
+                <div class="info-box-content">
+                    <span class="info-box-text">VRAM</span>
+                    <span class="info-box-number" style="font-size:1rem;">@_vramLabel</span>
+                </div>
             </div>
         </div>
     </div>
-    <div class="card">
+
+    <div class="card card-outline card-primary">
+        <div class="card-header">
+            <h3 class="card-title">Live metrics (SignalR)</h3>
+        </div>
         <div class="card-body">
-            <h5 class="card-title">Live metrics (SignalR)</h5>
-            <p class="text-muted small mb-2">
+            <p class="text-muted mb-2">
                 Hub <code>/hubs/dashboard</code> · @_hubStatus
                 @if (_liveUtc is DateTime utc)
                 {
@@ -118,7 +159,7 @@
             </p>
             @if (_activeJobs.Count > 0)
             {
-                <ul class="mb-0 small">
+                <ul class="mb-0">
                     @foreach (var j in _activeJobs)
                     {
                         <li><code>@j</code></li>
@@ -127,7 +168,7 @@
             }
             else
             {
-                <p class="text-muted small mb-0">No active jobs in last broadcast.</p>
+                <p class="text-muted mb-0">No active jobs in last broadcast.</p>
             }
         </div>
     </div>
@@ -135,15 +176,17 @@
 
 @if (!Onboarding.TourCompleted)
 {
-    <div class="alert-soft mt-3">
-        First time here? <a href="/setup">Run the setup wizard</a>.
+    <div class="alert alert-info mt-3">
+        <i class="icon fas fa-info"></i> First time here? <a href="/setup">Run the setup wizard</a>.
     </div>
 }
 
 @code {
     private bool ShowAdvanced;
-    private string _statusEmoji = "🟡";
+    private string _statusLabel = "…";
     private string _statusText = "Checking…";
+    private string _statusTone = "warning";
+    private string _gpuSubtitle = "—";
     private int _requestsToday;
     private string _modelLabel = "—";
     private double _gpuPct;
@@ -176,6 +219,15 @@
 
         await RefreshAsync();
         await ConnectHubAsync();
+    }
+
+    protected override void OnParametersSet()
+    {
+        // Keep advanced metrics in sync with shell Simple/Advanced toggle.
+        if (Onboarding.AdvancedMode)
+        {
+            ShowAdvanced = true;
+        }
     }
 
     private async Task ConnectHubAsync()
@@ -251,18 +303,15 @@
             var isLoaded = loaded.GetBoolean();
             if (isLoaded && Engine.IsRunning)
             {
-                _statusEmoji = "🟢";
-                _statusText = Engine.Engine.IsMock ? "Running (mock engine)" : "Running";
+                ApplyStatus(Engine.Engine.IsMock ? "Mock" : "Online", Engine.Engine.IsMock ? "Running (mock engine)" : "Engine running", "success");
             }
             else if (isLoaded)
             {
-                _statusEmoji = "🟡";
-                _statusText = "Model loaded, not running";
+                ApplyStatus("Idle", "Model loaded, not running", "warning");
             }
             else
             {
-                _statusEmoji = "🔴";
-                _statusText = "No model loaded";
+                ApplyStatus("Offline", "No model loaded", "danger");
             }
         }
 
@@ -323,18 +372,15 @@
         {
             if (Engine.IsLoaded && Engine.IsRunning)
             {
-                _statusEmoji = "🟢";
-                _statusText = Engine.Engine.IsMock ? "Running (mock engine)" : "Running";
+                ApplyStatus(Engine.Engine.IsMock ? "Mock" : "Online", Engine.Engine.IsMock ? "Running (mock engine)" : "Engine running", "success");
             }
             else if (Engine.IsLoaded)
             {
-                _statusEmoji = "🟡";
-                _statusText = "Model loaded, not running";
+                ApplyStatus("Idle", "Model loaded, not running", "warning");
             }
             else
             {
-                _statusEmoji = "🔴";
-                _statusText = "No model loaded";
+                ApplyStatus("Offline", "No model loaded", "danger");
             }
 
             _modelLabel = Engine.LoadedModelPath is { } p
@@ -355,8 +401,7 @@
         }
         catch
         {
-            _statusEmoji = "🟡";
-            _statusText = "Engine unavailable";
+            ApplyStatus("Unknown", "Engine unavailable", "warning");
         }
 
         try
@@ -387,15 +432,23 @@
             _gpuName = _gpus.Count == 1
                 ? _gpus[0].Name
                 : $"{_gpus.Count} GPUs";
+            _gpuSubtitle = _gpus.Count == 1
+                ? _gpus[0].Name
+                : $"{_gpus.Count} GPUs · max {_gpuPct:0}% load";
             var used = _gpus.Sum(g => g.MemoryUsedMb);
             var total = _gpus.Sum(g => g.MemoryTotalMb);
             _vramLabel = $"{used:0}/{total:0} MB";
         }
+        else
+        {
+            _gpuSubtitle = _gpuName;
+        }
     }
 
-    private void ToggleAdvanced()
+    private void ApplyStatus(string label, string text, string tone)
     {
-        ShowAdvanced = !ShowAdvanced;
-        Onboarding.AdvancedMode = ShowAdvanced;
+        _statusLabel = label;
+        _statusText = text;
+        _statusTone = tone;
     }
 }

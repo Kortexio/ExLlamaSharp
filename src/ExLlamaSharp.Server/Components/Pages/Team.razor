@@ -6,13 +6,11 @@
 
 <PageTitle>Team — ExLlamaSharp</PageTitle>
 
-<div class="page-header d-flex justify-content-between align-items-start flex-wrap gap-2">
-    <div>
-        <h1>Team</h1>
-        <p>People who can manage this server.</p>
-    </div>
-    <button class="btn btn-primary" @onclick="() => _showCreate = true">Add user</button>
-</div>
+<PageHeader Title="Team" Subtitle="People who can manage this server.">
+    <Actions>
+        <button class="btn btn-sm btn-primary" @onclick="() => _showCreate = true"><i class="fas fa-user-plus"></i> Add user</button>
+    </Actions>
+</PageHeader>
 
 @if (_showCreate)
 {
@@ -36,9 +34,9 @@
                         <option value="viewer">viewer</option>
                     </select>
                 </div>
-                <div class="d-flex gap-2">
-                    <button class="btn btn-primary" disabled="@_busy" @onclick="CreateAsync">Create</button>
-                    <button class="btn btn-outline-secondary" @onclick="() => _showCreate = false">Cancel</button>
+                <div class="exl-btn-row">
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => _showCreate = false">Cancel</button>
+                    <button class="btn btn-sm btn-primary" disabled="@_busy" @onclick="CreateAsync"><i class="fas fa-user-plus"></i> Create</button>
                 </div>
             </div>
         </div>
@@ -53,7 +51,9 @@
 <div class="member-grid">
     @if (_users.Count == 0)
     {
-        <div class="card"><div class="card-body text-muted">No users yet. Create an admin in <a href="/setup">Setup</a>.</div></div>
+        <ExlEmpty Icon="fas fa-users" Title="No users yet">
+            <p class="mb-0">Create an admin in <a href="/setup">Setup</a>.</p>
+        </ExlEmpty>
     }
     @foreach (var u in _users)
     {

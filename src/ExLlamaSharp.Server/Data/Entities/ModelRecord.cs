@@ -17,6 +17,8 @@ public sealed class ModelRecord
     public string TenantId { get; set; } = "default";
     public bool Shared { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    /// <summary>Last load profile: conservative | normal | aggressive | custom.</summary>
+    public string? LastLoadProfile { get; set; }
 
     public Tenant? Tenant { get; set; }
 }

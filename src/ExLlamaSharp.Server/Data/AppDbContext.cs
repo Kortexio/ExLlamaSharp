@@ -74,6 +74,7 @@ public sealed class AppDbContext : DbContext
             e.Property(x => x.Path).HasMaxLength(1024).IsRequired();
             e.Property(x => x.Alias).HasMaxLength(128);
             e.Property(x => x.TenantId).HasMaxLength(64).IsRequired();
+            e.Property(x => x.LastLoadProfile).HasMaxLength(32);
             e.HasOne(x => x.Tenant).WithMany().HasForeignKey(x => x.TenantId);
         });
 

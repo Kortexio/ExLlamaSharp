@@ -28,6 +28,10 @@ public sealed class ModelLoadRequest
     /// <summary>When true, return 202 and load in the background (keeps UI responsive).</summary>
     [JsonPropertyName("background")]
     public bool Background { get; set; }
+
+    /// <summary>conservative | normal | aggressive | custom. Default normal.</summary>
+    [JsonPropertyName("profile")]
+    public string? Profile { get; set; }
 }
 
 public sealed class ModelUnloadRequest
@@ -194,6 +198,9 @@ public sealed class ModelRecordDto
 
     [JsonPropertyName("created_at")]
     public DateTime CreatedAt { get; init; }
+
+    [JsonPropertyName("last_load_profile")]
+    public string? LastLoadProfile { get; init; }
 }
 
 public sealed class ModelLibraryEntryDto

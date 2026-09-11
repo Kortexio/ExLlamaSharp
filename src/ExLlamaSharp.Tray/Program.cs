@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.ServiceProcess;
@@ -293,12 +293,21 @@ internal sealed class TrayApplicationContext : ApplicationContext
         await RefreshStatusAsync().ConfigureAwait(false);
         if (!ok)
         {
+            var serverAlive = Process.GetProcessesByName("ExLlamaSharp.Server").Length > 0;
             PostUi(() => MessageBox.Show(
-                "Não foi possível iniciar o servidor ExLlamaSharp.\n\n" +
-                "Tenta: menu do tray → Start server\nou reinicia o PC e volta a abrir o ícone.",
+                serverAlive
+                    ? "O servidor está a arrancar (provavelmente a carregar o modelo na GPU).\n\n" +
+                      "Espera um minuto e usa Open Admin UI. O Admin fica disponível mesmo se o load falhar."
+                    : "Não foi possível iniciar o servidor ExLlamaSharp.\n\n" +
+                      "Tenta: menu do tray → Start server\nou reinicia o PC e volta a abrir o ícone.",
                 "ExLlamaSharp",
                 MessageBoxButtons.OK,
-                MessageBoxIcon.Warning));
+                serverAlive ? MessageBoxIcon.Information : MessageBoxIcon.Warning));
+            if (serverAlive && openUi)
+            {
+                OpenUi();
+            }
+
             return;
         }
 

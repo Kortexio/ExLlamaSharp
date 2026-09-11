@@ -12,29 +12,35 @@
 
 <PageTitle>Login — ExLlamaSharp</PageTitle>
 
-<div class="page-header">
-    <h1>Login</h1>
-    <p>Sign in to the admin console.</p>
-</div>
-
-<div class="card" style="max-width:420px">
-    <div class="card-body">
-        <div class="form-grid">
-            <div>
-                <label class="form-label">Username</label>
-                <input class="form-control" @bind="_user" autocomplete="username" />
+<div class="login-box">
+    <div class="login-logo mb-4">
+        <a href="/"><b>ExLlama</b>Sharp</a>
+    </div>
+    <div class="card">
+        <div class="card-body login-card-body p-4">
+            <p class="login-box-msg mb-3">Sign in to the admin console</p>
+            <div class="input-group mb-3">
+                <input class="form-control" @bind="_user" autocomplete="username" placeholder="Username" />
+                <div class="input-group-append">
+                    <div class="input-group-text"><span class="fas fa-user"></span></div>
+                </div>
             </div>
-            <div>
-                <label class="form-label">Password</label>
-                <input type="password" class="form-control" @bind="_pass" autocomplete="current-password" />
+            <div class="input-group mb-3">
+                <input type="password" class="form-control" @bind="_pass" autocomplete="current-password" placeholder="Password"
+                       @onkeydown="OnKeyDown" />
+                <div class="input-group-append">
+                    <div class="input-group-text"><span class="fas fa-lock"></span></div>
+                </div>
             </div>
             @if (!string.IsNullOrEmpty(_error))
             {
-                <div class="text-danger small">@_error</div>
+                <div class="alert alert-danger py-2">@_error</div>
             }
-            <button class="btn btn-primary" @onclick="LoginAsync">Sign in</button>
+            <button type="button" class="btn btn-primary btn-block btn-lg" @onclick="LoginAsync"><i class="fas fa-sign-in-alt"></i> Sign in</button>
+            <p class="mb-0 mt-3 text-muted text-sm">
+                Use the account created in Setup. There is no default production password.
+            </p>
         </div>
-        <p class="text-muted small mt-3 mb-0">Use the account created in Setup. There is no default production password.</p>
     </div>
 </div>
 
@@ -43,6 +49,14 @@
     private string _user = "admin";
     private string _pass = "";
     private string? _error;
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await LoginAsync();
+        }
+    }
 
     private async Task LoginAsync()
     {
@@ -59,7 +73,6 @@
                 return;
             }
 
-            // Revoke prior admin-ui session keys for this user, then mint a fresh plaintext key.
             var prior = await Db.ApiKeys
                 .Where(k => k.Name == AdminUiKeyName && k.UserId == found.Id && !k.Revoked)
                 .ToListAsync();

@@ -1,44 +1,94 @@
 # ExLlamaSharp
 
-**Local LLM server for Windows with NVIDIA GPUs.**
+**Local LLM server for Windows + NVIDIA** — EXL3 inference, OpenAI-compatible `/v1` API, and a full Blazor admin UI. No Docker. No WSL required.
 
-Aimed at small businesses (roughly 5–50 people) that want an Ollama-like experience, OpenAI-compatible APIs, and a full admin UI—without Docker or Linux-only stacks.
+[![Release](https://img.shields.io/github/v/release/Kortexio/ExLlamaSharp?include_prereleases)](https://github.com/Kortexio/ExLlamaSharp/releases/latest)
+[![License](https://img.shields.io/github/license/Kortexio/ExLlamaSharp)](LICENSE)
+[![Windows](https://img.shields.io/badge/OS-Windows%20x64-0078D4)](https://github.com/Kortexio/ExLlamaSharp/releases/latest)
+[![NVIDIA](https://img.shields.io/badge/GPU-NVIDIA%20CUDA-76B900)](https://github.com/turboderp-org/exllamav3)
+[![.NET](https://img.shields.io/badge/.NET-10-512BD4)](https://dotnet.microsoft.com/)
 
-<img width="3436" height="1230" alt="image" src="https://github.com/user-attachments/assets/9ae27679-18d2-4481-bbd4-0acd6c18cba9" />
-<img width="3435" height="1232" alt="image" src="https://github.com/user-attachments/assets/5e346c4c-d12a-49c4-8c74-ffa3861e86fc" />
-<img width="3437" height="1230" alt="image" src="https://github.com/user-attachments/assets/870ba806-cadc-4e9a-aa14-318e919f2eba" />
-<img width="3437" height="1226" alt="image" src="https://github.com/user-attachments/assets/616bf93d-4eac-4d5c-bcba-1d85af60b922" />
-<img width="3432" height="1227" alt="image" src="https://github.com/user-attachments/assets/36ca3b91-f2d5-42bc-bf31-5b6dde8b22be" />
-Inspired by:
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/9ae27679-18d2-4481-bbd4-0acd6c18cba9" alt="ExLlamaSharp Admin Dashboard" width="920" />
+</p>
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/5e346c4c-d12a-49c4-8c74-ffa3861e86fc" alt="Models" width="450" />
+  &nbsp;
+  <img src="https://github.com/user-attachments/assets/870ba806-cadc-4e9a-aa14-318e919f2eba" alt="Chat" width="450" />
+</p>
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/616bf93d-4eac-4d5c-bcba-1d85af60b922" alt="Admin UI" width="450" />
+  &nbsp;
+  <img src="https://github.com/user-attachments/assets/36ca3b91-f2d5-42bc-bf31-5b6dde8b22be" alt="Admin UI" width="450" />
+</p>
 
-- **Ollama** — simple UX and model workflow
-- **vLLM** — multi-user serving ideas (scheduler / paging)
-- **ExLlamaV3** — fast EXL3 inference on NVIDIA
-- **Open WebUI** — browser-based administration
+Built for small teams and office GPU boxes (roughly 5–50 people) that want an **Ollama-like** workflow with **API keys, audit, jobs, and multi-GPU** — as a native Windows service.
 
+| You get | Honest limits |
+|---------|----------------|
+| Setup.exe → Windows service + tray | **EXL3 only** (not GGUF / llama.cpp) |
+| OpenAI SDKs via `http://127.0.0.1:14563/v1` | Images / audio generation → **501** |
+| Admin UI: Models, Chat, Keys, Jobs, Settings | Vision under multi-GPU → text-only for now |
+| Multi-GPU pipeline / tensor (v1.4.0-beta+) | Best fit: Windows + NVIDIA, not Linux clusters |
 
-**Current release: 1.4.0-beta** — real Multi-GPU (pipeline / tensor), combined VRAM fit in Admin, CUDA device remap (strongest GPU first), and faster fail for oversized prompts (`prompt_too_long` instead of hanging to 408). Core EXL3 OpenAI chat, Models/Jobs/Keys, LoRA, speculative, webhooks, tenants, agentic tools. Vision models skip the vision tower under multi-GPU (text-only). OpenAI **images/audio generation** remain **501**. Setup.exe bundles the ExLlamaV3 CUDA `.pyd`, worker deps, Python installer and VC++.
-
-Default after install: **http://127.0.0.1:14563**
-
-| Role | Default |
-|------|---------|
-| Admin UI | `admin` / `changeme` — change this before production |
-| API key | `sk-exllamasharp-dev` (scopes include `admin`) |
+Inspired by [Ollama](https://ollama.ai), [vLLM](https://github.com/vllm-project/vllm), [ExLlamaV3](https://github.com/turboderp-org/exllamav3), and Open WebUI-style admin.
 
 ---
 
 ## Download (Windows x64)
 
-[**ExLlamaSharp-Setup-win-x64.exe**](https://github.com/Kortexio/ExLlamaSharp/releases/latest/download/ExLlamaSharp-Setup-win-x64.exe) — latest GitHub Release.
-
-One-liner (downloads Setup and launches UAC):
+**[↓ ExLlamaSharp-Setup-win-x64.exe](https://github.com/Kortexio/ExLlamaSharp/releases/latest/download/ExLlamaSharp-Setup-win-x64.exe)** — latest GitHub Release
 
 ```powershell
 irm https://raw.githubusercontent.com/Kortexio/ExLlamaSharp/main/packaging/install-web.ps1 | iex
 ```
 
-Double-click the Setup.exe → allow UAC → PyTorch CUDA downloads into the venv, ExLlamaV3 extension installs from the package → open **http://127.0.0.1:14563**.
+Then open **http://127.0.0.1:14563**
+
+| Role | Default (change before production) |
+|------|-------------------------------------|
+| Admin UI | `admin` / `changeme` |
+| API key | `sk-exllamasharp-dev` |
+
+---
+
+## Why ExLlamaSharp
+
+| | ExLlamaSharp | Ollama | TabbyAPI | LM Studio | vLLM |
+|--|--------------|--------|----------|-----------|------|
+| Windows-native service | Yes | Limited / WSL | DIY | Desktop app | Linux-first |
+| Admin UI + API keys / audit | Yes | Basic | API-focused | Limited | DIY |
+| EXL3 on NVIDIA | Yes | No | Yes | Partial | No |
+| No Docker required | Yes | Yes* | Often venv | Yes | Typically containers |
+| Best fit | Office GPU box / SME | Laptop simplicity | ExLlama power users | Hobby chat | Clusters |
+
+Full matrix: [docs/comparison.md](docs/comparison.md)
+
+---
+
+## Quick start
+
+1. Install with Setup.exe (or the one-liner above).
+2. Sign in to the Admin UI → **Models → Library** (search `exl3`) → **Download**.
+3. **My Models → Load** (pick a VRAM profile that fits).
+4. **Chat** in the UI, or point any OpenAI client at `http://127.0.0.1:14563/v1` with your API key.
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:14563/v1", api_key="sk-exllamasharp-dev")
+print(client.chat.completions.create(
+    model="default",
+    messages=[{"role": "user", "content": "Hello from ExLlamaSharp"}],
+))
+```
+
+More: [docs/quick-install.md](docs/quick-install.md) · [docs/README.md](docs/README.md)
+
+---
+
+## Current release
+
+**1.4.0-beta** — Multi-GPU (pipeline / tensor), combined VRAM fit in Admin, CUDA device remap (strongest GPU → `cuda:0`), fail-fast `prompt_too_long`. Also: EXL3 OpenAI chat, Models/Jobs/Keys, LoRA, speculative decoding, webhooks, tenants, agentic tools. Setup.exe bundles the ExLlamaV3 CUDA `.pyd`, worker deps, Python installer and VC++.
 
 ---
 
@@ -364,29 +414,12 @@ More detail: [docs/architecture.md](docs/architecture.md).
 
 ## Documentation
 
-- [User Manual](docs/user-manual.md)
-- [Admin Guide](docs/admin-guide.md)
-- [API Reference](docs/api-reference.md)
-- [Troubleshooting](docs/troubleshooting.md)
-- [Architecture](docs/architecture.md)
-- [Packaging](packaging/README.md)
-- Swagger UI in Development: `/swagger`
+Index: **[docs/README.md](docs/README.md)**
 
----
-
-## Comparison
-
-| Feature | ExLlamaSharp | Ollama | vLLM | LM Studio |
-|---------|--------------|--------|------|-----------|
-| Windows-native service | Yes | No | No | Yes |
-| Multi-user API keys / audit | Yes | Limited | Yes | Limited |
-| Web admin UI | Yes | No | No | Yes |
-| OpenAI-compatible API | Yes | Yes | Yes | Yes |
-| No Docker required | Yes | No* | No* | Yes |
-| EXL3 on NVIDIA | Yes (worker) | No | No | Partial |
-| Non-technical setup wizard | Yes | Yes | No | Yes |
-
-\*Typical production installs often use containers or Linux hosts.
+- [User Manual](docs/user-manual.md) · [Admin Guide](docs/admin-guide.md) · [API Reference](docs/api-reference.md)
+- [Troubleshooting](docs/troubleshooting.md) · [Architecture](docs/architecture.md) · [Comparison](docs/comparison.md)
+- [Packaging](packaging/README.md) · Swagger (Development): `/swagger`
+- Contributing: [CONTRIBUTING.md](CONTRIBUTING.md) · Security: [SECURITY.md](SECURITY.md)
 
 ---
 

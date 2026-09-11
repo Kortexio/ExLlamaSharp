@@ -546,6 +546,8 @@ def _load(
         raise FileNotFoundError(f"Model directory not found: {path}")
 
     max_num_tokens = max(256, int(max_num_tokens))
+    if max_num_tokens % 256:
+        max_num_tokens -= max_num_tokens % 256
     max_batch_size = max(1, int(max_batch_size))
     max_chunk_size = max(1, int(max_chunk_size))
 
@@ -594,7 +596,17 @@ def _load(
         load_kw = _build_weight_load_kwargs(
             parallelism_mode, gpu_split_gb, gpu_memory_utilization, max_chunk_size
         )
-        _try_load_weights(model, phase="weights", base=30, span=45, load_kwargs=load_kw)
+        try:
+            _try_load_weights(model, phase="weights", base=30, span=45, load_kwargs=load_kw)
+        except RuntimeError as ex:
+            if "Insufficient VRAM" in str(ex):
+                use = load_kw.get("use_per_device")
+                raise RuntimeError(
+                    f"{ex}. max_num_tokens={max_num_tokens} does not fit use_per_device={use}. "
+                    "On Windows use pipeline (not tensor). Lower Settings → Max batched tokens "
+                    "(2048–4096 for a 32B on 12 GB + 8 GB)."
+                ) from ex
+            raise
         if hb is None:
             hb = threading.Thread(target=_hb, daemon=True)
             hb.start()
@@ -1355,6 +1367,12 @@ def handle(msg: dict[str, Any]) -> None:
                 f"(load payload cuda_visible_devices={msg.get('cuda_visible_devices')!r} — env from spawn wins)"
             )
             mode = (msg.get("parallelism_mode") or "none").lower()
+            if os.name == "nt" and mode in ("tensor", "tp"):
+                _log(
+                    "Windows: coercing parallelism_mode=tensor -> pipeline "
+                    "(TP child processes time out in the JSONL host)"
+                )
+                mode = "pipeline"
             util = float(msg.get("gpu_memory_utilization") or 0.90)
             split = msg.get("gpu_split_gb")
             if mode in ("tensor", "tp", "pipeline", "pipe", "pp") and msg.get("speculative_enabled"):

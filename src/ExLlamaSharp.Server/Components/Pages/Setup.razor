@@ -9,10 +9,7 @@
 
 <PageTitle>Setup — ExLlamaSharp</PageTitle>
 
-<div class="page-header">
-    <h1>Setup wizard</h1>
-    <p>Get your inference server ready in five steps.</p>
-</div>
+<PageHeader Title="Setup wizard" Subtitle="Five steps to get started." />
 
 <div class="wizard-steps">
     @for (var i = 1; i <= 5; i++)
@@ -24,12 +21,12 @@
     }
 </div>
 
-<div class="card">
+<div class="card card-outline card-primary">
     <div class="card-body">
         @if (Step == 1)
         {
             <h5 class="card-title">Welcome</h5>
-            <p>ExLlamaSharp Admin helps small teams run local LLM inference with a simple console.</p>
+            <p class="kx-help-short">Local LLM inference with a simple admin console.</p>
             @if (_gpu is null)
             {
                 <p class="text-muted">Detecting GPU?</p>
@@ -58,7 +55,7 @@
                     }
                 </div>
             }
-            <button class="btn btn-primary" @onclick="Next">Continue</button>
+            <button class="btn btn-sm btn-primary" @onclick="Next">Continue <i class="fas fa-arrow-right"></i></button>
         }
         else if (Step == 2)
         {
@@ -76,9 +73,9 @@
                 {
                     <div class="text-danger small">@_error</div>
                 }
-                <div class="d-flex gap-2">
-                    <button class="btn btn-outline-secondary" @onclick="Back">Back</button>
-                    <button class="btn btn-primary" @onclick="SaveAdmin">Continue</button>
+                <div class="exl-btn-row">
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="Back"><i class="fas fa-arrow-left"></i> Back</button>
+                    <button class="btn btn-sm btn-primary" @onclick="SaveAdmin">Continue <i class="fas fa-arrow-right"></i></button>
                 </div>
             </div>
         }
@@ -87,12 +84,12 @@
             <h5 class="card-title">Models path</h5>
             <div class="form-grid">
                 <div>
-                    <label class="form-label">Folder for downloaded / imported models</label>
+                    <label class="form-label">Models folder</label>
                     <input class="form-control" @bind="_modelsPath" placeholder="C:\Models\exllama" />
                 </div>
-                <div class="d-flex gap-2">
-                    <button class="btn btn-outline-secondary" @onclick="Back">Back</button>
-                    <button class="btn btn-primary" @onclick="SaveModelsPath">Continue</button>
+                <div class="exl-btn-row">
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="Back"><i class="fas fa-arrow-left"></i> Back</button>
+                    <button class="btn btn-sm btn-primary" @onclick="SaveModelsPath">Continue <i class="fas fa-arrow-right"></i></button>
                 </div>
             </div>
         }
@@ -104,12 +101,11 @@
                     <input class="form-check-input" type="checkbox" id="setupLan"
                            checked="@_lanAccess" @onchange="OnSetupLanChanged" />
                     <label class="form-check-label" for="setupLan">
-                        <strong>Allow access from this network (LAN)</strong>
+                        <strong>Allow LAN access</strong>
                     </label>
                 </div>
-                <p class="form-text mb-0">
-                    Other devices on your Wi‑Fi/LAN can use the OpenAI API at
-                    <code>http://&lt;this-pc-ip&gt;:@_port/v1</code>. Leave off for local-only (safer default).
+                <p class="form-text mb-0 kx-help-short">
+                    API at <code>http://&lt;pc-ip&gt;:@_port/v1</code>. Off = local-only.
                 </p>
             </div>
             <div class="form-grid">
@@ -125,19 +121,19 @@
                     <label class="form-label">CORS</label>
                     <input class="form-control" @bind="_cors" />
                 </div>
-                <div class="d-flex gap-2">
-                    <button class="btn btn-outline-secondary" @onclick="Back">Back</button>
-                    <button class="btn btn-primary" @onclick="SaveNetwork">Continue</button>
+                <div class="exl-btn-row">
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="Back"><i class="fas fa-arrow-left"></i> Back</button>
+                    <button class="btn btn-sm btn-primary" @onclick="SaveNetwork">Continue <i class="fas fa-arrow-right"></i></button>
                 </div>
             </div>
         }
         else
         {
             <h5 class="card-title">Download initial model</h5>
-            <p class="text-muted">Pick a starter model from the library, or skip and import later.</p>
+            <p class="form-text kx-help-short">Pick a starter, or skip and import later.</p>
             <div class="form-grid mb-3">
                 <div>
-                    <label class="form-label">Model repo (Hugging Face style)</label>
+                    <label class="form-label">Model repo</label>
                     <input class="form-control" @bind="_starterRepo" placeholder="turboderp/Llama-3.2-1B-Instruct-exl3" />
                 </div>
             </div>
@@ -145,10 +141,10 @@
             {
                 <div class="alert-soft mb-3">@_status</div>
             }
-            <div class="d-flex gap-2 flex-wrap">
-                <button class="btn btn-outline-secondary" @onclick="Back">Back</button>
-                <button class="btn btn-outline-primary" @onclick="SkipFinish">Skip for now</button>
-                <button class="btn btn-primary" @onclick="QueueDownload">Queue download &amp; finish</button>
+            <div class="exl-btn-row">
+                <button class="btn btn-sm btn-outline-secondary" @onclick="Back"><i class="fas fa-arrow-left"></i> Back</button>
+                <button class="btn btn-sm btn-outline-primary" @onclick="SkipFinish">Skip for now</button>
+                <button class="btn btn-sm btn-primary" @onclick="QueueDownload"><i class="fas fa-download"></i> Queue download &amp; finish</button>
             </div>
         }
     </div>

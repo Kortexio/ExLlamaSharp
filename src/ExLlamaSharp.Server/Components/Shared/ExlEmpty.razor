@@ -1,0 +1,25 @@
+<div class="exl-empty">
+    @if (!string.IsNullOrWhiteSpace(Icon))
+    {
+        <div class="exl-empty-icon"><i class="@Icon"></i></div>
+    }
+    @if (!string.IsNullOrWhiteSpace(Title))
+    {
+        <h5 class="exl-empty-title">@Title</h5>
+    }
+    @if (ChildContent is not null)
+    {
+        @ChildContent
+    }
+    else if (!string.IsNullOrWhiteSpace(Message))
+    {
+        <p class="mb-0">@Message</p>
+    }
+</div>
+
+@code {
+    [Parameter] public string? Icon { get; set; }
+    [Parameter] public string? Title { get; set; }
+    [Parameter] public string? Message { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+}

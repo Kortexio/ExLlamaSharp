@@ -10,15 +10,12 @@
 
 <PageTitle>Metrics — ExLlamaSharp</PageTitle>
 
-<div class="page-header">
-    <h1>Metrics</h1>
-    <p>Throughput, latency, and A/B experiments.</p>
-</div>
+<PageHeader Title="Metrics" Subtitle="Throughput, latency, and A/B tests." />
 
-<div class="tabs">
+<PageTabs>
     <button class="tab-btn @(Tab == "charts" ? "active" : "")" @onclick='() => Tab = "charts"'>Charts</button>
     <button class="tab-btn @(Tab == "ab" ? "active" : "")" @onclick='() => Tab = "ab"'>A/B</button>
-</div>
+</PageTabs>
 
 @if (Tab == "charts")
 {
@@ -28,17 +25,17 @@
         <div class="card"><div class="card-body"><div class="stat-label">Running</div><div class="stat-value">@_run</div></div></div>
         <div class="card"><div class="card-body"><div class="stat-label">Latency p50 / p95</div><div class="stat-value">@_p50.ToString("0") / @_p95.ToString("0") ms</div></div></div>
     </div>
-    <div class="card mb-3">
+    <div class="card card-outline card-primary mb-3">
+        <div class="card-header"><h3 class="card-title">Tokens / second</h3></div>
         <div class="card-body">
-            <h5 class="card-title">Tokens / second</h5>
             <svg viewBox="0 0 400 120" class="chart-svg" role="img" aria-label="TPS chart">
                 @((MarkupString)Sparkline(_tpsSeries, 400, 120, "#0d9488"))
             </svg>
         </div>
     </div>
-    <div class="card">
+    <div class="card card-outline card-secondary">
+        <div class="card-header"><h3 class="card-title">Latency (ms)</h3></div>
         <div class="card-body">
-            <h5 class="card-title">Latency (ms)</h5>
             <svg viewBox="0 0 400 120" class="chart-svg" role="img" aria-label="Latency chart">
                 @((MarkupString)Sparkline(_latSeries, 400, 120, "#0369a1"))
             </svg>
@@ -54,12 +51,12 @@ else
             {
                 <p class="text-danger">@_abError</p>
             }
-            <div class="row g-2 align-items-end">
-                <div class="col-md-3">
+            <div class="form-grid">
+                <div>
                     <label class="form-label">Name</label>
                     <input class="form-control" @bind="_abName" />
                 </div>
-                <div class="col-md-3">
+                <div>
                     <label class="form-label">Model A</label>
                     <select class="form-select" @bind="_abModelA">
                         <option value="">—</option>
@@ -69,7 +66,7 @@ else
                         }
                     </select>
                 </div>
-                <div class="col-md-3">
+                <div>
                     <label class="form-label">Model B</label>
                     <select class="form-select" @bind="_abModelB">
                         <option value="">—</option>
@@ -79,42 +76,44 @@ else
                         }
                     </select>
                 </div>
-                <div class="col-md-2">
+                <div>
                     <label class="form-label">Split % A</label>
                     <input class="form-control" type="number" min="0" max="100" @bind="_abSplitPct" />
                 </div>
-                <div class="col-md-1">
-                    <button class="btn btn-primary w-100" @onclick="CreateAbAsync">Add</button>
+                <div class="d-flex align-items-end">
+                    <button class="btn btn-sm btn-primary" @onclick="CreateAbAsync"><i class="fas fa-plus"></i> Add</button>
                 </div>
             </div>
         </div>
     </div>
     <div class="card">
         <div class="card-body p-0">
-            <table class="table-clean">
-                <thead>
-                    <tr><th>Name</th><th>Model A</th><th>Model B</th><th>Split</th><th>Active</th><th></th></tr>
-                </thead>
-                <tbody>
-                    @if (_tests.Count == 0)
-                    {
-                        <tr><td colspan="6" class="text-muted">No A/B tests configured.</td></tr>
-                    }
-                    @foreach (var t in _tests)
-                    {
-                        <tr>
-                            <td>@t.Name</td>
-                            <td><code>@Short(t.ModelAId)</code></td>
-                            <td><code>@Short(t.ModelBId)</code></td>
-                            <td>@((t.SplitRatio * 100).ToString("0"))% A</td>
-                            <td>@(t.Active ? "yes" : "no")</td>
-                            <td>
-                                <button class="btn btn-sm btn-outline-secondary" @onclick="() => VoteAsync(t.Id)">Preview route</button>
-                            </td>
-                        </tr>
-                    }
-                </tbody>
-            </table>
+            <div class="kx-table-wrap">
+                <table class="table-clean">
+                    <thead>
+                        <tr><th>Name</th><th>Model A</th><th>Model B</th><th>Split</th><th>Active</th><th></th></tr>
+                    </thead>
+                    <tbody>
+                        @if (_tests.Count == 0)
+                        {
+                            <tr><td colspan="6" class="text-muted">No A/B tests configured.</td></tr>
+                        }
+                        @foreach (var t in _tests)
+                        {
+                            <tr>
+                                <td>@t.Name</td>
+                                <td><code>@Short(t.ModelAId)</code></td>
+                                <td><code>@Short(t.ModelBId)</code></td>
+                                <td>@((t.SplitRatio * 100).ToString("0"))% A</td>
+                                <td>@(t.Active ? "yes" : "no")</td>
+                                <td>
+                                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => VoteAsync(t.Id)">Preview route</button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
             @if (!string.IsNullOrEmpty(_voteInfo))
             {
                 <p class="p-3 text-muted mb-0">@_voteInfo</p>

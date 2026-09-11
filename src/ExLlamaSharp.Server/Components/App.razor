@@ -3,31 +3,37 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0d9488" />
+    <meta name="theme-color" content="#0f766e" />
     <base href="/" />
     <title>ExLlamaSharp Admin</title>
     <link rel="manifest" href="manifest.webmanifest" />
     <link rel="icon" href="favicon.ico" />
-    <link href="css/bootstrap.min.css" rel="stylesheet" />
-    <link href="css/app.css" rel="stylesheet" />
-    <link href="css/kortexio-theme.css" rel="stylesheet" />
+    <link rel="stylesheet" href="adminlte/plugins/fontawesome-free/css/all.min.css" />
+    <link rel="stylesheet" href="adminlte/plugins/overlayScrollbars/css/OverlayScrollbars.min.css" />
+    <link rel="stylesheet" href="adminlte/css/adminlte.min.css" />
+    <link rel="stylesheet" href="css/app.css?v=alte9" />
+    <link rel="stylesheet" href="css/adminlte-app.css?v=alte10" />
     <HeadOutlet @rendermode="@(new InteractiveServerRenderMode(prerender: false))" />
 </head>
-<body>
+<body class="hold-transition sidebar-mini layout-fixed exl-admin">
     <div id="kx-connecting" class="kx-connecting">Starting Admin…</div>
     <Routes @rendermode="@(new InteractiveServerRenderMode(prerender: false))" />
     <div id="blazor-error-ui">
         Admin connection lost. If the Server just restarted, wait a few seconds and reload — then load the model if needed.
         <a href="" class="reload">Reload</a>
     </div>
-    <script src="js/admin-shell.js"></script>
+    <script src="adminlte/plugins/jquery/jquery.min.js"></script>
+    <script src="adminlte/plugins/bootstrap/js/bootstrap.bundle.min.js"></script>
+    <script src="adminlte/plugins/overlayScrollbars/js/jquery.overlayScrollbars.min.js"></script>
+    <script src="adminlte/js/adminlte.min.js"></script>
+    <script src="js/admin-shell.js?v=alte9"></script>
     <script src="_framework/blazor.web.js"></script>
     <script>
         (function () {
             var el = document.getElementById('kx-connecting');
             var started = Date.now();
             var timer = setInterval(function () {
-                if (document.querySelector('.kx-shell')) {
+                if (document.querySelector('.wrapper') || document.querySelector('.login-page')) {
                     if (el) el.remove();
                     clearInterval(timer);
                 } else if (Date.now() - started > 20000 && el) {

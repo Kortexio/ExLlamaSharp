@@ -7,13 +7,11 @@
 
 <PageTitle>API Keys — ExLlamaSharp</PageTitle>
 
-<div class="page-header d-flex justify-content-between align-items-start flex-wrap gap-2">
-    <div>
-        <h1>API keys</h1>
-        <p>Create and revoke keys for clients.</p>
-    </div>
-    <button class="btn btn-primary" @onclick="() => _showCreate = true">New key</button>
-</div>
+<PageHeader Title="API Keys" Subtitle="Create and revoke client keys.">
+    <Actions>
+        <button class="btn btn-sm btn-primary" @onclick="() => _showCreate = true"><i class="fas fa-plus"></i> New key</button>
+    </Actions>
+</PageHeader>
 
 @if (_showCreate)
 {
@@ -41,9 +39,9 @@
                     <label class="form-label">Priority (1–10)</label>
                     <input type="number" min="1" max="10" class="form-control" @bind="_newPriority" />
                 </div>
-                <div class="d-flex gap-2">
-                    <button class="btn btn-primary" @onclick="CreateAsync">Create</button>
-                    <button class="btn btn-outline-secondary" @onclick="() => _showCreate = false">Cancel</button>
+                <div class="exl-btn-row">
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => _showCreate = false">Cancel</button>
+                    <button class="btn btn-sm btn-primary" @onclick="CreateAsync"><i class="fas fa-plus"></i> Create</button>
                 </div>
             </div>
             @if (!string.IsNullOrEmpty(_createdPlain))
@@ -57,46 +55,49 @@
     </div>
 }
 
-<div class="card">
+<div class="card card-outline card-primary card-table">
+    <div class="card-header"><h3 class="card-title"><i class="fas fa-key mr-2"></i>Keys</h3></div>
     <div class="card-body p-0">
-        <table class="table-clean">
-            <thead>
-                <tr><th>Name</th><th>Prefix</th><th>Scopes</th><th>RPM</th><th>TPM</th><th>Priority</th><th>Status</th><th></th></tr>
-            </thead>
-            <tbody>
-                @if (_keys.Count == 0)
-                {
-                    <tr><td colspan="8" class="text-muted">No keys yet.</td></tr>
-                }
-                @foreach (var k in _keys)
-                {
-                    <tr>
-                        <td>@k.Name</td>
-                        <td><code>@k.KeyPrefix…</code></td>
-                        <td>@k.Scopes</td>
-                        <td>@k.Rpm</td>
-                        <td>@k.Tpm</td>
-                        <td>@k.Priority</td>
-                        <td>
-                            @if (k.Revoked)
-                            {
-                                <span class="badge-status badge-err">revoked</span>
-                            }
-                            else
-                            {
-                                <span class="badge-status badge-ok">active</span>
-                            }
-                        </td>
-                        <td>
-                            @if (!k.Revoked)
-                            {
-                                <button class="btn btn-sm btn-outline-danger" @onclick="() => RevokeAsync(k)">Revoke</button>
-                            }
-                        </td>
-                    </tr>
-                }
-            </tbody>
-        </table>
+        <div class="kx-table-wrap">
+            <table class="table-clean">
+                <thead>
+                    <tr><th>Name</th><th>Prefix</th><th>Scopes</th><th>RPM</th><th>TPM</th><th>Priority</th><th>Status</th><th></th></tr>
+                </thead>
+                <tbody>
+                    @if (_keys.Count == 0)
+                    {
+                        <tr><td colspan="8" class="text-muted">No keys yet.</td></tr>
+                    }
+                    @foreach (var k in _keys)
+                    {
+                        <tr>
+                            <td>@k.Name</td>
+                            <td><code>@k.KeyPrefix…</code></td>
+                            <td>@k.Scopes</td>
+                            <td>@k.Rpm</td>
+                            <td>@k.Tpm</td>
+                            <td>@k.Priority</td>
+                            <td>
+                                @if (k.Revoked)
+                                {
+                                    <span class="badge-status badge-err">revoked</span>
+                                }
+                                else
+                                {
+                                    <span class="badge-status badge-ok">active</span>
+                                }
+                            </td>
+                            <td>
+                                @if (!k.Revoked)
+                                {
+                                    <button class="btn btn-sm btn-outline-danger" @onclick="() => RevokeAsync(k)">Revoke</button>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
 

@@ -75,7 +75,7 @@ Components reported by `HealthService`:
 
 **Cause:** Tensor parallel starts extra Python processes. On Windows those children re-enter the worker script and never become TP workers when the host is the long-lived JSONL process. A console `python -c` load can succeed while the Admin/Server load fails. Pipeline mode does not spawn those children.
 
-**Fix:** Use **pipeline** (and a KV cache that fits) to load across both GPUs. For Qwen3-32B 4.0bpw on 12 GB + 8 GB use `GpuSplitGb=10.8,6.2` and keep **Max batched tokens** around 2048–4096 — 16384 plus the 32B weights does not fit. Recycle the worker after a failed load (Save on Settings, or restart the Server) so zombie `spawn_main` processes are gone.
+**Fix:** On Windows the server now **coerces tensor → pipeline** on save/load. For Qwen3-32B 4.0bpw on 12 GB + 8 GB use `GpuSplitGb=11,7` (or `10.8,6.2`) and keep **Max batched tokens** at 2048–4096 — 10240 plus the 32B weights does not fit. Recycle the worker after a failed load (Save on Settings, or restart the Server) so zombie `spawn_main` processes are gone.
 
 ### VLM + multi-GPU: vision skipped
 

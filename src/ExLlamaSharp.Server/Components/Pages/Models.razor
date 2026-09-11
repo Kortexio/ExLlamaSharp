@@ -16,31 +16,56 @@
 
 <PageTitle>Models — ExLlamaSharp</PageTitle>
 
-<div class="page-header">
-    <h1>Models</h1>
-    <p>Library, installed models, import, and quantize.</p>
-</div>
+<PageHeader Title="Models" Subtitle="Library, installed models, import, and quantize.">
+    <Actions>
+        @if (Tab == "mine")
+        {
+            <button class="btn btn-sm btn-outline-secondary" disabled="@_busy" @onclick="ReloadAsync">
+                <i class="fas fa-sync-alt mr-1"></i> Refresh
+            </button>
+        }
+        <a class="btn btn-sm btn-outline-primary" href="/jobs"><i class="fas fa-tasks"></i> Jobs</a>
+    </Actions>
+</PageHeader>
 
-<p class="form-text mb-3">@_gpuCaption</p>
+<ModelStatusBanner />
 
-<div class="tabs">
+@if (_gpuChips.Count > 0)
+{
+    <div class="exl-gpu-bar mb-3" title="@_gpuCaption">
+        <span class="exl-gpu-bar-label"><i class="fas fa-microchip mr-1"></i> GPU</span>
+        <div class="kx-chip-row mb-0">
+            @foreach (var chip in _gpuChips)
+            {
+                <span class="kx-chip">@chip</span>
+            }
+        </div>
+    </div>
+}
+else if (!string.IsNullOrWhiteSpace(_gpuCaption))
+{
+    <div class="alert alert-light border mb-3 py-2"><i class="fas fa-info-circle mr-1 text-muted"></i> @_gpuCaption</div>
+}
+
+<PageTabs>
     <button class="tab-btn @(Tab == "library" ? "active" : "")" @onclick='() => Tab = "library"'>Library</button>
     <button class="tab-btn @(Tab == "mine" ? "active" : "")" @onclick='() => Tab = "mine"'>My Models</button>
     <button class="tab-btn @(Tab == "import" ? "active" : "")" @onclick='() => Tab = "import"'>Import</button>
     <button class="tab-btn @(Tab == "quantize" ? "active" : "")" @onclick='() => Tab = "quantize"'>Quantize</button>
-</div>
+</PageTabs>
 
 @if (Tab == "library")
 {
-    <div class="card mb-3">
+    <div class="card card-outline card-secondary mb-3">
+        <div class="card-header"><h3 class="card-title"><i class="fas fa-cloud-download-alt mr-2"></i>Search Hugging Face</h3></div>
         <div class="card-body">
-            <div class="d-flex flex-wrap gap-2 align-items-end">
-                <div class="flex-grow-1">
-                    <label class="form-label">Search Hugging Face</label>
+            <div class="d-flex flex-wrap align-items-end">
+                <div class="flex-grow-1 mr-2 mb-2 mb-md-0">
+                    <label class="form-label">Query</label>
                     <input class="form-control" @bind="_hfQuery" @bind:event="oninput" placeholder="exl3, llama, qwen…" @onkeydown="OnSearchKey" />
                 </div>
-                <button class="btn btn-primary" disabled="@_searching" @onclick="SearchHuggingFaceAsync">
-                    @(_searching ? "Searching…" : "Search")
+                <button class="btn btn-sm btn-primary mb-2 mb-md-0" disabled="@_searching" @onclick="SearchHuggingFaceAsync">
+                    <i class="fas fa-search"></i> @(_searching ? "Searching…" : "Search")
                 </button>
             </div>
             <p class="form-text mb-0 mt-2">
@@ -50,33 +75,40 @@
     </div>
     @if (!string.IsNullOrEmpty(_msg))
     {
-        <div class="alert-soft mb-3">@_msg</div>
+        <div class="alert alert-info mb-3"><i class="fas fa-info-circle mr-1"></i> @_msg</div>
     }
-    <div class="card">
+    <div class="card card-outline card-primary card-table">
+        <div class="card-header"><h3 class="card-title"><i class="fas fa-search mr-2"></i>Library results</h3></div>
         <div class="card-body p-0">
+            <div class="kx-table-wrap">
             <table class="table-clean">
                 <thead>
-                    <tr><th>Name</th><th>Repo</th><th>Params</th><th>Size</th><th>VRAM</th><th></th></tr>
+                    <tr><th>Name</th><th>Repo</th><th class="col-narrow">Params</th><th class="col-narrow">Size</th><th class="col-vram">VRAM</th><th class="col-actions">Actions</th></tr>
                 </thead>
                 <tbody>
                     @if (_hfHits.Count == 0 && !_searching)
                     {
-                        <tr><td colspan="6" class="text-muted">No Hugging Face results. Try “exl3” or check your network / HF token.</td></tr>
+                        <tr><td colspan="6" class="text-muted text-center py-4">No Hugging Face results. Try “exl3” or check your network / HF token.</td></tr>
                     }
                     @foreach (var m in _hfHits)
                     {
-                        var fit = VramFit.Evaluate(m.SizeBytes, _gpus, _gpuUtil, _gpuSplitGb);
+                        var fit = VramFit.Evaluate(m.SizeBytes, _gpus, _gpuUtil, _gpuSplitGb, _maxBatchedTokens);
                         <tr>
                             <td>@m.DisplayName</td>
-                            <td><code>@m.RepoId</code></td>
+                            <td><code class="kx-path-truncate" title="@m.RepoId">@m.RepoId</code></td>
                             <td>@(m.ParameterLabel ?? "—")</td>
                             <td>@(m.SizeBytes is null ? "…" : m.SizeBytes > 0 ? HuggingFaceCatalogService.FormatBytes(m.SizeBytes.Value) : "—")</td>
-                            <td><span class="badge-status @fit.BadgeClass" title="@fit.Detail">@fit.Label</span></td>
-                            <td><button class="btn btn-sm btn-outline-primary" disabled="@_pulling" @onclick="() => PullAsync(m.RepoId, m.DisplayName)">Download</button></td>
+                            <td class="col-vram"><span class="badge-status @fit.BadgeClass" title="@fit.Detail">@fit.Label</span></td>
+                            <td class="col-actions">
+                                <button class="btn btn-sm btn-primary exl-btn-fixed" disabled="@_pulling" @onclick="() => PullAsync(m.RepoId, m.DisplayName)">
+                                    <i class="fas fa-download"></i> Download
+                                </button>
+                            </td>
                         </tr>
                     }
                 </tbody>
             </table>
+            </div>
         </div>
     </div>
 }
@@ -84,39 +116,47 @@ else if (Tab == "mine")
 {
     @if (Engine.IsLoaded && Engine.LoadedModelPath is { } loadedPath)
     {
-        <div class="alert-soft mb-3 d-flex flex-wrap gap-2 align-items-center justify-content-between">
-            <span>Loaded now: <code>@Path.GetFileName(loadedPath.TrimEnd(Path.DirectorySeparatorChar))</code></span>
-            <button class="btn btn-sm btn-outline-danger" disabled="@_busy" @onclick="UnloadAsync">Unload</button>
+        <div class="exl-status-banner is-ok mb-3">
+            <div><i class="fas fa-check-circle mr-1"></i> Loaded: <code>@Path.GetFileName(loadedPath.TrimEnd(Path.DirectorySeparatorChar))</code></div>
+            <button class="btn btn-sm btn-outline-danger" disabled="@_busy" @onclick="UnloadAsync"><i class="fas fa-eject"></i> Unload</button>
         </div>
     }
-    <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
-        <button class="btn btn-sm btn-outline-danger" disabled="@(!_busy && _loadingId is null)" @onclick="CancelLoadUiAsync">Cancel load</button>
-        @if (_loadingId is not null)
-        {
-            <div class="flex-grow-1" style="min-width:12rem">
+    @if (_loadingId is not null || _busy)
+    {
+        <div class="exl-load-strip">
+            <button class="btn btn-sm btn-outline-danger" disabled="@(!_busy && _loadingId is null)" @onclick="CancelLoadUiAsync"><i class="fas fa-times"></i> Cancel</button>
+            @if (_loadingId is not null)
+            {
                 <div class="progress-thin"><span style="width:@(_loadPct.ToString("0"))%"></span></div>
                 <div class="form-text mb-0">
                     @(string.IsNullOrEmpty(_loadPhase) ? "Loading" : _loadPhase)
                     @if (_loadPct > 0) { <text> · @_loadPct%</text> }
                     @if (_loadElapsedSec > 0) { <text> · @_loadElapsedSec.ToString("0")s</text> }
                 </div>
-            </div>
-        }
-    </div>
-    <div class="card">
+            }
+        </div>
+    }
+
+    <div class="card card-outline card-primary card-table">
+        <div class="card-header"><h3 class="card-title"><i class="fas fa-cube mr-2"></i>My models</h3></div>
         <div class="card-body p-0">
-            <table class="table-clean">
+            <div class="kx-table-wrap">
+            <table class="table-clean table-dense">
                 <thead>
-                    <tr><th>Alias</th><th>Folder</th><th>Size</th><th>Quant</th><th>VRAM</th><th>Status</th><th></th></tr>
+                    <tr><th>Alias</th><th class="kx-col-folder">Folder</th><th class="col-narrow">Size</th><th class="col-narrow">Quant</th><th class="col-vram">VRAM</th><th class="col-status">Status</th><th class="col-actions">Actions</th></tr>
                 </thead>
                 <tbody>
                     @if (_mine.Count == 0)
                     {
-                        <tr><td colspan="7" class="text-muted">No local models. Import or pull one.</td></tr>
+                        <tr>
+                            <td colspan="7" class="p-0 border-0">
+                                <ExlEmpty Icon="fas fa-cube" Title="No local models" Message="Download from Library or import a folder." />
+                            </td>
+                        </tr>
                     }
                     @foreach (var m in _mine)
                     {
-                        var fit = VramFit.EvaluateGb(m.SizeGb, _gpus, _gpuUtil, _gpuSplitGb);
+                        var fit = VramFit.EvaluateGb(m.SizeGb, _gpus, _gpuUtil, _gpuSplitGb, _maxBatchedTokens);
                         var isLoaded = IsLoadedModel(m);
                         var isLoading = _loadingId == m.Id;
                         var folderName = Path.GetFileName(m.Path.TrimEnd(Path.DirectorySeparatorChar));
@@ -126,24 +166,24 @@ else if (Tab == "mine")
                                 {
                                     <div class="d-flex flex-wrap gap-1 align-items-center">
                                         <input class="form-control form-control-sm" style="min-width:8rem" @bind="_aliasDraft" />
-                                        <button class="btn btn-sm btn-primary" disabled="@_busy" @onclick="() => SaveAliasAsync(m)">Save</button>
-                                        <button class="btn btn-sm btn-outline-secondary" disabled="@_busy" @onclick="CancelEdit">Cancel</button>
+                                        <button type="button" class="btn btn-sm btn-primary" disabled="@_busy" @onclick="() => SaveAliasAsync(m)">Save</button>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary" disabled="@_busy" @onclick="CancelEdit">Cancel</button>
                                     </div>
                                 }
                                 else
                                 {
-                                    <span>@(string.IsNullOrWhiteSpace(m.Alias) ? folderName : m.Alias)</span>
+                                    <div class="fw-semibold">@(string.IsNullOrWhiteSpace(m.Alias) ? folderName : m.Alias)</div>
                                 }
                             </td>
-                            <td><code title="@m.Path">@folderName</code></td>
-                            <td>@FormatSizeGb(m.SizeGb)</td>
+                            <td class="kx-col-folder"><code title="@m.Path">@folderName</code></td>
+                            <td class="text-nowrap">@FormatSizeGb(m.SizeGb)</td>
                             <td>@(m.QuantMode ?? "—")</td>
-                            <td><span class="badge-status @fit.BadgeClass" title="@fit.Detail">@fit.Label</span></td>
-                            <td>
+                            <td class="col-vram"><span class="badge-status @fit.BadgeClass" title="@fit.Detail">@fit.Label</span></td>
+                            <td class="col-status">
                                 @if (isLoading)
                                 {
                                     <span class="badge-status badge-warn">
-                                        @(string.IsNullOrEmpty(_loadPhase) ? "Loading…" : $"Loading {_loadPhase} {_loadPct}%")
+                                        @(string.IsNullOrEmpty(_loadPhase) ? "Loading…" : $"{_loadPhase} {_loadPct}%")
                                     </span>
                                 }
                                 else if (isLoaded)
@@ -160,43 +200,120 @@ else if (Tab == "mine")
                                 }
                                 else
                                 {
-                                    <span class="text-muted">Ready</span>
+                                    <span class="badge-status badge-muted">Ready</span>
                                 }
                             </td>
-                            <td>
-                                <div class="d-flex flex-wrap gap-1">
+                            <td class="col-actions">
+                                <div class="exl-actions-cell">
                                     @if (isLoaded)
                                     {
-                                        <button class="btn btn-sm btn-outline-danger" disabled="@_busy" @onclick="UnloadAsync">Unload</button>
+                                        <button type="button" class="btn btn-sm btn-outline-danger exl-btn-fixed" disabled="@_busy" @onclick="UnloadAsync">Unload</button>
                                     }
                                     else
                                     {
-                                        <button class="btn btn-sm btn-primary" disabled="@(_busy || isLoading)" @onclick="() => LoadModel(m)">
-                                            @(isLoading ? "Loading…" : "Load")
+                                        <button type="button" class="btn btn-sm btn-primary exl-btn-fixed" disabled="@(_busy || isLoading)" @onclick="() => BeginLoadModelAsync(m)">
+                                            @(isLoading ? "…" : "Load")
                                         </button>
                                     }
-                                    <button class="btn btn-sm btn-outline-secondary" disabled="@_busy" @onclick="() => BeginEditAlias(m)">Alias</button>
-                                    <button class="btn btn-sm btn-outline-secondary" disabled="@_busy" @onclick="() => RenameFolderAsync(m)">Rename</button>
-                                    <button class="btn btn-sm btn-outline-danger" disabled="@_busy" @onclick="() => DeleteModelAsync(m, deleteFiles: false)">Remove</button>
-                                    <button class="btn btn-sm btn-outline-danger" disabled="@_busy" @onclick="() => DeleteModelAsync(m, deleteFiles: true)">Delete files</button>
+                                    <details class="kx-menu">
+                                        <summary class="kx-menu-toggle" title="More actions"><i class="fas fa-ellipsis-v"></i></summary>
+                                        <div class="kx-menu-panel">
+                                            <button type="button" class="kx-menu-item" disabled="@_busy" @onclick="() => BeginEditAlias(m)">Alias</button>
+                                            <button type="button" class="kx-menu-item" disabled="@_busy" @onclick="() => RenameFolderAsync(m)">Rename</button>
+                                            <button type="button" class="kx-menu-item" disabled="@_busy" @onclick="() => DeleteModelAsync(m, deleteFiles: false)">Remove</button>
+                                            <button type="button" class="kx-menu-item is-danger" disabled="@_busy" @onclick="() => DeleteModelAsync(m, deleteFiles: true)">Delete files</button>
+                                        </div>
+                                    </details>
                                 </div>
                             </td>
                         </tr>
                     }
                 </tbody>
             </table>
+            </div>
         </div>
     </div>
     @if (!string.IsNullOrEmpty(_msg))
     {
-        <div class="alert-soft mt-3">@_msg</div>
+        <div class="alert alert-info mt-3"><i class="fas fa-info-circle mr-1"></i> @_msg</div>
+    }
+
+    @if (_loadPickerModel is not null)
+    {
+        <div class="exl-modal-backdrop" @onclick="CancelLoadPicker">
+            <div class="card card-outline card-primary exl-load-dialog" @onclick:stopPropagation="true">
+                <div class="card-header">
+                    <h3 class="card-title mb-0"><i class="fas fa-sliders-h mr-2"></i>Load model</h3>
+                    <button type="button" class="close" @onclick="CancelLoadPicker"><span>&times;</span></button>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted mb-3">
+                        @(string.IsNullOrWhiteSpace(_loadPickerModel.Alias)
+                            ? Path.GetFileName(_loadPickerModel.Path.TrimEnd(Path.DirectorySeparatorChar))
+                            : _loadPickerModel.Alias)
+                        — choose a VRAM / context profile (or keep your Settings).
+                    </p>
+                    @if (_loadProfilesLoading)
+                    {
+                        <p class="text-muted mb-0">Calculating profiles…</p>
+                    }
+                    else if (!string.IsNullOrEmpty(_loadProfilesError))
+                    {
+                        <div class="alert alert-danger mb-3">@_loadProfilesError</div>
+                        <button class="btn btn-sm btn-outline-secondary" @onclick="CancelLoadPicker">Close</button>
+                    }
+                    else
+                    {
+                        <div class="exl-profile-list mb-3">
+                            @foreach (var p in _loadProfiles)
+                            {
+                                <label class="exl-profile-option @(_selectedLoadProfile == p.Id ? "active" : null) @(p.Available ? null : "disabled")">
+                                    <input type="radio" name="load-profile" disabled="@(!p.Available)"
+                                           checked="@(_selectedLoadProfile == p.Id)"
+                                           @onchange="() => _selectedLoadProfile = p.Id" />
+                                    <span class="exl-profile-body">
+                                        <span class="d-flex justify-content-between gap-2 align-items-center">
+                                            <strong>@p.Label</strong>
+                                            <span class="badge-status @p.BadgeClass">@(p.Available ? p.KindLabel : "Unavailable")</span>
+                                        </span>
+                                        <span class="form-text mb-0">@p.Summary</span>
+                                    </span>
+                                </label>
+                            }
+                            @if (_customProfile is not null)
+                            {
+                                <label class="exl-profile-option @(_selectedLoadProfile == "custom" ? "active" : null)">
+                                    <input type="radio" name="load-profile"
+                                           checked="@(_selectedLoadProfile == "custom")"
+                                           @onchange='() => _selectedLoadProfile = "custom"' />
+                                    <span class="exl-profile-body">
+                                        <span class="d-flex justify-content-between gap-2 align-items-center">
+                                            <strong>@_customProfile.Label</strong>
+                                            <span class="badge-status badge-muted">Settings</span>
+                                        </span>
+                                        <span class="form-text mb-0">@_customProfile.Summary</span>
+                                    </span>
+                                </label>
+                            }
+                        </div>
+                        <div class="exl-btn-row justify-content-end">
+                            <button class="btn btn-sm btn-outline-secondary" disabled="@_busy" @onclick="CancelLoadPicker">Cancel</button>
+                            <button class="btn btn-sm btn-primary" disabled="@(_busy || string.IsNullOrEmpty(_selectedLoadProfile))"
+                                    @onclick="ConfirmLoadWithProfileAsync">
+                                <i class="fas fa-play"></i> Load with profile
+                            </button>
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
     }
 }
 else if (Tab == "quantize")
 {
-    <div class="card">
+    <div class="card card-outline card-primary">
+        <div class="card-header"><h3 class="card-title"><i class="fas fa-compress mr-2"></i>Quantize to EXL3</h3></div>
         <div class="card-body">
-            <h5 class="card-title">Quantize to EXL3</h5>
             <div class="form-grid">
                 <div>
                     <label class="form-label">Source model</label>
@@ -216,20 +333,20 @@ else if (Tab == "quantize")
                     <label class="form-label">Bits</label>
                     <input type="number" step="0.25" class="form-control" @bind="_quantizeBits" />
                 </div>
-                <button class="btn btn-primary" disabled="@_busy" @onclick="QuantizeAsync">Start quantize</button>
+                <button class="btn btn-sm btn-primary" disabled="@_busy" @onclick="QuantizeAsync"><i class="fas fa-compress"></i> Start quantize</button>
             </div>
             @if (!string.IsNullOrEmpty(_msg))
             {
-                <div class="alert-soft mt-3">@_msg</div>
+                <div class="alert alert-info mt-3"><i class="fas fa-info-circle mr-1"></i> @_msg</div>
             }
         </div>
     </div>
 }
 else
 {
-    <div class="card">
+    <div class="card card-outline card-primary">
+        <div class="card-header"><h3 class="card-title"><i class="fas fa-folder-open mr-2"></i>Import local folder</h3></div>
         <div class="card-body">
-            <h5 class="card-title">Import local folder</h5>
             <div class="form-grid">
                 <div>
                     <label class="form-label">Model path</label>
@@ -239,11 +356,11 @@ else
                     <label class="form-label">Alias</label>
                     <input class="form-control" @bind="_importAlias" />
                 </div>
-                <button class="btn btn-primary" @onclick="ImportAsync">Import</button>
+                <button class="btn btn-sm btn-primary" @onclick="ImportAsync"><i class="fas fa-file-import"></i> Import</button>
             </div>
             @if (!string.IsNullOrEmpty(_msg))
             {
-                <div class="alert-soft mt-3">@_msg</div>
+                <div class="alert alert-info mt-3"><i class="fas fa-info-circle mr-1"></i> @_msg</div>
             }
         </div>
     </div>
@@ -273,7 +390,25 @@ else
     private double _gpuUtil = VramFitService.DefaultGpuUtilization;
     private string? _gpuSplitGb;
     private string? _cudaVisible;
+    private int _maxBatchedTokens = VramFitService.DefaultContextTokens;
     private string _gpuCaption = "Reading GPU VRAM…";
+    private List<string> _gpuChips = [];
+    private ModelRecord? _loadPickerModel;
+    private bool _loadProfilesLoading;
+    private string? _loadProfilesError;
+    private string _selectedLoadProfile = VramFitService.ProfileNormal;
+    private List<LoadProfileUi> _loadProfiles = [];
+    private LoadProfileUi? _customProfile;
+
+    private sealed class LoadProfileUi
+    {
+        public string Id { get; init; } = "";
+        public string Label { get; init; } = "";
+        public string Summary { get; init; } = "";
+        public string BadgeClass { get; init; } = "badge-muted";
+        public string KindLabel { get; init; } = "";
+        public bool Available { get; init; } = true;
+    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -347,6 +482,7 @@ else
             _gpuUtil = settings.GpuMemoryUtilization;
             _gpuSplitGb = settings.GpuSplitGb;
             _cudaVisible = settings.CudaVisibleDevices;
+            _maxBatchedTokens = settings.MaxBatchedTokens;
         }
         catch
         {
@@ -364,6 +500,21 @@ else
         }
 
         _gpuCaption = VramFitService.FormatGpuCaption(_gpus, _gpuUtil, _cudaVisible, _gpuSplitGb);
+        _gpuChips = [];
+        if (_gpus.Count > 0)
+        {
+            _gpuChips.Add(_gpus.Count == 1 ? "1 GPU" : $"{_gpus.Count} GPUs");
+            foreach (var g in _gpus)
+            {
+                var gb = g.MemoryTotalMb / 1024d;
+                var shortName = g.Name.Replace("NVIDIA GeForce ", "", StringComparison.OrdinalIgnoreCase)
+                    .Replace("NVIDIA ", "", StringComparison.OrdinalIgnoreCase);
+                _gpuChips.Add($"{shortName} {gb:0.#} GB");
+            }
+
+            var usable = _gpus.Sum(g => g.MemoryTotalMb) / 1024d * _gpuUtil;
+            _gpuChips.Add($"{usable:0.#} GB usable");
+        }
     }
 
     private async Task OnSearchKey(KeyboardEventArgs e)
@@ -627,7 +778,128 @@ else
         }
     }
 
-    private async Task LoadModel(ModelRecord model)
+    private async Task BeginLoadModelAsync(ModelRecord model)
+    {
+        var label = string.IsNullOrWhiteSpace(model.Alias)
+            ? Path.GetFileName(model.Path.TrimEnd(Path.DirectorySeparatorChar))
+            : model.Alias;
+
+        if (!Directory.Exists(model.Path))
+        {
+            _msg = $"Load failed: folder missing — {model.Path}";
+            return;
+        }
+
+        if (!HasWeights(model.Path))
+        {
+            _msg = $"Load failed: incomplete model (no .safetensors) — {label}";
+            return;
+        }
+
+        _loadPickerModel = model;
+        _loadProfilesLoading = true;
+        _loadProfilesError = null;
+        _loadProfiles = [];
+        _customProfile = null;
+        _selectedLoadProfile = VramFitService.NormalizeLoadProfile(model.LastLoadProfile);
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var client = CreateApi();
+            var resp = await client.GetAsync($"/api/v1/models/{model.Id}/load-profiles");
+            var body = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode)
+            {
+                _loadProfilesError = $"Could not load profiles: {body}";
+                return;
+            }
+
+            using var doc = System.Text.Json.JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("selected_profile", out var sel) && sel.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                _selectedLoadProfile = VramFitService.NormalizeLoadProfile(sel.GetString());
+            }
+
+            _loadProfiles = [];
+            if (root.TryGetProperty("profiles", out var profiles) && profiles.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                foreach (var p in profiles.EnumerateArray())
+                {
+                    _loadProfiles.Add(new LoadProfileUi
+                    {
+                        Id = p.TryGetProperty("id", out var pid) ? pid.GetString() ?? "" : "",
+                        Label = p.TryGetProperty("label", out var pl) ? pl.GetString() ?? "" : "",
+                        Summary = p.TryGetProperty("summary", out var ps) ? ps.GetString() ?? "" : "",
+                        BadgeClass = p.TryGetProperty("badge_class", out var pb) ? pb.GetString() ?? "badge-muted" : "badge-muted",
+                        KindLabel = p.TryGetProperty("kind", out var pk) ? Capitalize(pk.GetString()) : "",
+                        Available = !p.TryGetProperty("available", out var pa) || pa.GetBoolean(),
+                    });
+                }
+            }
+
+            if (root.TryGetProperty("custom", out var custom) && custom.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                _customProfile = new LoadProfileUi
+                {
+                    Id = VramFitService.ProfileCustom,
+                    Label = custom.TryGetProperty("label", out var cl) ? cl.GetString() ?? "Personalizado" : "Personalizado",
+                    Summary = custom.TryGetProperty("summary", out var cs) ? cs.GetString() ?? "" : "",
+                    BadgeClass = "badge-muted",
+                    KindLabel = "Settings",
+                    Available = true,
+                };
+            }
+
+            if (_selectedLoadProfile != VramFitService.ProfileCustom
+                && !_loadProfiles.Any(p => p.Id == _selectedLoadProfile && p.Available))
+            {
+                _selectedLoadProfile = _loadProfiles.FirstOrDefault(p => p.Available)?.Id
+                    ?? VramFitService.ProfileCustom;
+            }
+        }
+        catch (Exception ex)
+        {
+            _loadProfilesError = ex.Message;
+        }
+        finally
+        {
+            _loadProfilesLoading = false;
+        }
+    }
+
+    private void CancelLoadPicker()
+    {
+        _loadPickerModel = null;
+        _loadProfilesError = null;
+        _loadProfilesLoading = false;
+    }
+
+    private async Task ConfirmLoadWithProfileAsync()
+    {
+        if (_loadPickerModel is null)
+        {
+            return;
+        }
+
+        var model = _loadPickerModel;
+        var profile = _selectedLoadProfile;
+        CancelLoadPicker();
+        await LoadModel(model, profile);
+    }
+
+    private static string Capitalize(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "";
+        }
+
+        return char.ToUpperInvariant(value[0]) + value[1..];
+    }
+
+    private async Task LoadModel(ModelRecord model, string? profile = null)
     {
         var label = string.IsNullOrWhiteSpace(model.Alias)
             ? Path.GetFileName(model.Path.TrimEnd(Path.DirectorySeparatorChar))
@@ -650,7 +922,8 @@ else
         _loadPhase = "starting";
         _loadPct = 1;
         _loadElapsedSec = 0;
-        _msg = $"Loading {label}… this can take 1–3 minutes. UI stays responsive.";
+        var profileKey = VramFitService.NormalizeLoadProfile(profile);
+        _msg = $"Loading {label} ({profileKey})… this can take 1–3 minutes. UI stays responsive.";
         await InvokeAsync(StateHasChanged);
         try
         {
@@ -660,6 +933,7 @@ else
                 model_id = model.Id,
                 path = model.Path,
                 background = true,
+                profile = profileKey,
             });
             var body = await resp.Content.ReadAsStringAsync();
             if (resp.StatusCode == System.Net.HttpStatusCode.Conflict)
@@ -717,6 +991,7 @@ else
                 if (!string.IsNullOrWhiteSpace(error) && !loading)
                 {
                     _msg = $"Load failed: {error}";
+                    await InvokeAsync(StateHasChanged);
                     return;
                 }
 
@@ -724,6 +999,7 @@ else
                 {
                     _msg = $"Loaded {label}.";
                     await ReloadAsync();
+                    await InvokeAsync(StateHasChanged);
                     return;
                 }
 
@@ -748,8 +1024,12 @@ else
         }
         finally
         {
-            _loadingId = null;
             _busy = false;
+            _loadingId = null;
+            _loadPhase = null;
+            _loadPct = 0;
+            _loadElapsedSec = 0;
+            await InvokeAsync(StateHasChanged);
         }
     }
 

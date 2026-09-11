@@ -3,14 +3,11 @@
 
 <PageTitle>About — ExLlamaSharp</PageTitle>
 
-<div class="page-header">
-    <h1>About</h1>
-    <p>Build and runtime information.</p>
-</div>
+<PageHeader Title="About" Subtitle="Build and runtime information." />
 
 @if (_info is null)
 {
-    <div class="alert-soft">Unable to load about info.</div>
+    <div class="alert alert-warning"><i class="fas fa-exclamation-triangle mr-1"></i> Unable to load about info.</div>
 }
 else
 {
@@ -21,9 +18,9 @@ else
         <div class="card"><div class="card-body"><div class="stat-label">OS</div><div class="small">@_info.Runtime.Os</div></div></div>
     </div>
 
-    <div class="card mb-3">
+    <div class="card card-outline card-primary mb-3">
+        <div class="card-header"><h3 class="card-title"><i class="fas fa-cogs mr-2"></i>Engine</h3></div>
         <div class="card-body">
-            <h5 class="card-title">Engine</h5>
             <ul class="mb-0">
                 <li>Mock: @_info.Engine.IsMock</li>
                 <li>Loaded: @_info.Engine.IsLoaded</li>
@@ -34,32 +31,29 @@ else
         </div>
     </div>
 
-    <div class="card">
+    <div class="card card-outline card-secondary">
+        <div class="card-header"><h3 class="card-title"><i class="fas fa-microchip mr-2"></i>GPU</h3></div>
         <div class="card-body">
-            <h5 class="card-title">GPU</h5>
             @if (_info.Gpu.Available)
             {
-                <ul class="mb-0">
+                <div class="kx-chip-row mb-2">
                     @if (_info.Gpu.Devices.Count > 0)
                     {
                         @foreach (var g in _info.Gpu.Devices)
                         {
-                            <li>
-                                PCI @g.Index
-                                @(g.CudaIndex is int cuda ? $" — cuda:{cuda}" : " — not in CUDA_VISIBLE_DEVICES")
-                                — @g.Name — @g.VramUsedMb.ToString("0") / @g.VramTotalMb.ToString("0") MB
-                                @(string.IsNullOrEmpty(g.Uuid) ? "" : $" — {g.Uuid}")
-                                @(g.DisplayActive == true ? " — display" : "")
-                            </li>
+                            var cuda = g.CudaIndex is int c ? $"cuda:{c}" : "not in CUDA_VISIBLE_DEVICES";
+                            var label = $"PCI {g.Index} · {cuda} · {g.Name} · {g.VramUsedMb:0}/{g.VramTotalMb:0} MB";
+                            if (g.DisplayActive == true) { label += " · display"; }
+                            <span class="kx-chip" title="@(string.IsNullOrEmpty(g.Uuid) ? label : $"{label} · {g.Uuid}")">@label</span>
                         }
                     }
                     else
                     {
-                        <li>@_info.Gpu.Name</li>
-                        <li>VRAM: @(_info.Gpu.VramTotalMb?.ToString("0") ?? "?") MB</li>
+                        <span class="kx-chip">@_info.Gpu.Name</span>
+                        <span class="kx-chip">VRAM: @(_info.Gpu.VramTotalMb?.ToString("0") ?? "?") MB</span>
                     }
-                    <li>Primary (highest VRAM): @_info.Gpu.Name</li>
-                </ul>
+                </div>
+                <p class="text-muted small mb-0">Primary (highest VRAM): @_info.Gpu.Name</p>
             }
             else
             {

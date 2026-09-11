@@ -3,19 +3,12 @@
 
 <PageTitle>Diagnostics — ExLlamaSharp</PageTitle>
 
-<div class="page-header">
-    <h1>Diagnostics</h1>
-    <p>Health checks and common fixes.</p>
-</div>
+<PageHeader Title="Diagnostics" Subtitle="Health checks and common fixes." />
 
-<p class="text-muted small mb-3">
-    Soft restart (<code>POST /api/v1/restart</code>) stops the host process; the Windows Service recovery policy must be configured to bring the service back up.
-</p>
-
-<div class="d-flex gap-2 flex-wrap mb-3">
-    <button class="btn btn-primary" disabled="@_busy" @onclick="RunHealth">Run health check</button>
-    <button class="btn btn-outline-secondary" disabled="@_busy" @onclick="RunReady">Readiness probe</button>
-</div>
+<PageToolbar>
+    <button class="btn btn-sm btn-primary" disabled="@_busy" @onclick="RunHealth"><i class="fas fa-heartbeat"></i> Run health check</button>
+    <button class="btn btn-sm btn-outline-secondary" disabled="@_busy" @onclick="RunReady"><i class="fas fa-check-circle"></i> Readiness probe</button>
+</PageToolbar>
 
 @if (_report is not null)
 {
@@ -44,18 +37,21 @@
     <div class="alert-soft mb-3">@_readyMsg</div>
 }
 
-<div class="card">
+<details class="card card-outline card-secondary kx-panel-collapsible">
+    <summary class="card-header"><strong>Common issues</strong></summary>
     <div class="card-body">
-        <h5 class="card-title">Common issues</h5>
-        <ul class="mb-0">
+        <ul class="mb-3">
             <li><strong>No model loaded</strong> — open <a href="/models">Models</a> and load or import one.</li>
             <li><strong>nvidia-smi missing</strong> — GPU metrics fall back to mock; install NVIDIA drivers.</li>
             <li><strong>Database unhealthy</strong> — check SQLite path and disk space.</li>
             <li><strong>Port in use</strong> — change bind port under <a href="/settings">Settings → Network</a>.</li>
             <li><strong>API 401</strong> — create a key on <a href="/keys">API Keys</a>.</li>
         </ul>
+        <p class="form-text mb-0 kx-help-short">
+            Soft restart (<code>POST /api/v1/restart</code>) stops the host; Windows Service recovery must bring it back up.
+        </p>
     </div>
-</div>
+</details>
 
 @code {
     private HealthReport? _report;

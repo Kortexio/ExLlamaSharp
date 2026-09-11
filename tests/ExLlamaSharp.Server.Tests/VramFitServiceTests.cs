@@ -72,6 +72,20 @@ public class VramFitServiceTests
     }
 
     [Fact]
+    public void Thirty_two_b_at_10k_context_is_refused_on_12_plus_8()
+    {
+        var gpus = new[]
+        {
+            new GpuSnapshot { Index = 0, Name = "RTX 3050", MemoryTotalMb = 8192 },
+            new GpuSnapshot { Index = 1, Name = "RTX 3060", MemoryTotalMb = 12288 },
+        };
+        Assert.True(_fit.TryExplainLoadRefusal(16.56, gpus, 0.90, "11,7", 10240, out var error));
+        Assert.Contains("10240", error);
+        Assert.Contains("Lower Max batched tokens", error);
+        Assert.False(_fit.TryExplainLoadRefusal(16.56, gpus, 0.90, "11,7", 2048, out _));
+    }
+
+    [Fact]
     public void FilterVisible_keeps_requested_pci_indices_strongest_first()
     {
         var gpus = new[]
@@ -83,5 +97,77 @@ public class VramFitServiceTests
         Assert.Equal(2, visible.Count);
         Assert.Equal(1, visible[0].Index);
         Assert.Equal(0, visible[1].Index);
+    }
+
+    private static GpuSnapshot[] Dual12Plus8() =>
+    [
+        new GpuSnapshot { Index = 0, Name = "RTX 3050", MemoryTotalMb = 8192 },
+        new GpuSnapshot { Index = 1, Name = "RTX 3060", MemoryTotalMb = 12288 },
+    ];
+
+    [Fact]
+    public void Load_profiles_for_8b_have_high_aggressive_context()
+    {
+        var result = _fit.BuildLoadProfiles(4.5, Dual12Plus8(), 0.90, "11,7", "1,0");
+        var aggressive = result.Profiles.Single(p => p.Id == VramFitService.ProfileAggressive);
+        var conservative = result.Profiles.Single(p => p.Id == VramFitService.ProfileConservative);
+        Assert.True(aggressive.Available);
+        Assert.True(aggressive.MaxBatchedTokens >= 8192);
+        Assert.True(conservative.MaxBatchedTokens < aggressive.MaxBatchedTokens);
+        Assert.True(conservative.MaxBatchedTokens >= 2048);
+        Assert.Equal("pipeline", aggressive.ParallelismMode);
+    }
+
+    [Theory]
+    [InlineData(16.7)] // Gemma 31B-ish
+    [InlineData(16.56)] // Qwen 32B-ish
+    public void Load_profiles_for_large_models_cap_aggressive_context(double weightGb)
+    {
+        var result = _fit.BuildLoadProfiles(weightGb, Dual12Plus8(), 0.90, "11,7", "1,0");
+        var aggressive = result.Profiles.Single(p => p.Id == VramFitService.ProfileAggressive);
+        var conservative = result.Profiles.Single(p => p.Id == VramFitService.ProfileConservative);
+        Assert.True(aggressive.Available);
+        Assert.True(aggressive.MaxBatchedTokens <= 4096);
+        Assert.True(conservative.MaxBatchedTokens <= aggressive.MaxBatchedTokens);
+        Assert.Equal(0, aggressive.MaxBatchedTokens % 256);
+    }
+
+    [Fact]
+    public void Load_profiles_force_pipeline_on_multi_gpu()
+    {
+        var result = _fit.BuildLoadProfiles(8, Dual12Plus8(), 0.90, "11,7", "1,0");
+        Assert.All(result.Profiles, p => Assert.Equal("pipeline", p.ParallelismMode));
+    }
+
+    [Fact]
+    public void Load_profiles_single_gpu_uses_none()
+    {
+        var result = _fit.BuildLoadProfiles(4, [Gpu(12288)], 0.90, null, "0");
+        Assert.All(result.Profiles, p => Assert.Equal("none", p.ParallelismMode));
+    }
+
+    [Fact]
+    public void Custom_profile_snapshot_keeps_requested_tokens()
+    {
+        var result = _fit.BuildLoadProfiles(8, Dual12Plus8(), 0.90, "11,7", "1,0", customMaxBatchedTokens: 3072);
+        Assert.Equal(3072, result.CustomMaxBatchedTokens);
+        Assert.Null(_fit.GetProfile(result, VramFitService.ProfileCustom));
+    }
+
+    [Fact]
+    public void Too_large_weights_mark_profiles_unavailable()
+    {
+        var result = _fit.BuildLoadProfiles(40, Dual12Plus8(), 0.90, "11,7", "1,0");
+        Assert.All(result.Profiles, p => Assert.False(p.Available));
+        Assert.Null(result.RecommendedProfileId);
+    }
+
+    [Fact]
+    public void NormalizeLoadProfile_maps_aliases()
+    {
+        Assert.Equal(VramFitService.ProfileConservative, VramFitService.NormalizeLoadProfile("conservadora"));
+        Assert.Equal(VramFitService.ProfileAggressive, VramFitService.NormalizeLoadProfile("agressiva"));
+        Assert.Equal(VramFitService.ProfileCustom, VramFitService.NormalizeLoadProfile("personalizado"));
+        Assert.Equal(VramFitService.ProfileNormal, VramFitService.NormalizeLoadProfile(null));
     }
 }

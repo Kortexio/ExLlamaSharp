@@ -4,10 +4,7 @@
 
 <PageTitle>Usage — ExLlamaSharp</PageTitle>
 
-<div class="page-header">
-    <h1>Usage</h1>
-    <p>Business view of API consumption.</p>
-</div>
+<PageHeader Title="Usage" Subtitle="API consumption last 7 days." />
 
 <div class="stat-grid mb-3">
     <div class="card stat-card"><div class="card-body"><div class="stat-label">Requests (7d)</div><div class="stat-value">@_req7</div></div></div>
@@ -16,30 +13,32 @@
     <div class="card stat-card"><div class="card-body"><div class="stat-label">Est. cost</div><div class="stat-value">@_cost.ToString("C")</div></div></div>
 </div>
 
-<div class="card">
-    <div class="card-body">
-        <h5 class="card-title">Recent activity</h5>
-        <table class="table-clean">
-            <thead>
-                <tr><th>When</th><th>Endpoint</th><th>Tokens</th><th>Status</th><th>ms</th></tr>
-            </thead>
-            <tbody>
-                @if (_recent.Count == 0)
-                {
-                    <tr><td colspan="5" class="text-muted">No audit rows yet.</td></tr>
-                }
-                @foreach (var a in _recent)
-                {
-                    <tr>
-                        <td>@a.Timestamp.ToLocalTime().ToString("g")</td>
-                        <td><code>@a.Endpoint</code></td>
-                        <td>@(a.PromptTokens + a.CompletionTokens)</td>
-                        <td>@a.StatusCode</td>
-                        <td>@a.DurationMs</td>
-                    </tr>
-                }
-            </tbody>
-        </table>
+<div class="card card-outline card-primary card-table">
+    <div class="card-header"><h3 class="card-title"><i class="fas fa-list mr-2"></i>Recent requests</h3></div>
+    <div class="card-body p-0">
+        <div class="kx-table-wrap">
+            <table class="table-clean">
+                <thead>
+                    <tr><th>When</th><th>Endpoint</th><th>Tokens</th><th>Status</th><th>ms</th></tr>
+                </thead>
+                <tbody>
+                    @if (_recent.Count == 0)
+                    {
+                        <tr><td colspan="5" class="text-muted">No audit rows yet.</td></tr>
+                    }
+                    @foreach (var a in _recent)
+                    {
+                        <tr>
+                            <td>@a.Timestamp.ToLocalTime().ToString("g")</td>
+                            <td><code>@a.Endpoint</code></td>
+                            <td>@(a.PromptTokens + a.CompletionTokens)</td>
+                            <td>@a.StatusCode</td>
+                            <td>@a.DurationMs</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
 

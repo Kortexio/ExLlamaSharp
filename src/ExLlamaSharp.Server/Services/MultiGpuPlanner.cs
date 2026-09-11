@@ -85,6 +85,15 @@ public sealed class MultiGpuPlanner
         var devices = ParseDeviceIds(settings.CudaVisibleDevices);
         var kind = ParseMode(settings.ParallelismMode);
         var split = ParseGpuSplitGb(settings.GpuSplitGb, devices.Count);
+        string? coercionNote = null;
+
+        // ExLlamaV3 TP children re-enter the JSONL host on Windows and never become workers.
+        if (kind == ParallelismKind.Tensor && OperatingSystem.IsWindows())
+        {
+            kind = ParallelismKind.Pipeline;
+            coercionNote =
+                "Tensor parallel is not supported on Windows (TP workers time out). Using pipeline.";
+        }
 
         if (kind != ParallelismKind.None && devices.Count < 2)
         {
@@ -100,9 +109,17 @@ public sealed class MultiGpuPlanner
             GpuMemoryUtilization = settings.GpuMemoryUtilization,
             GpuSplitGb = string.IsNullOrWhiteSpace(settings.GpuSplitGb) ? null : settings.GpuSplitGb.Trim(),
             MaxNumSeqs = settings.MaxNumSeqs,
-            MaxBatchedTokens = settings.MaxBatchedTokens,
+            MaxBatchedTokens = AlignCacheTokens(settings.MaxBatchedTokens),
             MaxChunkSize = settings.MaxChunkSize,
+            CoercionNote = coercionNote,
         };
+    }
+
+    /// <summary>ExLlamaV3 page cache requires a multiple of 256 tokens.</summary>
+    public static int AlignCacheTokens(int tokens)
+    {
+        var n = Math.Max(256, tokens);
+        return n - (n % 256);
     }
 
     public MultiGpuPlan BuildPlan(string? cudaVisibleDevices, string? parallelismMode, double gpuMemoryUtilization = 0.90, string? gpuSplitGb = null)
@@ -134,7 +151,15 @@ public sealed class MultiGpuPlan
     public int MaxNumSeqs { get; init; } = 256;
     public int MaxBatchedTokens { get; init; } = 8192;
     public int MaxChunkSize { get; init; } = 2048;
+    public string? CoercionNote { get; init; }
 
     public int NumDevices => DeviceIds.Count;
     public bool IsMultiGpu => Kind != ParallelismKind.None && NumDevices > 1;
+
+    public string AppliedMode => Kind switch
+    {
+        ParallelismKind.Tensor => "tensor",
+        ParallelismKind.Pipeline => "pipeline",
+        _ => "none",
+    };
 }

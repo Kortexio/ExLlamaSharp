@@ -6,14 +6,11 @@
 
 <PageTitle>Adapters — ExLlamaSharp</PageTitle>
 
-<div class="page-header">
-    <h1>LoRA adapters</h1>
-    <p>Registered adapters for fine-tuned inference.</p>
-</div>
+<PageHeader Title="LoRA adapters" Subtitle="Registered adapters for fine-tuned inference." />
 
-<div class="card mb-3">
+<div class="card card-outline card-primary mb-3">
+    <div class="card-header"><h3 class="card-title"><i class="fas fa-plus-circle mr-2"></i>Register adapter</h3></div>
     <div class="card-body">
-        <h5 class="card-title">Register adapter</h5>
         <div class="form-grid">
             <div>
                 <label class="form-label">Name</label>
@@ -41,7 +38,9 @@
                 <label class="form-label">Alpha</label>
                 <input type="number" step="0.1" class="form-control" @bind="_alpha" />
             </div>
-            <button class="btn btn-primary" disabled="@_busy" @onclick="RegisterAsync">Register</button>
+            <div class="d-flex align-items-end">
+                <button class="btn btn-sm btn-primary" disabled="@_busy" @onclick="RegisterAsync"><i class="fas fa-plus"></i> Register</button>
+            </div>
         </div>
         @if (!string.IsNullOrEmpty(_msg))
         {
@@ -50,32 +49,35 @@
     </div>
 </div>
 
-<div class="card">
+<div class="card card-outline card-secondary card-table">
+    <div class="card-header"><h3 class="card-title"><i class="fas fa-puzzle-piece mr-2"></i>Registered</h3></div>
     <div class="card-body p-0">
-        <table class="table-clean">
-            <thead>
-                <tr><th>Name</th><th>Path</th><th>Rank</th><th>Alpha</th><th>Created</th><th></th></tr>
-            </thead>
-            <tbody>
-                @if (_items.Count == 0)
-                {
-                    <tr><td colspan="6" class="text-muted">No adapters yet.</td></tr>
-                }
-                @foreach (var a in _items)
-                {
-                    <tr>
-                        <td>@a.Name</td>
-                        <td><code>@a.Path</code></td>
-                        <td>@a.Rank</td>
-                        <td>@a.Alpha</td>
-                        <td>@a.CreatedAt.ToLocalTime().ToString("g")</td>
-                        <td>
-                            <button class="btn btn-sm btn-outline-danger" disabled="@_busy" @onclick="() => DeleteAsync(a.Id)">Delete</button>
-                        </td>
-                    </tr>
-                }
-            </tbody>
-        </table>
+        <div class="kx-table-wrap">
+            <table class="table-clean">
+                <thead>
+                    <tr><th>Name</th><th>Path</th><th>Rank</th><th>Alpha</th><th>Created</th><th></th></tr>
+                </thead>
+                <tbody>
+                    @if (_items.Count == 0)
+                    {
+                        <tr><td colspan="6" class="text-muted">No adapters yet.</td></tr>
+                    }
+                    @foreach (var a in _items)
+                    {
+                        <tr>
+                            <td>@a.Name</td>
+                            <td><code>@a.Path</code></td>
+                            <td>@a.Rank</td>
+                            <td>@a.Alpha</td>
+                            <td>@a.CreatedAt.ToLocalTime().ToString("g")</td>
+                            <td>
+                                <button class="btn btn-sm btn-outline-danger" disabled="@_busy" @onclick="() => DeleteAsync(a.Id)">Delete</button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
 

@@ -59,11 +59,11 @@ public static class DbInitializer
     }
 
     /// <summary>
-    /// EnsureCreated does not add columns to existing SQLite tables — patch known additive Settings fields.
+    /// EnsureCreated does not add columns to existing SQLite tables — patch known additive fields.
     /// </summary>
     private static async Task EnsureSchemaPatchesAsync(AppDbContext db, ILogger logger, CancellationToken cancellationToken)
     {
-        var patches = new (string Column, string SqlType, string DefaultSql)[]
+        var settingsPatches = new (string Column, string SqlType, string DefaultSql)[]
         {
             ("EstimatedCostPerMillionTokens", "TEXT", "0"),
             ("DefaultMaxTokens", "INTEGER", "2048"),
@@ -83,6 +83,22 @@ public static class DbInitializer
             ("AutoBackupSchedule", "TEXT", "'disabled'"),
         };
 
+        await EnsureTableColumnsAsync(db, logger, "Settings", settingsPatches, cancellationToken).ConfigureAwait(false);
+        await EnsureTableColumnsAsync(
+            db,
+            logger,
+            "Models",
+            [("LastLoadProfile", "TEXT", "NULL")],
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task EnsureTableColumnsAsync(
+        AppDbContext db,
+        ILogger logger,
+        string table,
+        (string Column, string SqlType, string DefaultSql)[] patches,
+        CancellationToken cancellationToken)
+    {
         var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var conn = db.Database.GetDbConnection();
         if (conn.State != System.Data.ConnectionState.Open)
@@ -92,11 +108,10 @@ public static class DbInitializer
 
         await using (var cmd = conn.CreateCommand())
         {
-            cmd.CommandText = "PRAGMA table_info(\"Settings\")";
+            cmd.CommandText = $"PRAGMA table_info(\"{table}\")";
             await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                // cid, name, type, notnull, dflt_value, pk
                 existing.Add(reader.GetString(1));
             }
         }
@@ -112,16 +127,16 @@ public static class DbInitializer
             {
 #pragma warning disable EF1002
                 await db.Database.ExecuteSqlRawAsync(
-                    $"ALTER TABLE \"Settings\" ADD COLUMN \"{column}\" {sqlType} DEFAULT {defaultSql}",
+                    $"ALTER TABLE \"{table}\" ADD COLUMN \"{column}\" {sqlType} DEFAULT {defaultSql}",
                     cancellationToken).ConfigureAwait(false);
 #pragma warning restore EF1002
-                logger.LogInformation("SQLite schema patch: added Settings.{Column}", column);
+                logger.LogInformation("SQLite schema patch: added {Table}.{Column}", table, column);
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "Schema patch failed for Settings.{Column}", column);
+                logger.LogError(ex, "Schema patch failed for {Table}.{Column}", table, column);
                 throw new InvalidOperationException(
-                    $"Cannot patch Settings.{column} on app.db. " +
+                    $"Cannot patch {table}.{column} on app.db. " +
                     "The data folder must be writable by the account that runs the Server " +
                     "(not LocalSystem-owned + user-session readonly). " +
                     $"Data root: %ProgramData%\\ExLlamaSharp. Inner: {ex.Message}",

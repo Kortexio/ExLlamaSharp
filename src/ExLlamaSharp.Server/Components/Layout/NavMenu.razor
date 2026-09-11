@@ -1,34 +1,110 @@
-<nav class="kx-nav">
-    <div class="kx-nav-section">
-        <div class="kx-nav-label">Workspace</div>
-        <NavLink class="kx-nav-link" href="/" Match="NavLinkMatch.All" @onclick="NotifyNavigate">Dashboard</NavLink>
-        <NavLink class="kx-nav-link" href="/chat" @onclick="NotifyNavigate">Chat</NavLink>
-        <NavLink class="kx-nav-link" href="/models" @onclick="NotifyNavigate">Models</NavLink>
-        <NavLink class="kx-nav-link" href="/jobs" @onclick="NotifyNavigate">Jobs</NavLink>
-        <NavLink class="kx-nav-link" href="/keys" @onclick="NotifyNavigate">API Keys</NavLink>
-        <NavLink class="kx-nav-link" href="/usage" @onclick="NotifyNavigate">Usage</NavLink>
-        <NavLink class="kx-nav-link" href="/team" @onclick="NotifyNavigate">Team</NavLink>
-    </div>
+<nav class="mt-2">
+    <ul class="nav nav-pills nav-sidebar flex-column" data-widget="treeview" role="menu" data-accordion="false">
+        <li class="nav-header">WORKSPACE</li>
+        <li class="nav-item">
+            <NavLink class="nav-link" href="/" Match="NavLinkMatch.All" @onclick="NotifyNavigate">
+                <i class="nav-icon fas fa-tachometer-alt"></i>
+                <p>Dashboard</p>
+            </NavLink>
+        </li>
+        <li class="nav-item">
+            <NavLink class="nav-link" href="/chat" @onclick="NotifyNavigate">
+                <i class="nav-icon fas fa-comments"></i>
+                <p>Chat</p>
+            </NavLink>
+        </li>
+        <li class="nav-item">
+            <NavLink class="nav-link" href="/models" @onclick="NotifyNavigate">
+                <i class="nav-icon fas fa-cube"></i>
+                <p>Models</p>
+            </NavLink>
+        </li>
+        <li class="nav-item">
+            <NavLink class="nav-link" href="/jobs" @onclick="NotifyNavigate">
+                <i class="nav-icon fas fa-tasks"></i>
+                <p>Jobs</p>
+            </NavLink>
+        </li>
+        <li class="nav-item">
+            <NavLink class="nav-link" href="/keys" @onclick="NotifyNavigate">
+                <i class="nav-icon fas fa-key"></i>
+                <p>API Keys</p>
+            </NavLink>
+        </li>
+        <li class="nav-item">
+            <NavLink class="nav-link" href="/usage" @onclick="NotifyNavigate">
+                <i class="nav-icon fas fa-chart-bar"></i>
+                <p>Usage</p>
+            </NavLink>
+        </li>
+        <li class="nav-item">
+            <NavLink class="nav-link" href="/team" @onclick="NotifyNavigate">
+                <i class="nav-icon fas fa-users"></i>
+                <p>Team</p>
+            </NavLink>
+        </li>
 
-    @if (AdvancedMode)
-    {
-        <div class="kx-nav-section">
-            <div class="kx-nav-label">Advanced</div>
-            <NavLink class="kx-nav-link" href="/adapters" @onclick="NotifyNavigate">Adapters</NavLink>
-            <NavLink class="kx-nav-link" href="/dashboard/metrics" @onclick="NotifyNavigate">Metrics</NavLink>
-            <NavLink class="kx-nav-link" href="/logs" @onclick="NotifyNavigate">Logs</NavLink>
-            <NavLink class="kx-nav-link" href="/diagnostics" @onclick="NotifyNavigate">Diagnostics</NavLink>
-            <NavLink class="kx-nav-link" href="/admin/tenants" @onclick="NotifyNavigate">Tenants</NavLink>
-        </div>
-    }
+        @if (AdvancedMode)
+        {
+            <li class="nav-header">ADVANCED</li>
+            <li class="nav-item">
+                <NavLink class="nav-link" href="/adapters" @onclick="NotifyNavigate">
+                    <i class="nav-icon fas fa-puzzle-piece"></i>
+                    <p>Adapters</p>
+                </NavLink>
+            </li>
+            <li class="nav-item">
+                <NavLink class="nav-link" href="/dashboard/metrics" @onclick="NotifyNavigate">
+                    <i class="nav-icon fas fa-chart-line"></i>
+                    <p>Metrics</p>
+                </NavLink>
+            </li>
+            <li class="nav-item">
+                <NavLink class="nav-link" href="/logs" @onclick="NotifyNavigate">
+                    <i class="nav-icon fas fa-file-alt"></i>
+                    <p>Logs</p>
+                </NavLink>
+            </li>
+            <li class="nav-item">
+                <NavLink class="nav-link" href="/diagnostics" @onclick="NotifyNavigate">
+                    <i class="nav-icon fas fa-stethoscope"></i>
+                    <p>Diagnostics</p>
+                </NavLink>
+            </li>
+            <li class="nav-item">
+                <NavLink class="nav-link" href="/admin/tenants" @onclick="NotifyNavigate">
+                    <i class="nav-icon fas fa-building"></i>
+                    <p>Tenants</p>
+                </NavLink>
+            </li>
+        }
 
-    <div class="kx-nav-section">
-        <div class="kx-nav-label">System</div>
-        <NavLink class="kx-nav-link" href="/settings" @onclick="NotifyNavigate">Settings</NavLink>
-        <NavLink class="kx-nav-link" href="/setup" @onclick="NotifyNavigate">Setup</NavLink>
-        <NavLink class="kx-nav-link" href="/api" @onclick="NotifyNavigate">API Guide</NavLink>
-        <NavLink class="kx-nav-link" href="/about" @onclick="NotifyNavigate">About</NavLink>
-    </div>
+        <li class="nav-header">SYSTEM</li>
+        <li class="nav-item">
+            <NavLink class="nav-link" href="/settings" @onclick="NotifyNavigate">
+                <i class="nav-icon fas fa-cog"></i>
+                <p>Settings</p>
+            </NavLink>
+        </li>
+        <li class="nav-item">
+            <NavLink class="nav-link" href="/setup" @onclick="NotifyNavigate">
+                <i class="nav-icon fas fa-magic"></i>
+                <p>Setup</p>
+            </NavLink>
+        </li>
+        <li class="nav-item">
+            <NavLink class="nav-link" href="/api" @onclick="NotifyNavigate">
+                <i class="nav-icon fas fa-book"></i>
+                <p>API Guide</p>
+            </NavLink>
+        </li>
+        <li class="nav-item">
+            <NavLink class="nav-link" href="/about" @onclick="NotifyNavigate">
+                <i class="nav-icon fas fa-info-circle"></i>
+                <p>About</p>
+            </NavLink>
+        </li>
+    </ul>
 </nav>
 
 @code {

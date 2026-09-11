@@ -11,44 +11,42 @@
 
 <PageTitle>Settings — ExLlamaSharp</PageTitle>
 
-<div class="page-header">
-    <h1>Settings</h1>
-    <p>Server configuration. Changes persist to the settings row.</p>
-</div>
+<PageHeader Title="Settings" Subtitle="Server configuration. Saved to the database." />
 <ModelStatusBanner />
 
-<div class="tabs">
+<PageTabs Scroll="true">
     @foreach (var t in _tabs)
     {
         <button class="tab-btn @(Tab == t ? "active" : "")" @onclick="() => OnTab(t)">@t</button>
     }
-</div>
+</PageTabs>
 
 @if (_s is null)
 {
-    <div class="alert-soft">@_loadError ?? "Loading…"</div>
+    <div class="alert alert-warning"><i class="fas fa-spinner fa-spin mr-1"></i> @_loadError ?? "Loading…"</div>
 }
 else
 {
-    <div class="card">
+    <div class="card card-outline card-primary">
+        <div class="card-header"><h3 class="card-title"><i class="fas fa-sliders-h mr-2"></i>@Tab</h3></div>
         <div class="card-body">
             @if (Tab == "Network")
             {
-                <div class="mb-3 p-3 border rounded">
-                    <div class="form-check form-switch">
-                        <input class="form-check-input" type="checkbox" id="lanAccess"
+                <div class="exl-form-section mb-4">
+                    <div class="exl-form-section-title"><i class="fas fa-network-wired mr-2"></i>LAN access</div>
+                    <div class="custom-control custom-switch mb-2">
+                        <input type="checkbox" class="custom-control-input" id="lanAccess"
                                checked="@_lanAccess" @onchange="OnLanAccessChanged" />
-                        <label class="form-check-label" for="lanAccess">
-                            <strong>Allow access from this network (LAN)</strong>
+                        <label class="custom-control-label font-weight-bold" for="lanAccess">
+                            Allow access from this network (LAN)
                         </label>
                     </div>
-                    <p class="form-text mb-2">
-                        When enabled, the API listens on all interfaces (<code>0.0.0.0</code>) so other devices can reach this PC.
-                        The Tray will prompt for Administrator once to open Windows Firewall on the API port.
+                    <p class="form-text mb-3 kx-help-short">
+                        Enables <code>0.0.0.0</code> so other devices on the LAN can reach this PC. Tray may ask for Admin once for firewall.
                     </p>
                     @if (_lanAccess)
                     {
-                        <div class="alert-soft mb-0">
+                        <div class="alert alert-light border mb-0">
                             <div><strong>OpenAI base URL</strong> (clients):</div>
                             @foreach (var ip in _lanIps)
                             {
@@ -66,7 +64,8 @@ else
                         <div class="form-text">Local only: <code>http://127.0.0.1:@_s.Port/v1</code></div>
                     }
                 </div>
-                <div class="form-grid">
+                <div class="exl-form-section-title mt-2"><i class="fas fa-ethernet mr-2"></i>Bind &amp; security</div>
+                <div class="form-grid form-grid-wide">
                     <div>
                         <label class="form-label">Bind address</label>
                         <input class="form-control" @bind="_s.BindAddress" @bind:after="SyncLanFromBind" />
@@ -76,13 +75,12 @@ else
                     <div><label class="form-label">CORS</label><input class="form-control" @bind="_s.Cors" /></div>
                     <div><label class="form-label">TLS cert path</label><input class="form-control" @bind="_s.TlsCertPath" /></div>
                 </div>
-                <p class="form-text mt-2 mb-2">
-                    Bind address, port, CORS, and TLS only apply after a server restart.
-                    Save first, then restart (Tray → Restart, or the button below).
+                <p class="form-text mt-3 mb-3 kx-help-short">
+                    Network fields need a restart after Save (Tray → Restart, or the button below).
                 </p>
-                <div class="d-flex flex-wrap gap-2 align-items-center">
-                    <button class="btn btn-outline-warning" disabled="@(_saving || _restarting)" @onclick="RestartServerAsync">
-                        @(_restarting ? "Restarting…" : "Restart server now")
+                <div class="d-flex flex-wrap align-items-center">
+                    <button class="btn btn-sm btn-outline-warning" disabled="@(_saving || _restarting)" @onclick="RestartServerAsync">
+                        <i class="fas fa-redo"></i> @(_restarting ? "Restarting…" : "Restart server now")
                     </button>
                     @if (_portChanged || _bindChanged)
                     {
@@ -98,14 +96,14 @@ else
                     <div>
                         <label class="form-label">Max batched tokens (num_ctx)</label>
                         <input type="number" class="form-control" @bind="_s.MaxBatchedTokens" />
-                        <div class="form-text">Context window / KV cache. Requires model reload.</div>
+                        <div class="form-text kx-help-short">
+                            Context / KV (multiple of 256). Reload model after change. Large models on 12+8 GB: prefer 2048–4096.
+                        </div>
                     </div>
                     <div>
-                        <label class="form-label">Default max tokens (num_predict)</label>
+                        <label class="form-label">Default max tokens</label>
                         <input type="number" class="form-control" min="64" max="128000" @bind="_s.DefaultMaxTokens" />
-                        <div class="form-text">Default reply length when the request omits max_tokens.</div>
                     </div>
-                    <div><label class="form-label">GPU memory util</label><input type="number" step="0.01" class="form-control" @bind="_s.GpuMemoryUtilization" /></div>
                     <div><label class="form-label">Request timeout (s)</label><input type="number" class="form-control" @bind="_s.RequestTimeoutSeconds" /></div>
                 </div>
             }
@@ -113,50 +111,63 @@ else
             {
                 <div class="form-grid">
                     <div>
-                        <label class="form-label">CUDA devices (PCI / nvidia-smi indices)</label>
+                        <label class="form-label">CUDA devices (PCI indices)</label>
                         <input class="form-control" @bind="_s.CudaVisibleDevices" placeholder="0,1" />
-                        <div class="form-text">
-                            Which GPUs to use, e.g. <code>0</code> or <code>0,1</code>. Empty = all.
-                            The worker remaps so <code>cuda:0</code> is the highest-VRAM card in that set.
-                        </div>
+                        <div class="form-text kx-help-short">e.g. <code>0,1</code>. Empty = all. Worker remaps highest VRAM to <code>cuda:0</code>.</div>
                     </div>
                     <div>
                         <label class="form-label">Parallelism</label>
                         <select class="form-select" @bind="_s.ParallelismMode">
-                            <option value="none">none (single GPU — cuda:0)</option>
-                            <option value="tensor">tensor (ExLlamaV3 TP)</option>
-                            <option value="pipeline">pipeline (layer autosplit)</option>
+                            <option value="none">none (single GPU)</option>
+                            @if (OperatingSystem.IsWindows())
+                            {
+                                <option value="pipeline">pipeline (Windows)</option>
+                            }
+                            else
+                            {
+                                <option value="tensor">tensor</option>
+                                <option value="pipeline">pipeline</option>
+                            }
                         </select>
-                        <div class="form-text">tensor and pipeline need at least two indices. Saving reloads the model.</div>
+                        <div class="form-text kx-help-short">
+                            @if (OperatingSystem.IsWindows())
+                            {
+                                <text>Windows: use pipeline — tensor times out.</text>
+                            }
+                            else
+                            {
+                                <text>Needs ≥2 devices. Saving reloads the model.</text>
+                            }
+                        </div>
                     </div>
                     <div>
                         <label class="form-label">GPU memory util</label>
                         <input type="number" step="0.01" min="0.05" max="1" class="form-control" @bind="_s.GpuMemoryUtilization" />
-                        <div class="form-text">Fraction of each GPU's VRAM for auto-split (0–1). Used when split GB is empty.</div>
+                        <div class="form-text kx-help-short">Fraction of VRAM for auto-split when split GB is empty.</div>
                     </div>
                     <div>
                         <label class="form-label">GPU split GB (optional)</label>
                         <input class="form-control" @bind="_s.GpuSplitGb" placeholder="auto" />
-                        <div class="form-text">
-                            After remap, one value per visible GPU (e.g. <code>10,10</code> or <code>10,4.5</code>).
-                            Empty = VRAM × GPU memory util.
-                        </div>
+                        <div class="form-text kx-help-short">One value per visible GPU after remap, e.g. <code>11,7</code>.</div>
                     </div>
                 </div>
+                @if (OperatingSystem.IsWindows())
+                {
+                    <div class="alert-soft mt-3 mb-0">
+                        Windows: use <strong>pipeline</strong>. Tensor hangs with <code>Timed out waiting for worker</code>.
+                    </div>
+                }
                 @if (_gpus.Count > 0)
                 {
-                    <div class="form-text mt-3">Detected (PCI order) and worker remap (<code>cuda:0</code> = highest VRAM in the set):</div>
-                    <ul class="small mb-0">
+                    <div class="kx-chip-row mt-3">
                         @foreach (var row in GpuRemapPreview())
                         {
-                            <li>
-                                PCI @row.Gpu.Index
-                                @(row.CudaIndex is int cuda ? $" → cuda:{cuda}" : " — excluded")
-                                — @row.Gpu.Name — @row.Gpu.MemoryUsedMb.ToString("0") / @row.Gpu.MemoryTotalMb.ToString("0") MB
-                                @(string.IsNullOrEmpty(row.Gpu.Uuid) ? "" : $" — {row.Gpu.Uuid}")
-                            </li>
+                            var label = row.CudaIndex is int cuda
+                                ? $"PCI {row.Gpu.Index} → cuda:{cuda}"
+                                : $"PCI {row.Gpu.Index} excluded";
+                            <span class="kx-chip" title="@row.Gpu.Name">@label · @((row.Gpu.MemoryTotalMb / 1024d).ToString("0.#")) GB</span>
                         }
-                    </ul>
+                    </div>
                 }
             }
             else if (Tab == "Speculative")
@@ -226,8 +237,8 @@ else
                         <input class="form-control" @bind="_restorePath" placeholder="C:\...\backup.zip" />
                     </div>
                     <div class="d-flex gap-2 flex-wrap">
-                        <button type="button" class="btn btn-outline-primary" disabled="@_busy" @onclick="BackupNowAsync">Backup now</button>
-                        <button type="button" class="btn btn-outline-secondary" disabled="@_busy" @onclick="RestoreAsync">Restore</button>
+                        <button type="button" class="btn btn-sm btn-outline-primary" disabled="@_busy" @onclick="BackupNowAsync">Backup now</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" disabled="@_busy" @onclick="RestoreAsync">Restore</button>
                     </div>
                 </div>
                 @if (!string.IsNullOrEmpty(_backupMsg))
@@ -241,7 +252,7 @@ else
                     <div><label class="form-label">Webhook URL</label><input class="form-control" @bind="_s.WebhookUrl" /></div>
                     <div><label class="form-label">Webhook secret</label><input class="form-control" @bind="_s.WebhookSecret" /></div>
                     <div>
-                        <button class="btn btn-secondary" type="button" @onclick="TestWebhookAsync" disabled="@_webhookTesting">
+                        <button class="btn btn-sm btn-secondary" type="button" @onclick="TestWebhookAsync" disabled="@_webhookTesting">
                             @(_webhookTesting ? "Sending…" : "Test webhook")
                         </button>
                         @if (!string.IsNullOrEmpty(_webhookTestResult))
@@ -275,7 +286,7 @@ else
                         <label class="form-label">Category</label>
                         <input class="form-control" @bind="_ruleCategory" />
                     </div>
-                    <button type="button" class="btn btn-outline-primary" disabled="@_busy" @onclick="AddRuleAsync">Add rule</button>
+                    <button type="button" class="btn btn-sm btn-outline-primary" disabled="@_busy" @onclick="AddRuleAsync"><i class="fas fa-plus"></i> Add rule</button>
                 </div>
                 <table class="table-clean">
                     <thead>
@@ -323,11 +334,13 @@ else
                 </div>
             }
 
-            <div class="mt-3 d-flex gap-2 align-items-center">
-                <button class="btn btn-primary" @onclick="SaveAsync" disabled="@_saving">Save</button>
+            <div class="exl-sticky-save">
+                <button class="btn btn-sm btn-primary" @onclick="SaveAsync" disabled="@_saving">
+                    <i class="fas fa-save"></i> @(_saving ? "Saving…" : "Save settings")
+                </button>
                 @if (!string.IsNullOrEmpty(_msg))
                 {
-                    <span class="text-muted small">@_msg</span>
+                    <span class="text-muted small ml-2">@_msg</span>
                 }
             </div>
         </div>
@@ -430,6 +443,12 @@ else
         try
         {
             _s = await SettingsSvc.GetAsync();
+            if (OperatingSystem.IsWindows()
+                && string.Equals(_s.ParallelismMode, "tensor", StringComparison.OrdinalIgnoreCase))
+            {
+                _s.ParallelismMode = "pipeline";
+            }
+
             _savedPort = _s.Port;
             _savedBind = _s.BindAddress;
             _lanAccess = ProductionRuntime.IsLanBind(_s.BindAddress);
@@ -711,7 +730,15 @@ else
             }
 
             var snap = _s;
-            Planner.BuildPlan(snap);
+            var plan = Planner.BuildPlan(snap);
+            if (!string.IsNullOrWhiteSpace(plan.CoercionNote))
+            {
+                snap.ParallelismMode = plan.AppliedMode;
+                _s.ParallelismMode = plan.AppliedMode;
+            }
+
+            snap.MaxBatchedTokens = plan.MaxBatchedTokens;
+            _s.MaxBatchedTokens = plan.MaxBatchedTokens;
             var gpuChanged = !string.Equals(snap.CudaVisibleDevices, _savedCuda, StringComparison.Ordinal)
                 || !string.Equals(snap.ParallelismMode, _savedParallelism, StringComparison.OrdinalIgnoreCase)
                 || !string.Equals(snap.GpuSplitGb ?? "", _savedGpuSplit, StringComparison.Ordinal)

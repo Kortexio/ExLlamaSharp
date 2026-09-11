@@ -1,0 +1,8 @@
+<div class="exl-tabs @(Scroll ? "exl-tabs-scroll" : null)" role="tablist">
+    @ChildContent
+</div>
+
+@code {
+    [Parameter] public bool Scroll { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+}

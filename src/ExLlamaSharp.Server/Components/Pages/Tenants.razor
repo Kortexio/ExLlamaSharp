@@ -4,72 +4,78 @@
 
 <PageTitle>Tenants — ExLlamaSharp</PageTitle>
 
-<div class="page-header d-flex justify-content-between align-items-start flex-wrap gap-2">
-    <div>
-        <h1>Tenants</h1>
-        <p>Multi-tenant administration.</p>
-    </div>
-    <button class="btn btn-primary" @onclick="() => _showCreate = true">New tenant</button>
+<PageHeader Title="Tenants" Subtitle="Multi-tenant administration.">
+    <Actions>
+        <button class="btn btn-sm btn-primary" @onclick="() => _showCreate = true"><i class="fas fa-plus"></i> New tenant</button>
+    </Actions>
+</PageHeader>
+
+<div class="stat-grid mb-3">
+    <div class="card stat-card"><div class="card-body"><div class="stat-label">Total</div><div class="stat-value">@_tenants.Count</div></div></div>
+    <div class="card stat-card"><div class="card-body"><div class="stat-label">Active</div><div class="stat-value">@_tenants.Count(t => t.Active)</div></div></div>
 </div>
 
 @if (_showCreate)
 {
     <div class="card mb-3">
-        <div class="card-body">
-            <div class="form-grid">
-                <div>
-                    <label class="form-label">Id</label>
-                    <input class="form-control" @bind="_newId" placeholder="acme" />
+        <div class="card-body py-3">
+            <div class="row g-2 align-items-end">
+                <div class="col-md-3">
+                    <label class="form-label mb-1">Id</label>
+                    <input class="form-control form-control-sm" @bind="_newId" placeholder="acme" />
                 </div>
-                <div>
-                    <label class="form-label">Name</label>
-                    <input class="form-control" @bind="_newName" />
+                <div class="col-md-3">
+                    <label class="form-label mb-1">Name</label>
+                    <input class="form-control form-control-sm" @bind="_newName" />
                 </div>
-                <div>
-                    <label class="form-label">Subdomain</label>
-                    <input class="form-control" @bind="_newSub" />
+                <div class="col-md-3">
+                    <label class="form-label mb-1">Subdomain</label>
+                    <input class="form-control form-control-sm" @bind="_newSub" />
                 </div>
-                <div class="d-flex gap-2">
-                    <button class="btn btn-primary" @onclick="CreateAsync">Create</button>
-                    <button class="btn btn-outline-secondary" @onclick="() => _showCreate = false">Cancel</button>
+                <div class="col-md-3 d-flex gap-2">
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => _showCreate = false">Cancel</button>
+                    <button class="btn btn-sm btn-primary" @onclick="CreateAsync">Create</button>
                 </div>
             </div>
         </div>
     </div>
 }
 
-<div class="card">
+<div class="card card-outline card-primary card-table">
+    <div class="card-header"><h3 class="card-title"><i class="fas fa-building mr-2"></i>All tenants</h3></div>
     <div class="card-body p-0">
-        <table class="table-clean">
-            <thead>
-                <tr><th>Id</th><th>Name</th><th>Subdomain</th><th>Active</th><th>Created</th></tr>
-            </thead>
-            <tbody>
-                @if (_tenants.Count == 0)
-                {
-                    <tr><td colspan="5" class="text-muted">No tenants.</td></tr>
-                }
-                @foreach (var t in _tenants)
-                {
-                    <tr>
-                        <td><code>@t.Id</code></td>
-                        <td>@t.Name</td>
-                        <td>@(t.Subdomain ?? "—")</td>
-                        <td>
-                            @if (t.Active)
-                            {
-                                <span class="badge-status badge-ok">active</span>
-                            }
-                            else
-                            {
-                                <span class="badge-status badge-muted">inactive</span>
-                            }
-                        </td>
-                        <td>@t.CreatedAt.ToLocalTime().ToString("d")</td>
-                    </tr>
-                }
-            </tbody>
-        </table>
+        <div class="kx-table-wrap">
+            <table class="table-clean">
+                <thead>
+                    <tr><th>Id</th><th>Name</th><th>Subdomain</th><th>Active</th><th>Created</th></tr>
+                </thead>
+                <tbody>
+                    @if (_tenants.Count == 0)
+                    {
+                        <tr><td colspan="5" class="text-muted">No tenants.</td></tr>
+                    }
+                    @foreach (var t in _tenants)
+                    {
+                        <tr>
+                            <td><code>@t.Id</code></td>
+                            <td>@t.Name</td>
+                            <td>@(t.Subdomain ?? "—")</td>
+                            <td>
+                                @if (t.Active)
+                                {
+                                    <span class="badge-status badge-ok">active</span>
+                                }
+                                else
+                                {
+                                    <span class="badge-status badge-muted">inactive</span>
+                                }
+                            </td>
+                            <td>@t.CreatedAt.ToLocalTime().ToString("d")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
 

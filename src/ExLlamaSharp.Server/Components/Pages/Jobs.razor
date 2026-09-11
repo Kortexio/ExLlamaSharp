@@ -4,13 +4,11 @@
 
 <PageTitle>Jobs — ExLlamaSharp</PageTitle>
 
-<div class="page-header d-flex justify-content-between align-items-start">
-    <div>
-        <h1>Jobs</h1>
-        <p>Pull, quantize, and import work queue. Download size and parameter count update every 2 seconds.</p>
-    </div>
-    <button class="btn btn-outline-secondary btn-sm" @onclick="ReloadAsync">Refresh</button>
-</div>
+<PageHeader Title="Jobs" Subtitle="Pull, quantize, and import queue." />
+
+<PageToolbar>
+    <button class="btn btn-sm btn-outline-secondary" @onclick="ReloadAsync"><i class="fas fa-sync-alt"></i> Refresh</button>
+</PageToolbar>
 
 <div class="stat-grid mb-3">
     <div class="card stat-card"><div class="card-body"><div class="stat-label">Active</div><div class="stat-value">@_active.Count</div></div></div>
@@ -18,26 +16,27 @@
     <div class="card stat-card"><div class="card-body"><div class="stat-label">Recent</div><div class="stat-value">@_recent.Count</div></div></div>
 </div>
 
-<div class="card mb-3">
-    <div class="card-body">
-        <h5 class="card-title">Active</h5>
-        @RenderTable(_active, showCancel: true)
+@if (_active.Count == 0 && _waiting.Count == 0 && _recent.Count == 0)
+{
+    <ExlEmpty Icon="fas fa-tasks" Title="No jobs yet" Message="Pull or quantize a model to see progress here." />
+}
+else
+{
+    <div class="card card-outline card-primary card-table mb-3">
+        <div class="card-header"><h3 class="card-title"><i class="fas fa-play mr-2"></i>Active</h3></div>
+        <div class="card-body p-0">@RenderTable(_active, showCancel: true)</div>
     </div>
-</div>
 
-<div class="card mb-3">
-    <div class="card-body">
-        <h5 class="card-title">Waiting</h5>
-        @RenderTable(_waiting, showCancel: true)
+    <div class="card card-outline card-secondary card-table mb-3">
+        <div class="card-header"><h3 class="card-title"><i class="fas fa-hourglass-half mr-2"></i>Waiting</h3></div>
+        <div class="card-body p-0">@RenderTable(_waiting, showCancel: true)</div>
     </div>
-</div>
 
-<div class="card">
-    <div class="card-body">
-        <h5 class="card-title">Recent</h5>
-        @RenderTable(_recent, showCancel: false)
+    <div class="card card-outline card-secondary card-table">
+        <div class="card-header"><h3 class="card-title"><i class="fas fa-history mr-2"></i>Recent</h3></div>
+        <div class="card-body p-0">@RenderTable(_recent, showCancel: false)</div>
     </div>
-</div>
+}
 
 @code {
     private List<ModelJob> _active = [];
@@ -129,49 +128,51 @@
 
     private RenderFragment RenderTable(List<ModelJob> jobs, bool showCancel) => __builder =>
     {
-        <table class="table-clean">
-            <thead>
-                <tr>
-                    <th>Type</th>
-                    <th>Status</th>
-                    <th>Params</th>
-                    <th>Size</th>
-                    <th>Progress</th>
-                    <th>Detail</th>
-                    <th>Updated</th>
-                    @if (showCancel)
-                    {
-                        <th></th>
-                    }
-                </tr>
-            </thead>
-            <tbody>
-                @if (jobs.Count == 0)
-                {
-                    <tr><td colspan="@(showCancel ? 8 : 7)" class="text-muted">None</td></tr>
-                }
-                @foreach (var j in jobs)
-                {
+        <div class="kx-table-wrap">
+            <table class="table-clean">
+                <thead>
                     <tr>
-                        <td>@j.Type</td>
-                        <td><span class="badge-status badge-info">@j.Status</span></td>
-                        <td>@ParameterLabel(j)</td>
-                        <td>@SizeLabel(j)</td>
-                        <td>
-                            <div class="progress-thin"><span style="width:@(j.ProgressPct.ToString("0"))%"></span></div>
-                            <span class="small text-muted">@j.ProgressPct.ToString("0")%</span>
-                        </td>
-                        <td class="small">@(string.IsNullOrWhiteSpace(j.Error) ? "—" : j.Error)</td>
-                        <td>@j.UpdatedAt.ToLocalTime().ToString("g")</td>
+                        <th>Type</th>
+                        <th>Status</th>
+                        <th>Params</th>
+                        <th>Size</th>
+                        <th>Progress</th>
+                        <th>Detail</th>
+                        <th>Updated</th>
                         @if (showCancel)
                         {
-                            <td>
-                                <button class="btn btn-sm btn-outline-secondary" @onclick="() => CancelAsync(j.JobId)">Cancel</button>
-                            </td>
+                            <th></th>
                         }
                     </tr>
-                }
-            </tbody>
-        </table>
+                </thead>
+                <tbody>
+                    @if (jobs.Count == 0)
+                    {
+                        <tr><td colspan="@(showCancel ? 8 : 7)" class="text-muted">None</td></tr>
+                    }
+                    @foreach (var j in jobs)
+                    {
+                        <tr>
+                            <td>@j.Type</td>
+                            <td><span class="badge-status badge-info">@j.Status</span></td>
+                            <td>@ParameterLabel(j)</td>
+                            <td>@SizeLabel(j)</td>
+                            <td>
+                                <div class="progress-thin"><span style="width:@(j.ProgressPct.ToString("0"))%"></span></div>
+                                <span class="small text-muted">@j.ProgressPct.ToString("0")%</span>
+                            </td>
+                            <td class="small">@(string.IsNullOrWhiteSpace(j.Error) ? "—" : j.Error)</td>
+                            <td>@j.UpdatedAt.ToLocalTime().ToString("g")</td>
+                            @if (showCancel)
+                            {
+                                <td>
+                                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => CancelAsync(j.JobId)">Cancel</button>
+                                </td>
+                            }
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
     };
 }

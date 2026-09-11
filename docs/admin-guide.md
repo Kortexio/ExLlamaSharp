@@ -67,8 +67,8 @@ Works with any mix of NVIDIA GPUs (equal or different VRAM). No SKU is hardcoded
 3. The worker process is started with `CUDA_DEVICE_ORDER=PCI_BUS_ID` and `CUDA_VISIBLE_DEVICES` **reordered** so `cuda:0` is the highest-VRAM GPU in that set.
 4. `ParallelismMode`:
    - `none` — load on `cuda:0` only
-   - `tensor` — ExLlamaV3 tensor parallelism (`tensor_p=True`, backend `native`)
-   - `pipeline` — layer autosplit (`tensor_p=False` + `use_per_device`)
+   - `tensor` — ExLlamaV3 tensor parallelism (`tensor_p=True`, backend `native`). **Windows: coerced to pipeline** (TP children time out).
+   - `pipeline` — layer autosplit (`tensor_p=False` + `use_per_device`). Prefer this on Windows.
    - `model` is **rejected** (not implemented)
 5. Split: auto `VRAM[i] × GpuMemoryUtilization`, or override `GpuSplitGb` in **remapped** order (e.g. `10,4.5` for a 12 GB + 6 GB pair). Count must match visible GPUs.
 6. Save Settings (or PATCH `/api/v1/settings`) — the worker is recycled and the loaded model is queued again.

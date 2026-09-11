@@ -1,63 +1,139 @@
 @inject EngineHostService Engine
+
 @inject NavigationManager Nav
 
+
+
 @if (!string.IsNullOrWhiteSpace(_message))
+
 {
-    <div class="alert-soft mb-3 @(_ok ? "text-success" : "text-danger")">
-        @_message
-        @if (!_ok)
+
+    <div class="exl-status-banner @(_ok ? "is-ok" : _loading ? "is-warn" : "is-err")" role="status">
+
+        <div class="d-flex align-items-center">
+
+            <i class="fas @(_ok ? "fa-check-circle" : _loading ? "fa-spinner fa-spin" : "fa-exclamation-circle") mr-2"></i>
+
+            <span>@_message</span>
+
+        </div>
+
+        @if (!_ok && !_loading)
+
         {
-            <a class="btn btn-sm btn-primary ms-2" href="/models">Load model</a>
+
+            <a class="btn btn-sm btn-primary" href="/models"><i class="fas fa-cube"></i> Load model</a>
+
         }
+
     </div>
+
 }
+
+
 
 @code {
+
     private string? _message;
+
     private bool _ok;
 
+    private bool _loading;
+
+
+
     protected override void OnParametersSet()
+
     {
+
+        _loading = false;
+
         try
+
         {
+
             _ = Engine.Engine;
+
         }
+
         catch (Exception ex)
+
         {
+
             _ok = false;
+
             _message = ex.Message;
+
             return;
+
         }
+
+
 
         if (Engine.Engine.IsMock)
+
         {
+
             _ok = false;
-            _message = "Mock engine is not used in production. Load an EXL3 model via the worker.";
+
+            _message = "Mock engine is not used in production. Load an EXL3 model via Models.";
+
             return;
+
         }
+
+
 
         if (Engine.IsLoading)
+
         {
+
             _ok = true;
+
+            _loading = true;
+
             _message = "Loading model…";
+
             return;
+
         }
+
+
 
         if (!string.IsNullOrWhiteSpace(Engine.LastLoadError) && !Engine.IsLoaded)
+
         {
+
             _ok = false;
+
             _message = Engine.LastLoadError;
+
             return;
+
         }
+
+
 
         if (!Engine.IsLoaded || !Engine.IsRunning)
+
         {
+
             _ok = false;
-            _message = "No model loaded. Open Models and click Load. After the first successful load the Server will reload it on startup.";
+
+            _message = "No model loaded. Open Models and choose a load profile.";
+
             return;
+
         }
 
+
+
         _ok = true;
+
         _message = null;
+
     }
+
 }
+
+

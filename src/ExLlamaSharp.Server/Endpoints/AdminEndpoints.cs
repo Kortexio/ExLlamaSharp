@@ -6,6 +6,7 @@ using ExLlamaSharp.Server.Data;
 using ExLlamaSharp.Server.Data.Entities;
 using ExLlamaSharp.Server.Models;
 using ExLlamaSharp.Server.Services;
+using ExLlamaSharp.Server.Services.Ui;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
 
@@ -39,6 +40,7 @@ public static class AdminEndpoints
         api.MapPost("/models/library", PostModelLibraryAsync);
 
         api.MapPost("/models/load", LoadModelAsync);
+        api.MapGet("/models/{id:guid}/load-profiles", GetLoadProfilesAsync);
         api.MapGet("/models/load-status", GetLoadStatusAsync);
         api.MapPost("/models/load-cancel", CancelLoadAsync);
         api.MapPost("/models/unload", UnloadModelAsync);
@@ -236,7 +238,9 @@ public static class AdminEndpoints
             var updated = await settings.UpdateAsync(s =>
             {
                 ApplySettings(s, body, replace: true);
-                planner.BuildPlan(s);
+                var plan = planner.BuildPlan(s);
+                s.ParallelismMode = plan.AppliedMode;
+                s.MaxBatchedTokens = plan.MaxBatchedTokens;
             }, ct).ConfigureAwait(false);
             if (!string.IsNullOrWhiteSpace(body.HostMode))
             {
@@ -272,7 +276,9 @@ public static class AdminEndpoints
             var updated = await settings.UpdateAsync(s =>
             {
                 ApplySettings(s, body, replace: false);
-                planner.BuildPlan(s);
+                var plan = planner.BuildPlan(s);
+                s.ParallelismMode = plan.AppliedMode;
+                s.MaxBatchedTokens = plan.MaxBatchedTokens;
             }, ct).ConfigureAwait(false);
             if (!string.IsNullOrWhiteSpace(body.HostMode))
             {
@@ -450,10 +456,11 @@ public static class AdminEndpoints
         }
 
         record ??= await inventory.EnsureRecordAsync(path, body.Alias, ct).ConfigureAwait(false);
+        var profile = VramFitService.NormalizeLoadProfile(body.Profile);
 
         if (body.Background)
         {
-            if (!engine.TryQueueLoad(path, record.Id, out var reject))
+            if (!engine.TryQueueLoad(path, record.Id, out var reject, profile))
             {
                 return Results.Json(
                     ErrorResponse.Create(reject ?? "Load already in progress", code: "load_busy"),
@@ -467,6 +474,7 @@ public static class AdminEndpoints
                     model_id = record.Id,
                     path,
                     alias = record.Alias,
+                    profile,
                 },
                 JsonOptions,
                 statusCode: StatusCodes.Status202Accepted);
@@ -474,7 +482,7 @@ public static class AdminEndpoints
 
         try
         {
-            await engine.LoadAsync(path, record.Id, ct).ConfigureAwait(false);
+            await engine.LoadAsync(path, record.Id, ct, profile).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -489,6 +497,70 @@ public static class AdminEndpoints
             model_id = record.Id,
             path = engine.LoadedModelPath,
             alias = record.Alias,
+            profile,
+        }, JsonOptions);
+    }
+
+    private static async Task<IResult> GetLoadProfilesAsync(
+        Guid id,
+        AppDbContext db,
+        SettingsService settingsService,
+        GpuInfoService gpuInfo,
+        VramFitService vramFit,
+        CancellationToken ct)
+    {
+        var record = await db.Models.AsNoTracking().FirstOrDefaultAsync(m => m.Id == id, ct).ConfigureAwait(false);
+        if (record is null)
+        {
+            return Results.Json(
+                ErrorResponse.Create("Model not found", code: "model_not_found"),
+                statusCode: StatusCodes.Status404NotFound);
+        }
+
+        var settings = await settingsService.GetAsync(ct).ConfigureAwait(false);
+        var gpus = await gpuInfo.GetGpusAsync(ct).ConfigureAwait(false);
+        var result = vramFit.BuildLoadProfiles(
+            record.SizeGb,
+            gpus,
+            settings.GpuMemoryUtilization,
+            settings.GpuSplitGb,
+            settings.CudaVisibleDevices,
+            settings.MaxBatchedTokens,
+            settings.ParallelismMode);
+
+        var last = VramFitService.NormalizeLoadProfile(
+            string.IsNullOrWhiteSpace(record.LastLoadProfile)
+                ? result.RecommendedProfileId ?? VramFitService.ProfileNormal
+                : record.LastLoadProfile);
+
+        return Results.Json(new
+        {
+            model_id = record.Id,
+            alias = record.Alias,
+            last_load_profile = record.LastLoadProfile,
+            selected_profile = last,
+            recommended_profile = result.RecommendedProfileId,
+            profiles = result.Profiles.Select(p => new
+            {
+                id = p.Id,
+                label = p.Label,
+                max_batched_tokens = p.MaxBatchedTokens,
+                parallelism_mode = p.ParallelismMode,
+                gpu_split_gb = p.GpuSplitGb,
+                kind = p.Kind.ToString().ToLowerInvariant(),
+                badge_class = p.BadgeClass,
+                available = p.Available,
+                summary = p.Summary,
+            }),
+            custom = new
+            {
+                id = VramFitService.ProfileCustom,
+                label = "Personalizado",
+                max_batched_tokens = result.CustomMaxBatchedTokens,
+                parallelism_mode = result.CustomParallelismMode,
+                gpu_split_gb = result.CustomGpuSplitGb,
+                summary = $"{result.CustomMaxBatchedTokens} tokens · {result.CustomParallelismMode} (Settings atuais)",
+            },
         }, JsonOptions);
     }
 
@@ -1393,6 +1465,7 @@ public static class AdminEndpoints
         TenantId = m.TenantId,
         Shared = m.Shared,
         CreatedAt = m.CreatedAt,
+        LastLoadProfile = m.LastLoadProfile,
     };
 
     private static JobDto ToJobDto(ModelJob j, ModelJobsService jobs)

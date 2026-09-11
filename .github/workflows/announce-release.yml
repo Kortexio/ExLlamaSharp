@@ -13,6 +13,10 @@ on:
         description: "Tag for manual dispatch (optional)"
         required: false
         default: ""
+      skip_announce:
+        description: "Skip LinkedIn and dev.to (true/false)"
+        required: false
+        default: "false"
 
 permissions:
   contents: read
@@ -36,6 +40,7 @@ jobs:
           TAG="${EVENT_TAG:-$INPUT_TAG}"
           if [ -z "$TAG" ]; then
             echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -46,6 +51,11 @@ jobs:
             cat /tmp/release-body.md
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+          if grep -qiE '\[skip[[:space:]-]?announce\]|skip-announce:\s*true' /tmp/release-body.md; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Publish LinkedIn
         env:
           LINKEDIN_CLIENT_ID: ${{ secrets.LINKEDIN_CLIENT_ID }}
@@ -58,7 +68,12 @@ jobs:
           RELEASE_BODY: ${{ steps.notes.outputs.body }}
           REPO_URL: ${{ github.event.repository.html_url }}
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+          SKIP_ANNOUNCE: ${{ github.event.inputs.skip_announce || steps.notes.outputs.skip || 'false' }}
         run: |
+          if [ "$SKIP_ANNOUNCE" = "true" ]; then
+            echo "skip-announce requested — skipping LinkedIn."
+            exit 0
+          fi
           if [ -z "$LINKEDIN_PERSON_URN" ] || [ -z "$RELEASE_TAG" ]; then
             echo "LINKEDIN_PERSON_URN or RELEASE_TAG missing — skipping."
             exit 0
@@ -87,6 +102,7 @@ jobs:
           TAG="${EVENT_TAG:-$INPUT_TAG}"
           if [ -z "$TAG" ]; then
             echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -96,6 +112,11 @@ jobs:
             cat /tmp/release-body.md
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+          if grep -qiE '\[skip[[:space:]-]?announce\]|skip-announce:\s*true' /tmp/release-body.md; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Publish dev.to
         env:
           DEVTO_API_KEY: ${{ secrets.DEVTO_API_KEY }}
@@ -103,7 +124,12 @@ jobs:
           RELEASE_BODY: ${{ steps.notes.outputs.body }}
           REPO_URL: ${{ github.event.repository.html_url }}
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+          SKIP_ANNOUNCE: ${{ github.event.inputs.skip_announce || steps.notes.outputs.skip || 'false' }}
         run: |
+          if [ "$SKIP_ANNOUNCE" = "true" ]; then
+            echo "skip-announce requested — skipping dev.to."
+            exit 0
+          fi
           if [ -z "$DEVTO_API_KEY" ] || [ -z "$RELEASE_TAG" ]; then
             echo "DEVTO_API_KEY or RELEASE_TAG missing — skipping."
             exit 0

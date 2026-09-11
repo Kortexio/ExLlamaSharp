@@ -18,6 +18,8 @@ Positioning: **Ollama’s ease + strong local NVIDIA EXL3 serving + Windows admi
 
 \*Ollama is easy locally but is not a Windows service + multi-tenant admin product in the same way.
 
+**TabbyAPI** is the ExLlamaV3-oriented OpenAI server many power users run (venv / DIY). ExLlamaSharp overlaps on EXL3 + `/v1`, and differentiates with a **Windows Setup.exe service**, tray app, and **SME admin** (keys, jobs, tenants, Blazor UI).
+
 ## When to choose ExLlamaSharp
 
 - You standardize on **Windows + NVIDIA** and **EXL3** models.
@@ -28,6 +30,7 @@ Positioning: **Ollama’s ease + strong local NVIDIA EXL3 serving + Windows admi
 ## When another tool may fit better
 
 - **Ollama** — laptop single-user, maximal simplicity, mixed hardware / GGUF.
+- **TabbyAPI** — ExLlamaV3-native API server if you already live in that Python stack.
 - **vLLM** — Linux clusters, true tensor parallelism, high-QPS datacenter.
 - **LM Studio** — desktop hobby chat without a Windows service.
 - **Media / image gen / audio** — `/v1/images` and `/v1/audio*` remain **501**. Vision **chat** (`image_url`) works when an EXL3 VLM is loaded.

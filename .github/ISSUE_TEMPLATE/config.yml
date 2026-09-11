@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://github.com/Kortexio/ExLlamaSharp/blob/main/docs/README.md
+    about: Admin guide, API reference, troubleshooting, comparison
+  - name: Latest release
+    url: https://github.com/Kortexio/ExLlamaSharp/releases/latest
+    about: Download Setup.exe and read release notes

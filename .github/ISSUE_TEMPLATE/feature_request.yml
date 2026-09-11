@@ -1,0 +1,31 @@
+name: Feature request
+description: Suggest an improvement that fits Windows + EXL3 + OpenAI serving
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ExLlamaSharp targets **Windows + NVIDIA + EXL3** with an OpenAI-compatible API and admin UI.
+        GGUF / llama.cpp backends are out of scope unless the project direction changes.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What pain does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Ideal behavior, UI, or API shape
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other tools or workarounds you already use
+    validations:
+      required: false

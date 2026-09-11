@@ -1,0 +1,61 @@
+name: Bug report
+description: Something broken in installer, Admin UI, API, or inference
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Include enough detail to reproduce on a clean Windows + NVIDIA box when possible.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Release tag or Setup.exe build (e.g. v1.4.0-beta)
+      placeholder: v1.4.0-beta
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Installer / service / tray
+        - Admin UI
+        - OpenAI API (/v1)
+        - Model load / EXL3 worker
+        - Multi-GPU
+        - Jobs / download
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Expected vs actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. …
+        2. …
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: Windows version, GPU(s), driver, whether Setup.exe or Debug build
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / screenshots
+      description: Relevant lines from ProgramData logs, browser console, or API error body
+    validations:
+      required: false

@@ -11,9 +11,19 @@ public sealed class MultiGpuPlannerTests
     public void Accepts_tensor_with_two_devices()
     {
         var plan = _planner.BuildPlan("0,1", "tensor", 0.85);
-        Assert.Equal(ParallelismKind.Tensor, plan.Kind);
         Assert.Equal(new[] { 0, 1 }, plan.DeviceIds);
         Assert.True(plan.IsMultiGpu);
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Equal(ParallelismKind.Pipeline, plan.Kind);
+            Assert.Equal("pipeline", plan.AppliedMode);
+            Assert.Contains("Windows", plan.CoercionNote);
+        }
+        else
+        {
+            Assert.Equal(ParallelismKind.Tensor, plan.Kind);
+            Assert.Null(plan.CoercionNote);
+        }
     }
 
     [Fact]
@@ -77,5 +87,13 @@ public sealed class MultiGpuPlannerTests
         var plan = _planner.BuildPlan("0", "none");
         Assert.Equal(ParallelismKind.None, plan.Kind);
         Assert.False(plan.IsMultiGpu);
+    }
+
+    [Fact]
+    public void Aligns_cache_tokens_to_256()
+    {
+        Assert.Equal(10240, MultiGpuPlanner.AlignCacheTokens(10240));
+        Assert.Equal(10240, MultiGpuPlanner.AlignCacheTokens(10250));
+        Assert.Equal(256, MultiGpuPlanner.AlignCacheTokens(100));
     }
 }

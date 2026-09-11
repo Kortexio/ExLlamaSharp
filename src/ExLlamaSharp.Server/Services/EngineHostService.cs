@@ -2,6 +2,7 @@ using ExLlamaSharp.Engine;
 using ExLlamaSharp.Engine.Worker;
 using ExLlamaSharp.Server.Data;
 using ExLlamaSharp.Server.Data.Entities;
+using ExLlamaSharp.Server.Services.Ui;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -136,8 +137,13 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
                     .ConfigureAwait(false);
                 if (rec is not null && Directory.Exists(rec.Path))
                 {
-                    _logger.LogInformation("Reloading last model {Alias} from {Path}", rec.Alias, rec.Path);
-                    await LoadAsync(rec.Path, rec.Id, cancellationToken).ConfigureAwait(false);
+                    _logger.LogInformation("Queueing last model {Alias} from {Path}", rec.Alias, rec.Path);
+                    if (!TryQueueLoad(rec.Path, rec.Id, out var reject))
+                    {
+                        _lastLoadError = reject;
+                        _logger.LogWarning("Startup model queue rejected: {Reason}", reject);
+                    }
+
                     return;
                 }
             }
@@ -145,21 +151,18 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
             var defaultPath = _configuration["ExLlamaSharp:DefaultModelPath"];
             if (!string.IsNullOrWhiteSpace(defaultPath) && Directory.Exists(defaultPath))
             {
-                _logger.LogInformation("Loading DefaultModelPath {Path}", defaultPath);
-                await LoadAsync(defaultPath, cancellationToken: cancellationToken).ConfigureAwait(false);
+                _logger.LogInformation("Queueing DefaultModelPath {Path}", defaultPath);
+                if (!TryQueueLoad(defaultPath, null, out var reject))
+                {
+                    _lastLoadError = reject;
+                    _logger.LogWarning("Startup DefaultModelPath queue rejected: {Reason}", reject);
+                }
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Startup model load failed; Admin UI will stay up without a loaded model");
-            try
-            {
-                await _settings.UpdateAsync(s => s.LastLoadedModelId = null, CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (Exception clearEx)
-            {
-                _logger.LogWarning(clearEx, "Could not clear LastLoadedModelId after a failed startup load");
-            }
+            _lastLoadError = ex.Message;
+            _logger.LogError(ex, "Startup model queue failed; Admin UI will stay up without a loaded model");
         }
     }
 
@@ -185,7 +188,11 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
         await UnloadAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task LoadAsync(string modelPath, Guid? modelId = null, CancellationToken cancellationToken = default)
+    public async Task LoadAsync(
+        string modelPath,
+        Guid? modelId = null,
+        CancellationToken cancellationToken = default,
+        string? loadProfile = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(modelPath);
         if (!_forceMock
@@ -200,6 +207,11 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
         await _loadLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (loadProfile is not null)
+            {
+                await ApplyLoadProfileAsync(loadProfile, modelPath, modelId, cancellationToken).ConfigureAwait(false);
+            }
+
             EnsureEngine(modelPath);
 
             if (_engine!.IsLoaded)
@@ -209,14 +221,32 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
             }
 
             var settings = await _settings.GetAsync(cancellationToken).ConfigureAwait(false);
+            MultiGpuPlan plan;
             try
             {
-                _ = new MultiGpuPlanner().BuildPlan(settings);
+                plan = new MultiGpuPlanner().BuildPlan(settings);
             }
             catch (Exception ex)
             {
                 throw new InvalidOperationException($"Multi-GPU settings invalid: {ex.Message}", ex);
             }
+
+            if (!string.IsNullOrWhiteSpace(plan.CoercionNote))
+            {
+                _logger.LogWarning("{Note}", plan.CoercionNote);
+                try
+                {
+                    await _settings.UpdateAsync(s => s.ParallelismMode = plan.AppliedMode, cancellationToken)
+                        .ConfigureAwait(false);
+                    settings.ParallelismMode = plan.AppliedMode;
+                }
+                catch (Exception persistEx)
+                {
+                    _logger.LogWarning(persistEx, "Could not persist coerced ParallelismMode={Mode}", plan.AppliedMode);
+                }
+            }
+
+            await EnsureVramFitsAsync(settings, plan, modelPath, modelId, cancellationToken).ConfigureAwait(false);
 
             var speculative = SpeculativeDecodingOptions.FromSettings(settings);
             if (speculative.Enabled)
@@ -297,7 +327,7 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
     /// <summary>
     /// Queue a model load on a background task so Blazor circuits / HTTP callers are not blocked for minutes.
     /// </summary>
-    public bool TryQueueLoad(string modelPath, Guid? modelId, out string? rejectReason)
+    public bool TryQueueLoad(string modelPath, Guid? modelId, out string? rejectReason, string? loadProfile = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(modelPath);
         if (Interlocked.CompareExchange(ref _loadingFlag, 1, 0) != 0)
@@ -320,7 +350,7 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
         {
             try
             {
-                await LoadAsync(modelPath, modelId, cts.Token).ConfigureAwait(false);
+                await LoadAsync(modelPath, modelId, cts.Token, loadProfile).ConfigureAwait(false);
                 _lastLoadError = null;
             }
             catch (OperationCanceledException)
@@ -572,6 +602,181 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
         _ => throw new InvalidOperationException("Native stub engine is disabled. Use the EXL3 Python worker."),
     };
 
+    private async Task EnsureVramFitsAsync(
+        AppSettings settings,
+        MultiGpuPlan plan,
+        string modelPath,
+        Guid? modelId,
+        CancellationToken cancellationToken)
+    {
+        var weightGb = await ResolveWeightGbAsync(modelPath, modelId, cancellationToken).ConfigureAwait(false);
+        if (weightGb <= 0)
+        {
+            return;
+        }
+
+        var gpus = CudaDeviceEnvironment.QueryGpus()
+            .Select(g => new GpuSnapshot
+            {
+                Index = g.Index,
+                Name = g.Name,
+                MemoryTotalMb = g.MemoryTotalMiB,
+                MemoryUsedMb = g.MemoryUsedMiB,
+                Uuid = g.Uuid,
+            })
+            .ToList();
+        var visible = GpuInfoService.FilterVisible(gpus, settings.CudaVisibleDevices);
+        var fit = new VramFitService();
+        if (fit.TryExplainLoadRefusal(
+                weightGb,
+                visible,
+                settings.GpuMemoryUtilization,
+                settings.GpuSplitGb,
+                plan.MaxBatchedTokens,
+                out var error))
+        {
+            throw new InvalidOperationException(error);
+        }
+    }
+
+    private async Task ApplyLoadProfileAsync(
+        string loadProfile,
+        string modelPath,
+        Guid? modelId,
+        CancellationToken cancellationToken)
+    {
+        var profileKey = VramFitService.NormalizeLoadProfile(loadProfile);
+        var settings = await _settings.GetAsync(cancellationToken).ConfigureAwait(false);
+        var weightGb = await ResolveWeightGbAsync(modelPath, modelId, cancellationToken).ConfigureAwait(false);
+        var gpus = CudaDeviceEnvironment.QueryGpus()
+            .Select(g => new GpuSnapshot
+            {
+                Index = g.Index,
+                Name = g.Name,
+                MemoryTotalMb = g.MemoryTotalMiB,
+                MemoryUsedMb = g.MemoryUsedMiB,
+                Uuid = g.Uuid,
+            })
+            .ToList();
+        var fit = new VramFitService();
+        var profiles = fit.BuildLoadProfiles(
+            weightGb,
+            gpus,
+            settings.GpuMemoryUtilization,
+            settings.GpuSplitGb,
+            settings.CudaVisibleDevices,
+            settings.MaxBatchedTokens,
+            settings.ParallelismMode);
+
+        if (profileKey == VramFitService.ProfileCustom)
+        {
+            var plan = new MultiGpuPlanner().BuildPlan(settings);
+            if (!string.IsNullOrWhiteSpace(plan.CoercionNote))
+            {
+                await _settings.UpdateAsync(s => s.ParallelismMode = plan.AppliedMode, cancellationToken)
+                    .ConfigureAwait(false);
+                _logger.LogWarning("{Note}", plan.CoercionNote);
+            }
+        }
+        else
+        {
+            var chosen = fit.GetProfile(profiles, profileKey);
+            if (chosen is null || !chosen.Available)
+            {
+                var detail = chosen?.Summary
+                    ?? profiles.Profiles.FirstOrDefault()?.Summary
+                    ?? "Model does not fit the visible GPU split.";
+                throw new InvalidOperationException(detail);
+            }
+
+            await _settings.UpdateAsync(s =>
+            {
+                s.MaxBatchedTokens = chosen.MaxBatchedTokens;
+                s.ParallelismMode = chosen.ParallelismMode;
+                if (string.IsNullOrWhiteSpace(s.GpuSplitGb) && !string.IsNullOrWhiteSpace(chosen.GpuSplitGb))
+                {
+                    s.GpuSplitGb = chosen.GpuSplitGb;
+                }
+            }, cancellationToken).ConfigureAwait(false);
+
+            _logger.LogInformation(
+                "Applied load profile {Profile}: max_batched_tokens={Tokens} parallelism={Mode}",
+                profileKey,
+                chosen.MaxBatchedTokens,
+                chosen.ParallelismMode);
+        }
+
+        if (modelId is Guid persistId)
+        {
+            try
+            {
+                await using var scope = _scopeFactory.CreateAsyncScope();
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var record = await db.Models.FirstOrDefaultAsync(m => m.Id == persistId, cancellationToken)
+                    .ConfigureAwait(false);
+                if (record is not null)
+                {
+                    record.LastLoadProfile = profileKey;
+                    await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not persist LastLoadProfile={Profile}", profileKey);
+            }
+        }
+    }
+
+    private async Task<double> ResolveWeightGbAsync(
+        string modelPath,
+        Guid? modelId,
+        CancellationToken cancellationToken)
+    {
+        var weightGb = 0d;
+        if (modelId is Guid id)
+        {
+            try
+            {
+                await using var scope = _scopeFactory.CreateAsyncScope();
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var rec = await db.Models.AsNoTracking()
+                    .FirstOrDefaultAsync(m => m.Id == id, cancellationToken)
+                    .ConfigureAwait(false);
+                if (rec is not null && rec.SizeGb > 0)
+                {
+                    weightGb = rec.SizeGb;
+                }
+            }
+            catch
+            {
+                // fall through to folder measure
+            }
+        }
+
+        if (weightGb <= 0
+            && !string.IsNullOrWhiteSpace(modelPath)
+            && !modelPath.StartsWith("mock://", StringComparison.OrdinalIgnoreCase)
+            && Directory.Exists(modelPath))
+        {
+            try
+            {
+                long bytes = 0;
+                foreach (var file in Directory.EnumerateFiles(modelPath, "*", SearchOption.AllDirectories))
+                {
+                    bytes += new FileInfo(file).Length;
+                }
+
+                weightGb = bytes / (1024d * 1024d * 1024d);
+            }
+            catch
+            {
+                // skip
+            }
+        }
+
+        return weightGb;
+    }
+
     private WorkerEngineOptions WorkerOptionsFromSettings() =>
         WorkerOptionsFromSettingsAsync(CancellationToken.None).GetAwaiter().GetResult();
 
@@ -593,6 +798,12 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
             }
         }
 
+        var plan = new MultiGpuPlanner().BuildPlan(s);
+        if (!string.IsNullOrWhiteSpace(plan.CoercionNote))
+        {
+            _logger.LogWarning("{Note}", plan.CoercionNote);
+        }
+
         var cuda = CudaDeviceEnvironment.Normalize(s.CudaVisibleDevices, out var cudaWarning);
         if (!string.IsNullOrWhiteSpace(cudaWarning))
         {
@@ -603,9 +814,9 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
         {
             MaxNumSeqs = Math.Max(1, s.MaxNumSeqs),
             MaxChunkSize = Math.Max(1, s.MaxChunkSize),
-            MaxBatchedTokens = Math.Max(256, s.MaxBatchedTokens),
+            MaxBatchedTokens = plan.MaxBatchedTokens,
             CudaVisibleDevices = cuda,
-            ParallelismMode = s.ParallelismMode ?? "none",
+            ParallelismMode = plan.AppliedMode,
             GpuMemoryUtilization = s.GpuMemoryUtilization,
             GpuSplitGb = s.GpuSplitGb,
             SpeculativeEnabled = s.SpeculativeEnabled,
@@ -624,6 +835,11 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
 
                 if (_engine is ExLlamaV3WorkerEngine worker && !worker.IsWorkerAlive)
                 {
+                    if (!IsLoading && !worker.IsLoaded)
+                    {
+                        continue;
+                    }
+
                     throw new InvalidOperationException(
                         IsLoading
                             ? "Python worker process died while loading the model."
