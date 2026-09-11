@@ -18,13 +18,17 @@ public static class DbInitializer
         await SeedTenantAsync(db, cancellationToken).ConfigureAwait(false);
         await SeedSettingsAsync(db, cancellationToken).ConfigureAwait(false);
         await SeedModelLibraryAsync(db, cancellationToken).ConfigureAwait(false);
-        if (environment?.IsDevelopment() == true)
+
+        // First-run bootstrap: seed admin/changeme + sk-exllamasharp-dev when Users is empty
+        // (Development always; Production only on a brand-new database after Setup/install).
+        var hasUsers = await db.Users.AnyAsync(cancellationToken).ConfigureAwait(false);
+        if (!hasUsers || environment?.IsDevelopment() == true)
         {
             await SeedDevAdminAsync(db, logger, cancellationToken).ConfigureAwait(false);
         }
         else
         {
-            logger.LogInformation("Production start: not seeding admin/changeme or sk-exllamasharp-dev");
+            logger.LogInformation("Users already present — skipping first-run admin seed");
         }
 
         await RecoverInterruptedJobsAsync(db, logger, cancellationToken).ConfigureAwait(false);
@@ -216,52 +220,53 @@ public static class DbInitializer
     }
 
     /// <summary>
-    /// Seeds a well-known development admin key: <c>sk-exllamasharp-dev</c>.
-    /// Only created when no keys exist yet (first run).
+    /// Seeds first-run admin <c>admin</c>/<c>changeme</c> and API key <c>sk-exllamasharp-dev</c>
+    /// when no admin user exists yet.
     /// </summary>
     private static async Task SeedDevAdminAsync(AppDbContext db, ILogger logger, CancellationToken cancellationToken)
     {
-        if (await db.ApiKeys.AnyAsync(cancellationToken).ConfigureAwait(false))
+        if (await db.Users.AnyAsync(u => u.Username == "admin", cancellationToken).ConfigureAwait(false))
         {
             return;
         }
 
         const string rawKey = "sk-exllamasharp-dev";
         var hash = Auth.ApiKeyHasher.Hash(rawKey);
+        var adminId = Guid.Parse("00000000-0000-0000-0000-000000000001");
 
-        if (!await db.Users.AnyAsync(u => u.Username == "admin", cancellationToken).ConfigureAwait(false))
+        db.Users.Add(new User
         {
-            db.Users.Add(new User
+            Id = adminId,
+            Username = "admin",
+            PasswordHash = Auth.PasswordHasher.HashDeterministic(
+                "changeme",
+                Convert.FromHexString("00000000000000000000000000000001")),
+            Role = "admin",
+            TenantId = "default",
+            CreatedAt = DateTime.UtcNow,
+        });
+
+        if (!await db.ApiKeys.AnyAsync(k => k.KeyHash == hash, cancellationToken).ConfigureAwait(false))
+        {
+            db.ApiKeys.Add(new ApiKey
             {
-                Id = Guid.Parse("00000000-0000-0000-0000-000000000001"),
-                Username = "admin",
-                PasswordHash = Auth.PasswordHasher.HashDeterministic(
-                    "changeme",
-                    Convert.FromHexString("00000000000000000000000000000001")),
-                Role = "admin",
+                Id = Guid.Parse("00000000-0000-0000-0000-0000000000a1"),
+                Name = "Dev Admin",
+                KeyHash = hash,
+                KeyPrefix = "sk-exll",
+                Scopes = "chat,completions,embeddings,admin",
+                Rpm = 600,
+                Tpm = 1_000_000,
+                Priority = 1,
+                CostPerMillionTokens = 0,
+                Revoked = false,
                 TenantId = "default",
-                CreatedAt = DateTime.UtcNow,
+                UserId = adminId,
             });
         }
 
-        db.ApiKeys.Add(new ApiKey
-        {
-            Id = Guid.Parse("00000000-0000-0000-0000-0000000000a1"),
-            Name = "Dev Admin",
-            KeyHash = hash,
-            KeyPrefix = "sk-exll",
-            Scopes = "chat,completions,embeddings,admin",
-            Rpm = 600,
-            Tpm = 1_000_000,
-            Priority = 1,
-            CostPerMillionTokens = 0,
-            Revoked = false,
-            TenantId = "default",
-            UserId = Guid.Parse("00000000-0000-0000-0000-000000000001"),
-        });
-
         logger.LogWarning(
-            "Seeded development API key '{Key}' and admin user admin/changeme. Change before production use.",
+            "Seeded first-run API key '{Key}' and admin user admin/changeme. Change before exposing the host.",
             rawKey);
     }
 

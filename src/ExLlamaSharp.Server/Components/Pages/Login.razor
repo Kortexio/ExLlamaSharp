@@ -38,7 +38,8 @@
             }
             <button type="button" class="btn btn-primary btn-block btn-lg" @onclick="LoginAsync"><i class="fas fa-sign-in-alt"></i> Sign in</button>
             <p class="mb-0 mt-3 text-muted text-sm">
-                Use the account created in Setup. There is no default production password.
+                Default after fresh install: <code>admin</code> / <code>changeme</code> — change this in Setup or Team.
+                First-time? Open <a href="/setup">Setup wizard</a>.
             </p>
         </div>
     </div>
@@ -49,6 +50,14 @@
     private string _user = "admin";
     private string _pass = "";
     private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!await Db.Users.AsNoTracking().AnyAsync())
+        {
+            Nav.NavigateTo("/setup");
+        }
+    }
 
     private async Task OnKeyDown(KeyboardEventArgs e)
     {

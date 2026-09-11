@@ -4,7 +4,9 @@
 @inject IHttpContextAccessor Http
 @inject AdminUiSession Session
 @inject KeyCacheService KeyCache
+@inject AppDbContext Db
 @using ExLlamaSharp.Server.Auth
+@using Microsoft.EntityFrameworkCore
 
 @if (_ready)
 {
@@ -40,11 +42,38 @@
         _checking = true;
         try
         {
+            var hasUsers = await Db.Users.AsNoTracking().AnyAsync();
+
             if (IsPublicPath(Nav.Uri))
             {
+                // Empty install: Login is useless — send people to Setup to create admin.
+                if (!hasUsers && IsLoginPath(Nav.Uri))
+                {
+                    if (!_redirecting)
+                    {
+                        _redirecting = true;
+                        Nav.NavigateTo("/setup", forceLoad: false);
+                    }
+
+                    return;
+                }
+
                 _redirecting = false;
                 _ready = true;
                 await InvokeAsync(StateHasChanged);
+                return;
+            }
+
+            if (!hasUsers)
+            {
+                _ready = false;
+                await InvokeAsync(StateHasChanged);
+                if (!_redirecting)
+                {
+                    _redirecting = true;
+                    Nav.NavigateTo("/setup", forceLoad: false);
+                }
+
                 return;
             }
 
@@ -127,6 +156,21 @@
 
     private bool IsPublicPath(string uri)
     {
+        var path = RelativePath(uri);
+        return path is "login" or "setup" or "about"
+            || path.StartsWith("login/", StringComparison.OrdinalIgnoreCase)
+            || path.StartsWith("setup/", StringComparison.OrdinalIgnoreCase)
+            || path.StartsWith("about/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsLoginPath(string uri)
+    {
+        var path = RelativePath(uri);
+        return path is "login" || path.StartsWith("login/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private string RelativePath(string uri)
+    {
         var path = Nav.ToBaseRelativePath(uri);
         var q = path.IndexOf('?', StringComparison.Ordinal);
         if (q >= 0)
@@ -140,11 +184,7 @@
             path = path[..h];
         }
 
-        path = path.Trim('/');
-        return path is "login" or "setup" or "about"
-            || path.StartsWith("login/", StringComparison.OrdinalIgnoreCase)
-            || path.StartsWith("setup/", StringComparison.OrdinalIgnoreCase)
-            || path.StartsWith("about/", StringComparison.OrdinalIgnoreCase);
+        return path.Trim('/');
     }
 
     public void Dispose()
