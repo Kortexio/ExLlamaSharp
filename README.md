@@ -7,6 +7,7 @@ Aimed at small businesses (roughly 5–50 people) that want an Ollama-like exper
 <img width="3436" height="1230" alt="image" src="https://github.com/user-attachments/assets/9ae27679-18d2-4481-bbd4-0acd6c18cba9" />
 <img width="3435" height="1232" alt="image" src="https://github.com/user-attachments/assets/5e346c4c-d12a-49c4-8c74-ffa3861e86fc" />
 <img width="3437" height="1230" alt="image" src="https://github.com/user-attachments/assets/870ba806-cadc-4e9a-aa14-318e919f2eba" />
+<img width="3437" height="1226" alt="image" src="https://github.com/user-attachments/assets/616bf93d-4eac-4d5c-bcba-1d85af60b922" />
 <img width="3432" height="1227" alt="image" src="https://github.com/user-attachments/assets/36ca3b91-f2d5-42bc-bf31-5b6dde8b22be" />
 Inspired by:
 
