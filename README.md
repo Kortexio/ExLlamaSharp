@@ -5,14 +5,16 @@
 Aimed at small businesses (roughly 5–50 people) that want an Ollama-like experience, OpenAI-compatible APIs, and a full admin UI—without Docker or Linux-only stacks.
 
 <img width="3436" height="1230" alt="image" src="https://github.com/user-attachments/assets/9ae27679-18d2-4481-bbd4-0acd6c18cba9" />
-
-
+<img width="3435" height="1232" alt="image" src="https://github.com/user-attachments/assets/5e346c4c-d12a-49c4-8c74-ffa3861e86fc" />
+<img width="3437" height="1230" alt="image" src="https://github.com/user-attachments/assets/870ba806-cadc-4e9a-aa14-318e919f2eba" />
+<img width="3432" height="1227" alt="image" src="https://github.com/user-attachments/assets/36ca3b91-f2d5-42bc-bf31-5b6dde8b22be" />
 Inspired by:
 
 - **Ollama** — simple UX and model workflow
 - **vLLM** — multi-user serving ideas (scheduler / paging)
 - **ExLlamaV3** — fast EXL3 inference on NVIDIA
 - **Open WebUI** — browser-based administration
+
 
 **Current release: 1.4.0-beta** — real Multi-GPU (pipeline / tensor), combined VRAM fit in Admin, CUDA device remap (strongest GPU first), and faster fail for oversized prompts (`prompt_too_long` instead of hanging to 408). Core EXL3 OpenAI chat, Models/Jobs/Keys, LoRA, speculative, webhooks, tenants, agentic tools. Vision models skip the vision tower under multi-GPU (text-only). OpenAI **images/audio generation** remain **501**. Setup.exe bundles the ExLlamaV3 CUDA `.pyd`, worker deps, Python installer and VC++.
 
