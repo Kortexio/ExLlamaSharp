@@ -29,7 +29,7 @@ Built for small teams and office GPU boxes (roughly 5–50 people) that want an 
 | Setup.exe → Windows service + tray | **EXL3 only** (not GGUF / llama.cpp) |
 | OpenAI SDKs via `http://127.0.0.1:14563/v1` | Images / audio generation → **501** |
 | Admin UI: Models, Chat, Keys, Jobs, Settings | Vision under multi-GPU → text-only for now |
-| Multi-GPU pipeline / tensor (v1.4.0-beta+) | Best fit: Windows + NVIDIA, not Linux clusters |
+| Multi-GPU pipeline / tensor (v1.4.0+) | Best fit: Windows + NVIDIA, not Linux clusters |
 
 Inspired by [Ollama](https://ollama.ai), [vLLM](https://github.com/vllm-project/vllm), [ExLlamaV3](https://github.com/turboderp-org/exllamav3), and Open WebUI-style admin.
 
@@ -88,7 +88,7 @@ More: [docs/quick-install.md](docs/quick-install.md) · [docs/README.md](docs/RE
 
 ## Current release
 
-**1.4.0-beta** — Multi-GPU (pipeline / tensor), combined VRAM fit in Admin, CUDA device remap (strongest GPU → `cuda:0`), fail-fast `prompt_too_long`. Also: EXL3 OpenAI chat, Models/Jobs/Keys, LoRA, speculative decoding, webhooks, tenants, agentic tools. Setup.exe bundles the ExLlamaV3 CUDA `.pyd`, worker deps, Python installer and VC++.
+**1.4.0** — Multi-GPU (pipeline / tensor), combined VRAM fit in Admin, CUDA device remap (strongest GPU → `cuda:0`), fail-fast `prompt_too_long`, AdminLTE admin UI. Also: EXL3 OpenAI chat, Models/Jobs/Keys, LoRA, speculative decoding, webhooks, tenants, agentic tools. Setup.exe bundles the ExLlamaV3 CUDA `.pyd`, worker deps, Python installer and VC++.
 
 ---
 
