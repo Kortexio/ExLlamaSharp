@@ -4,6 +4,9 @@
 
 Aimed at small businesses (roughly 5–50 people) that want an Ollama-like experience, OpenAI-compatible APIs, and a full admin UI—without Docker or Linux-only stacks.
 
+<img width="3436" height="1230" alt="image" src="https://github.com/user-attachments/assets/9ae27679-18d2-4481-bbd4-0acd6c18cba9" />
+
+
 Inspired by:
 
 - **Ollama** — simple UX and model workflow
