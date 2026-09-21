@@ -118,6 +118,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _startItem;
     private readonly ToolStripMenuItem _stopItem;
     private readonly ToolStripMenuItem _restartItem;
+    private readonly ToolStripMenuItem _updateItem;
     private readonly Icon _iconOk;
     private readonly Icon _iconWarn;
     private readonly Icon _iconOff;
@@ -130,9 +131,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private int _autoRecoverAttempts;
     private DateTime _lastAutoRecoverUtc = DateTime.MinValue;
     private DateTime _lastStableUtc = DateTime.MinValue;
+    private DateTime _lastUpdateCheckUtc = DateTime.MinValue;
+    private bool _updateAvailable;
+    private string? _updateFingerprint;
     private FileSystemWatcher? _restartWatcher;
     private FileSystemWatcher? _firewallWatcher;
     private int _firewallBusy;
+
+    private static readonly TimeSpan UpdateCheckInterval = TimeSpan.FromHours(6);
 
     public TrayApplicationContext()
     {
@@ -155,9 +161,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _startItem = new ToolStripMenuItem("Start server", null, (_, _) => _ = StartServerAsync(openUi: false));
             _stopItem = new ToolStripMenuItem("Stop server", null, (_, _) => _ = StopServerAsync());
             _restartItem = new ToolStripMenuItem("Restart server", null, (_, _) => _ = RestartServerAsync());
+            _updateItem = new ToolStripMenuItem("Update available…", null, (_, _) => OpenAboutForUpdate())
+            {
+                Visible = false,
+                Font = new Font(SystemFonts.MenuFont!, FontStyle.Bold),
+            };
 
             var menu = new ContextMenuStrip();
             menu.Items.Add(_statusItem);
+            menu.Items.Add(_updateItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Open Admin UI", null, (_, _) => _ = StartServerAsync(openUi: true));
             menu.Items.Add("Open data folder", null, (_, _) => OpenDataFolder());
@@ -166,6 +178,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             menu.Items.Add(_stopItem);
             menu.Items.Add(_restartItem);
             menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("Check for updates", null, (_, _) => _ = CheckUpdatesAsync(force: true));
             menu.Items.Add("Exit tray", null, (_, _) => ExitThread());
 
             _tray = new NotifyIcon
@@ -176,6 +189,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 ContextMenuStrip = menu
             };
             _tray.DoubleClick += (_, _) => _ = StartServerAsync(openUi: true);
+            _tray.BalloonTipClicked += (_, _) =>
+            {
+                if (_updateAvailable)
+                {
+                    OpenAboutForUpdate();
+                }
+            };
 
             Application.DoEvents();
 
@@ -196,7 +216,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"Erro ao criar tray icon:\n{ex.Message}\n\n{ex.StackTrace}",
+            MessageBox.Show($"Failed to create tray icon:\n{ex.Message}\n\n{ex.StackTrace}",
                 "ExLlamaSharp Tray Error",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
@@ -206,16 +226,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private async Task BootstrapAsync()
     {
-        ShowBalloon("ExLlamaSharp", "A iniciar o servidor…");
+        ShowBalloon("ExLlamaSharp", "Starting the server…");
         var ok = await EnsureServerRunningAsync().ConfigureAwait(false);
         await RefreshStatusAsync().ConfigureAwait(false);
         if (ok)
         {
-            ShowBalloon("ExLlamaSharp", "Servidor pronto. Duplo-clique para abrir o Admin.");
+            ShowBalloon("ExLlamaSharp", "Server ready. Double-click to open Admin.");
+            _ = CheckUpdatesAsync(force: true);
         }
         else
         {
-            ShowBalloon("ExLlamaSharp", "Não foi possível iniciar o servidor. Usa Start server no menu.");
+            ShowBalloon("ExLlamaSharp", "Could not start the server. Use Start server in the menu.");
         }
     }
 
@@ -840,6 +861,73 @@ internal sealed class TrayApplicationContext : ApplicationContext
         Process.Start(new ProcessStartInfo { FileName = TrayPaths.DataRoot, UseShellExecute = true });
     }
 
+    private void OpenAboutForUpdate()
+    {
+        _ = StartServerAsync(openUi: false);
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = AdminUrl.TrimEnd('/') + "/about",
+                UseShellExecute = true,
+            });
+        }
+        catch
+        {
+            // ignore
+        }
+    }
+
+    private async Task CheckUpdatesAsync(bool force)
+    {
+        if (!force && DateTime.UtcNow - _lastUpdateCheckUtc < UpdateCheckInterval)
+        {
+            return;
+        }
+
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
+            var json = await http.GetStringAsync(AdminUrl.TrimEnd('/') + "/api/v1/updates").ConfigureAwait(false);
+            _lastUpdateCheckUtc = DateTime.UtcNow;
+
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            var available = root.TryGetProperty("update_available", out var ua) && ua.GetBoolean();
+            var latest = root.TryGetProperty("latest_version", out var lv) ? lv.GetString() : null;
+            var assetAt = root.TryGetProperty("asset_updated_at", out var au) ? au.GetString() : null;
+            var message = root.TryGetProperty("message", out var msg) ? msg.GetString() : null;
+            var fingerprint = $"{latest}|{assetAt}|{available}";
+
+            PostUi(() =>
+            {
+                _updateAvailable = available;
+                _updateItem.Visible = available;
+                _updateItem.Text = available
+                    ? (string.IsNullOrWhiteSpace(latest) ? "Update available…" : $"Update available ({latest})…")
+                    : "Update available…";
+            });
+
+            if (available && !string.Equals(_updateFingerprint, fingerprint, StringComparison.Ordinal))
+            {
+                _updateFingerprint = fingerprint;
+                ShowBalloon(
+                    "ExLlamaSharp update",
+                    string.IsNullOrWhiteSpace(message)
+                        ? "An update is available. Click to open Admin → About."
+                        : message + " Click to open Admin.");
+            }
+            else if (!available)
+            {
+                _updateFingerprint = fingerprint;
+            }
+        }
+        catch
+        {
+            // Server may be down; try again later
+        }
+    }
+
     private async Task RefreshStatusAsync()
     {
         if (_refreshing)
@@ -901,6 +989,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     line = $"{mode}: Running · Degraded (no model?)";
                     icon = _iconWarn;
                 }
+
+                if (DateTime.UtcNow - _lastUpdateCheckUtc >= UpdateCheckInterval)
+                {
+                    _ = CheckUpdatesAsync(force: false);
+                }
             }
             else if (serviceRunning || processRunning)
             {
@@ -946,7 +1039,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                             {
                                 _autoRecoverAttempts = 0;
                                 _lastStableUtc = DateTime.UtcNow;
-                                ShowBalloon("ExLlamaSharp", "Servidor recuperado automaticamente.");
+                                ShowBalloon("ExLlamaSharp", "Server recovered automatically.");
                             }
                         }, TaskScheduler.Default);
                     }
@@ -969,7 +1062,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 _startItem.Enabled = startOn;
                 _stopItem.Enabled = stopOn;
                 _restartItem.Enabled = true;
-                var tip = "ExLlamaSharp\n" + line;
+                var tip = _updateAvailable
+                    ? "ExLlamaSharp — update available\n" + line
+                    : "ExLlamaSharp\n" + line;
                 if (tip.Length > 63)
                 {
                     tip = tip[..60] + "…";

@@ -833,7 +833,7 @@ else
                         Label = p.TryGetProperty("label", out var pl) ? pl.GetString() ?? "" : "",
                         Summary = p.TryGetProperty("summary", out var ps) ? ps.GetString() ?? "" : "",
                         BadgeClass = p.TryGetProperty("badge_class", out var pb) ? pb.GetString() ?? "badge-muted" : "badge-muted",
-                        KindLabel = p.TryGetProperty("kind", out var pk) ? Capitalize(pk.GetString()) : "",
+                        KindLabel = p.TryGetProperty("kind", out var pk) ? FormatKindLabel(pk.GetString()) : "",
                         Available = !p.TryGetProperty("available", out var pa) || pa.GetBoolean(),
                     });
                 }
@@ -844,7 +844,7 @@ else
                 _customProfile = new LoadProfileUi
                 {
                     Id = VramFitService.ProfileCustom,
-                    Label = custom.TryGetProperty("label", out var cl) ? cl.GetString() ?? "Personalizado" : "Personalizado",
+                    Label = custom.TryGetProperty("label", out var cl) ? cl.GetString() ?? "Custom" : "Custom",
                     Summary = custom.TryGetProperty("summary", out var cs) ? cs.GetString() ?? "" : "",
                     BadgeClass = "badge-muted",
                     KindLabel = "Settings",
@@ -889,15 +889,16 @@ else
         await LoadModel(model, profile);
     }
 
-    private static string Capitalize(string? value)
+    private static string FormatKindLabel(string? kind) => kind?.Trim().ToLowerInvariant() switch
     {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return "";
-        }
-
-        return char.ToUpperInvariant(value[0]) + value[1..];
-    }
+        "fits" => "Fits",
+        "tight" => "Tight",
+        "toolarge" => "Too large",
+        "pending" => "Pending",
+        "unknowngpu" => "Unknown GPU",
+        "unknownsize" => "Unknown size",
+        _ => string.IsNullOrWhiteSpace(kind) ? "" : char.ToUpperInvariant(kind[0]) + kind[1..],
+    };
 
     private async Task LoadModel(ModelRecord model, string? profile = null)
     {

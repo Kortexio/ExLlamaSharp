@@ -88,7 +88,7 @@ More: [docs/quick-install.md](docs/quick-install.md) · [docs/README.md](docs/RE
 
 ## Current release
 
-**1.4.0** — Multi-GPU (pipeline / tensor), combined VRAM fit in Admin, CUDA device remap (strongest GPU → `cuda:0`), fail-fast `prompt_too_long`, AdminLTE admin UI. Also: EXL3 OpenAI chat, Models/Jobs/Keys, LoRA, speculative decoding, webhooks, tenants, agentic tools. Setup.exe bundles the ExLlamaV3 CUDA `.pyd`, worker deps, Python installer and VC++.
+**1.4.1** — Tray/Admin update checks (GitHub Releases → About download), English load-profile labels, English installer scripts. Builds on **1.4.0**: Multi-GPU (pipeline / tensor), combined VRAM fit, CUDA remap, AdminLTE UI, EXL3 OpenAI chat, Models/Jobs/Keys, LoRA, speculative decoding, webhooks, tenants. Setup.exe bundles ExLlamaV3 CUDA `.pyd`, worker deps, Python installer and VC++.
 
 ---
 

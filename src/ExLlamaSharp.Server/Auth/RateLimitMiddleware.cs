@@ -29,7 +29,8 @@ public sealed class RateLimitMiddleware
         if (path.Equals("/health", StringComparison.OrdinalIgnoreCase)
             || path.Equals("/ready", StringComparison.OrdinalIgnoreCase)
             || path.Equals("/metrics", StringComparison.OrdinalIgnoreCase)
-            || path.Equals("/api/v1/about", StringComparison.OrdinalIgnoreCase))
+            || path.Equals("/api/v1/about", StringComparison.OrdinalIgnoreCase)
+            || path.Equals("/api/v1/updates", StringComparison.OrdinalIgnoreCase))
         {
             await _next(context).ConfigureAwait(false);
             return;

@@ -61,6 +61,8 @@ builder.Services.AddSingleton<ContentModerationService>();
 builder.Services.AddSingleton<MetricsHistoryService>();
 builder.Services.AddSingleton<EmbeddingService>();
 builder.Services.AddSingleton<AboutService>();
+builder.Services.AddHttpClient("github", c => c.Timeout = TimeSpan.FromSeconds(15));
+builder.Services.AddSingleton<UpdateCheckService>();
 builder.Services.AddSingleton<HealthService>();
 builder.Services.AddSingleton<WebhookService>();
 builder.Services.AddSingleton<ModelJobsService>();

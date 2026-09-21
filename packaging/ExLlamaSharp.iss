@@ -3,7 +3,7 @@
 ;   & "${env:LocalAppData}\Programs\Inno Setup 6\ISCC.exe" packaging\ExLlamaSharp.iss
 
 #define MyAppName "ExLlamaSharp"
-#define MyAppVersion "1.4.0"
+#define MyAppVersion "1.4.1"
 #define MyAppPublisher "ExLlamaSharp"
 #define MyAppURL "http://127.0.0.1:14563"
 ; Stage folder produced by Build-Installer.ps1 (relative to this .iss)
@@ -13,8 +13,8 @@
 AppId={{8F3E2A91-6C4B-4D7E-9A12-E5B8C0D4F617}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
-VersionInfoVersion=1.4.0.0
-VersionInfoProductVersion=1.4.0.0
+VersionInfoVersion=1.4.1.0
+VersionInfoProductVersion=1.4.1.0
 AppMutex=Global\ExLlamaSharp.Server
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
@@ -43,7 +43,6 @@ DiskSpanning=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
-Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Create desktop shortcut (starts Tray + server)"; GroupDescription: "Additional icons:"

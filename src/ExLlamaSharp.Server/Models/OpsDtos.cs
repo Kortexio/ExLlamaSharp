@@ -2,6 +2,36 @@ using System.Text.Json.Serialization;
 
 namespace ExLlamaSharp.Server.Models;
 
+public sealed class UpdateCheckResponse
+{
+    [JsonPropertyName("checked")]
+    public bool Checked { get; init; }
+
+    [JsonPropertyName("update_available")]
+    public bool UpdateAvailable { get; init; }
+
+    [JsonPropertyName("reason")]
+    public string Reason { get; init; } = "";
+
+    [JsonPropertyName("installed_version")]
+    public string InstalledVersion { get; init; } = "";
+
+    [JsonPropertyName("latest_version")]
+    public string? LatestVersion { get; init; }
+
+    [JsonPropertyName("release_url")]
+    public string? ReleaseUrl { get; init; }
+
+    [JsonPropertyName("download_url")]
+    public string? DownloadUrl { get; init; }
+
+    [JsonPropertyName("asset_updated_at")]
+    public string? AssetUpdatedAt { get; init; }
+
+    [JsonPropertyName("message")]
+    public string Message { get; init; } = "";
+}
+
 public sealed class AboutResponse
 {
     [JsonPropertyName("name")]

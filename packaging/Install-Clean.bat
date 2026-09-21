@@ -5,14 +5,14 @@ cd /d "%~dp0"
 
 net session >nul 2>&1
 if %errorlevel% neq 0 (
-  echo Solicitando Administrador...
+  echo Requesting Administrator...
   powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
   exit /b
 )
 
 echo.
 echo ===============================================================
-echo   ExLlamaSharp - instalacao limpa
+echo   ExLlamaSharp - clean install
 echo ===============================================================
 echo.
 echo Log: %%TEMP%%\ExLlamaSharp-Install.log
@@ -23,10 +23,10 @@ set ERR=%ERRORLEVEL%
 
 echo.
 if %ERR%==0 (
-  echo SUCESSO. Abrindo http://127.0.0.1:14563 ...
+  echo SUCCESS. Opening http://127.0.0.1:14563 ...
   start http://127.0.0.1:14563
 ) else (
-  echo Exit code %ERR%. Veja %%TEMP%%\ExLlamaSharp-Install.log
+  echo Exit code %ERR%. See %%TEMP%%\ExLlamaSharp-Install.log
   if exist "%TEMP%\ExLlamaSharp-Install.log" type "%TEMP%\ExLlamaSharp-Install.log"
 )
 

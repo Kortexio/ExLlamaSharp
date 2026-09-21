@@ -72,6 +72,7 @@ public static class AdminEndpoints
         api.MapDelete("/moderation/rules/{id:guid}", DeleteModerationRuleAsync);
 
         api.MapGet("/about", AboutAsync);
+        api.MapGet("/updates", CheckUpdatesAsync);
 
         api.MapGet("/logs/stream", LogsStreamAsync);
 
@@ -555,11 +556,11 @@ public static class AdminEndpoints
             custom = new
             {
                 id = VramFitService.ProfileCustom,
-                label = "Personalizado",
+                label = "Custom",
                 max_batched_tokens = result.CustomMaxBatchedTokens,
                 parallelism_mode = result.CustomParallelismMode,
                 gpu_split_gb = result.CustomGpuSplitGb,
-                summary = $"{result.CustomMaxBatchedTokens} tokens · {result.CustomParallelismMode} (Settings atuais)",
+                summary = $"{result.CustomMaxBatchedTokens} tokens · {result.CustomParallelismMode} (current Settings)",
             },
         }, JsonOptions);
     }
@@ -1035,6 +1036,23 @@ public static class AdminEndpoints
                         },
                     ]
                     : [],
+        }, JsonOptions);
+    }
+
+    private static async Task<IResult> CheckUpdatesAsync(UpdateCheckService updates, CancellationToken ct)
+    {
+        var result = await updates.CheckAsync(ct).ConfigureAwait(false);
+        return Results.Json(new UpdateCheckResponse
+        {
+            Checked = result.Checked,
+            UpdateAvailable = result.UpdateAvailable,
+            Reason = result.Reason,
+            InstalledVersion = result.InstalledVersion,
+            LatestVersion = result.LatestVersion,
+            ReleaseUrl = result.ReleaseUrl,
+            DownloadUrl = result.DownloadUrl,
+            AssetUpdatedAt = result.AssetUpdatedAt?.ToString("O"),
+            Message = result.Message,
         }, JsonOptions);
     }
 

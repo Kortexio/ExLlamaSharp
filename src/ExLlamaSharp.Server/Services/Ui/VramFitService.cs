@@ -240,9 +240,9 @@ public sealed class VramFitService
         {
             var unavailable = new[]
             {
-                UnavailableProfile(ProfileConservative, "Conservadora", parallelism, effectiveSplit),
+                UnavailableProfile(ProfileConservative, "Conservative", parallelism, effectiveSplit),
                 UnavailableProfile(ProfileNormal, "Normal", parallelism, effectiveSplit),
-                UnavailableProfile(ProfileAggressive, "Agressiva", parallelism, effectiveSplit),
+                UnavailableProfile(ProfileAggressive, "Aggressive", parallelism, effectiveSplit),
             };
             return new ModelLoadProfilesResult(unavailable, customTokens, customMode, effectiveSplit, null);
         }
@@ -252,9 +252,9 @@ public sealed class VramFitService
         {
             var unavailable = new[]
             {
-                UnavailableProfile(ProfileConservative, "Conservadora", parallelism, effectiveSplit),
+                UnavailableProfile(ProfileConservative, "Conservative", parallelism, effectiveSplit),
                 UnavailableProfile(ProfileNormal, "Normal", parallelism, effectiveSplit),
-                UnavailableProfile(ProfileAggressive, "Agressiva", parallelism, effectiveSplit),
+                UnavailableProfile(ProfileAggressive, "Aggressive", parallelism, effectiveSplit),
             };
             return new ModelLoadProfilesResult(unavailable, customTokens, customMode, effectiveSplit, null);
         }
@@ -264,9 +264,9 @@ public sealed class VramFitService
         {
             var unavailable = new[]
             {
-                UnavailableProfile(ProfileConservative, "Conservadora", parallelism, effectiveSplit),
+                UnavailableProfile(ProfileConservative, "Conservative", parallelism, effectiveSplit),
                 UnavailableProfile(ProfileNormal, "Normal", parallelism, effectiveSplit),
-                UnavailableProfile(ProfileAggressive, "Agressiva", parallelism, effectiveSplit),
+                UnavailableProfile(ProfileAggressive, "Aggressive", parallelism, effectiveSplit),
             };
             return new ModelLoadProfilesResult(unavailable, customTokens, customMode, effectiveSplit, null);
         }
@@ -277,9 +277,9 @@ public sealed class VramFitService
 
         var profiles = new[]
         {
-            BuildProfile(ProfileConservative, "Conservadora", weightGb, visible, util, effectiveSplit, parallelism, conservativeTokens),
+            BuildProfile(ProfileConservative, "Conservative", weightGb, visible, util, effectiveSplit, parallelism, conservativeTokens),
             BuildProfile(ProfileNormal, "Normal", weightGb, visible, util, effectiveSplit, parallelism, normalTokens),
-            BuildProfile(ProfileAggressive, "Agressiva", weightGb, visible, util, effectiveSplit, parallelism, aggressiveTokens),
+            BuildProfile(ProfileAggressive, "Aggressive", weightGb, visible, util, effectiveSplit, parallelism, aggressiveTokens),
         };
 
         var recommended = profiles.LastOrDefault(p => p.Available && p.Kind is VramFitKind.Fits or VramFitKind.Tight)?.Id

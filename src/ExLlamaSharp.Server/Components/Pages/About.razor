@@ -1,9 +1,48 @@
 @page "/about"
 @inject AboutService AboutSvc
+@inject UpdateCheckService Updates
 
 <PageTitle>About — ExLlamaSharp</PageTitle>
 
-<PageHeader Title="About" Subtitle="Build and runtime information." />
+<PageHeader Title="About" Subtitle="Build, runtime, and updates." />
+
+@if (_update is { UpdateAvailable: true })
+{
+    <div class="alert alert-info d-flex align-items-center justify-content-between flex-wrap gap-2">
+        <div>
+            <strong><i class="fas fa-cloud-download-alt mr-1"></i> Update available</strong>
+            <div class="small mb-0">@_update.Message</div>
+        </div>
+        <div class="d-flex gap-2">
+            @if (!string.IsNullOrWhiteSpace(_update.DownloadUrl))
+            {
+                <a class="btn btn-primary btn-sm" href="@_update.DownloadUrl" target="_blank" rel="noopener">
+                    <i class="fas fa-download mr-1"></i> Download installer
+                </a>
+            }
+            @if (!string.IsNullOrWhiteSpace(_update.ReleaseUrl))
+            {
+                <a class="btn btn-outline-secondary btn-sm" href="@_update.ReleaseUrl" target="_blank" rel="noopener">
+                    Release notes
+                </a>
+            }
+        </div>
+    </div>
+}
+else if (_update is { Checked: true, UpdateAvailable: false })
+{
+    <div class="alert alert-success py-2">
+        <i class="fas fa-check-circle mr-1"></i> @_update.Message
+        <button type="button" class="btn btn-link btn-sm p-0 ml-2" @onclick="RefreshUpdateAsync" disabled="@_checking">Check again</button>
+    </div>
+}
+else if (_updateError is not null)
+{
+    <div class="alert alert-secondary py-2">
+        <i class="fas fa-info-circle mr-1"></i> Could not check for updates: @_updateError
+        <button type="button" class="btn btn-link btn-sm p-0 ml-2" @onclick="RefreshUpdateAsync" disabled="@_checking">Retry</button>
+    </div>
+}
 
 @if (_info is null)
 {
@@ -65,8 +104,11 @@ else
 
 @code {
     private AboutInfo? _info;
+    private UpdateCheckResult? _update;
+    private string? _updateError;
+    private bool _checking;
 
-    protected override void OnInitialized()
+    protected override async Task OnInitializedAsync()
     {
         try
         {
@@ -75,6 +117,31 @@ else
         catch
         {
             _info = null;
+        }
+
+        await RefreshUpdateAsync().ConfigureAwait(false);
+    }
+
+    private async Task RefreshUpdateAsync()
+    {
+        _checking = true;
+        _updateError = null;
+        try
+        {
+            _update = await Updates.CheckAsync().ConfigureAwait(false);
+            if (!_update.Checked)
+            {
+                _updateError = _update.Message;
+            }
+        }
+        catch (Exception ex)
+        {
+            _update = null;
+            _updateError = ex.Message;
+        }
+        finally
+        {
+            _checking = false;
         }
     }
 }

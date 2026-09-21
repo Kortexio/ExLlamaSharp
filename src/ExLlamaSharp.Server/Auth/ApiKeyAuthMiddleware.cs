@@ -88,6 +88,7 @@ public sealed class ApiKeyAuthMiddleware
             || path.Equals("/ready", StringComparison.OrdinalIgnoreCase)
             || path.Equals("/metrics", StringComparison.OrdinalIgnoreCase)
             || path.Equals("/api/v1/about", StringComparison.OrdinalIgnoreCase)
+            || path.Equals("/api/v1/updates", StringComparison.OrdinalIgnoreCase)
             || path.Equals("/api/v1/ui-session", StringComparison.OrdinalIgnoreCase)
             || path.Equals("/api/v1/ui-session/logout", StringComparison.OrdinalIgnoreCase))
         {
