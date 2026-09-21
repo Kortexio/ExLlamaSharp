@@ -11,7 +11,7 @@ using Microsoft.Extensions.Logging;
 
 namespace ExLlamaSharp.Server.Services;
 
-public sealed class EngineHostService : IHostedService, IAsyncDisposable
+public sealed partial class EngineHostService : IHostedService, IAsyncDisposable
 {
     private const int MaxRestarts = 3;
 
@@ -20,6 +20,7 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
     private readonly IConfiguration _configuration;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ArchitectureDetector _architectureDetector;
+    private readonly IGpuInventory _gpuInventory;
     private readonly IHostEnvironment _environment;
     private readonly object _gate = new();
     private readonly SemaphoreSlim _loadLock = new(1, 1);
@@ -46,6 +47,7 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
         IConfiguration configuration,
         IServiceScopeFactory scopeFactory,
         ArchitectureDetector architectureDetector,
+        IGpuInventory gpuInventory,
         IHostEnvironment environment)
     {
         _logger = logger;
@@ -53,6 +55,7 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
         _configuration = configuration;
         _scopeFactory = scopeFactory;
         _architectureDetector = architectureDetector;
+        _gpuInventory = gpuInventory;
         _environment = environment;
         var requestedMock = configuration.GetValue("ExLlamaSharp:ForceMockEngine", false);
         _forceMock = requestedMock && environment.IsDevelopment();
@@ -598,7 +601,7 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
     private IInferenceEngine CreateEngine(EngineKind kind) => kind switch
     {
         EngineKind.Mock => ExLlamaEngine.Create(_logger, forceMock: true),
-        EngineKind.Worker => new ExLlamaV3WorkerEngine(_logger, WorkerOptionsFromSettings()),
+        EngineKind.Worker => new ExLlamaV3WorkerEngine(_logger, new WorkerEngineOptions()),
         _ => throw new InvalidOperationException("Native stub engine is disabled. Use the EXL3 Python worker."),
     };
 
@@ -615,17 +618,7 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
             return;
         }
 
-        var gpus = CudaDeviceEnvironment.QueryGpus()
-            .Select(g => new GpuSnapshot
-            {
-                Index = g.Index,
-                Name = g.Name,
-                MemoryTotalMb = g.MemoryTotalMiB,
-                MemoryUsedMb = g.MemoryUsedMiB,
-                Uuid = g.Uuid,
-            })
-            .ToList();
-        var visible = GpuInfoService.FilterVisible(gpus, settings.CudaVisibleDevices);
+        var visible = _gpuInventory.QueryVisible(settings.CudaVisibleDevices);
         var fit = new VramFitService();
         if (fit.TryExplainLoadRefusal(
                 weightGb,
@@ -777,9 +770,6 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
         return weightGb;
     }
 
-    private WorkerEngineOptions WorkerOptionsFromSettings() =>
-        WorkerOptionsFromSettingsAsync(CancellationToken.None).GetAwaiter().GetResult();
-
     private async Task<WorkerEngineOptions> WorkerOptionsFromSettingsAsync(CancellationToken cancellationToken)
     {
         var s = await _settings.GetAsync(cancellationToken).ConfigureAwait(false);
@@ -823,101 +813,6 @@ public sealed class EngineHostService : IHostedService, IAsyncDisposable
             DraftModelPath = draftPath,
             DraftK = SpeculativeDecodingOptions.ClampDraftK(s.DraftK),
         };
-    }
-
-    private async Task WatchdogLoopAsync(CancellationToken cancellationToken)
-    {
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
-
-                if (_engine is ExLlamaV3WorkerEngine worker && !worker.IsWorkerAlive)
-                {
-                    if (!IsLoading && !worker.IsLoaded)
-                    {
-                        continue;
-                    }
-
-                    throw new InvalidOperationException(
-                        IsLoading
-                            ? "Python worker process died while loading the model."
-                            : "Python worker process died while model was loaded.");
-                }
-
-                if (IsLoading || _engine is null || !_engine.IsLoaded)
-                {
-                    continue;
-                }
-
-                _ = _engine.GetMetrics();
-                Interlocked.Exchange(ref _restartAttempts, 0);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Engine watchdog detected failure");
-                await TryRestartAsync(cancellationToken).ConfigureAwait(false);
-            }
-        }
-    }
-
-    private async Task TryRestartAsync(CancellationToken cancellationToken)
-    {
-        string? path;
-        Guid? modelId;
-        lock (_gate)
-        {
-            path = _loadedModelPath;
-            modelId = _loadedModelId;
-        }
-
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return;
-        }
-
-        var attempt = Interlocked.Increment(ref _restartAttempts);
-        if (attempt > MaxRestarts)
-        {
-            _lastLoadError =
-                $"Engine restart limit ({MaxRestarts}) exceeded. Load the model again from Models.";
-            _logger.LogCritical("Engine restart limit ({Max}) exceeded; manual intervention required", MaxRestarts);
-            try
-            {
-                await UnloadAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                // best effort clear
-            }
-
-            return;
-        }
-
-        _logger.LogWarning("Restarting engine attempt {Attempt}/{Max}", attempt, MaxRestarts);
-
-        try
-        {
-            await UnloadAsync(cancellationToken).ConfigureAwait(false);
-            await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
-
-            lock (_gate)
-            {
-                _engine?.Dispose();
-                _engine = null;
-            }
-
-            await LoadAsync(path, modelId, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogError(ex, "Engine restart attempt {Attempt} failed", attempt);
-        }
     }
 
     private void OnWorkerLoadProgress(string phase, int pct) => SetLoadProgress(phase, pct);

@@ -1,6 +1,10 @@
 @page "/about"
 @inject AboutService AboutSvc
 @inject UpdateCheckService Updates
+@inject EngineRuntimeVersionService EngineRuntimeUpdates
+@inject EngineHostService EngineHost
+@using ExLlamaSharp.Engine
+@using ExLlamaSharp.Server.Services
 
 <PageTitle>About — ExLlamaSharp</PageTitle>
 
@@ -70,6 +74,25 @@ else
         </div>
     </div>
 
+    <div class="card card-outline card-info mb-3">
+        <div class="card-header"><h3 class="card-title"><i class="fas fa-code-branch mr-2"></i>Engine runtime (ExLlamaV3)</h3></div>
+        <div class="card-body">
+            <ul class="mb-2">
+                <li>Installed wheel: @(_runtimeInstalled ?? "—")</li>
+                <li>LLGuidance (constrained JSON): @(_llguidance == true ? "yes" : _llguidance == false ? "no" : "—")</li>
+                <li>Latest upstream: @(_runtimeLatest ?? "—")</li>
+            </ul>
+            @if (_runtimeUpdateAvailable && !string.IsNullOrWhiteSpace(_runtimeReleaseUrl))
+            {
+                <p class="small text-muted mb-0">
+                    A newer exllamav3 release may be available.
+                    <a href="@_runtimeReleaseUrl" target="_blank" rel="noopener">View release</a>
+                    — use Repair in the installer or <code>Repair-Exl3Ext.ps1</code>; the server does not auto-pip in production.
+                </p>
+            }
+        </div>
+    </div>
+
     <div class="card card-outline card-secondary">
         <div class="card-header"><h3 class="card-title"><i class="fas fa-microchip mr-2"></i>GPU</h3></div>
         <div class="card-body">
@@ -107,6 +130,11 @@ else
     private UpdateCheckResult? _update;
     private string? _updateError;
     private bool _checking;
+    private string? _runtimeInstalled;
+    private string? _runtimeLatest;
+    private bool? _llguidance;
+    private bool _runtimeUpdateAvailable;
+    private string? _runtimeReleaseUrl;
 
     protected override async Task OnInitializedAsync()
     {
@@ -120,6 +148,33 @@ else
         }
 
         await RefreshUpdateAsync().ConfigureAwait(false);
+        await RefreshEngineRuntimeAsync().ConfigureAwait(false);
+    }
+
+    private async Task RefreshEngineRuntimeAsync()
+    {
+        try
+        {
+            if (EngineHost.Engine is ExLlamaV3WorkerEngine worker)
+            {
+                await worker.EnsureRuntimeInfoAsync().ConfigureAwait(false);
+                var caps = worker.RuntimeCapabilities;
+                _runtimeInstalled = caps?.ExLlamaV3Version;
+                _llguidance = caps?.Llguidance;
+            }
+
+            var latest = await EngineRuntimeUpdates.GetLatestReleaseAsync().ConfigureAwait(false);
+            if (latest is not null)
+            {
+                _runtimeLatest = latest.LatestTag;
+                _runtimeReleaseUrl = latest.ReleaseUrl;
+                _runtimeUpdateAvailable = EngineRuntimeVersionService.IsNewerVersion(_runtimeInstalled, latest.LatestTag);
+            }
+        }
+        catch
+        {
+            // best-effort
+        }
     }
 
     private async Task RefreshUpdateAsync()

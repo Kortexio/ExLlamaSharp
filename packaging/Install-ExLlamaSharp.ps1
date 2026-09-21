@@ -172,7 +172,7 @@ function Install-ExLlamaV3CudaWheel([string]$PythonExe) {
         throw "Cannot resolve Python/torch versions for the ExLlamaV3 CUDA wheel"
     }
 
-    $wheelName = "exllamav3-1.4.2+cu128.torch${mm}.0-cp$pyVer-cp$pyVer-win_amd64.whl"
+    $wheelName = "exllamav3-1.5.1+cu128.torch${mm}.0-cp$pyVer-cp$pyVer-win_amd64.whl"
     $wheelFile = $null
     $offline = Resolve-OfflineWheelsDir
     if ($offline) {
@@ -191,7 +191,7 @@ function Install-ExLlamaV3CudaWheel([string]$PythonExe) {
     }
 
     if (-not $wheelFile) {
-        $url = "https://github.com/turboderp-org/exllamav3/releases/download/v1.4.2/exllamav3-1.4.2%2Bcu128.torch${mm}.0-cp$pyVer-cp$pyVer-win_amd64.whl"
+        $url = "https://github.com/turboderp-org/exllamav3/releases/download/v1.5.1/exllamav3-1.5.1%2Bcu128.torch${mm}.0-cp$pyVer-cp$pyVer-win_amd64.whl"
         $wheelFile = Join-Path $env:TEMP $wheelName
         Write-Log "Downloading $wheelName (~242 MB)"
         Invoke-WebRequest -Uri $url -OutFile $wheelFile -UseBasicParsing

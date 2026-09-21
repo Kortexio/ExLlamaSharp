@@ -29,7 +29,16 @@ Primary contract is **OpenAI Chat Completions / Completions**. Clients that spea
 
 Unimplemented `/v1/**` paths (including **images/audio generation**) return **501** with an OpenAI-shaped error object (`not_implemented_error`).
 
-Chat supports OpenAI `tools` / `tool_choice` (response may include `tool_calls` + `finish_reason: tool_calls`), `response_format` / JSON schema, and multimodal `image_url` when the loaded EXL3 model has a vision component (Qwen3-VL, Gemma VL, etc.). Text-only models return **400** `vision_not_supported`. Unsupported fields such as `logit_bias`, `logprobs`, and `n > 1` return **400**. Responses include header `X-ExLlamaSharp-Engine: worker|mock`.
+Chat supports OpenAI `tools` / `tool_choice` and `response_format`:
+
+| Header | Values |
+|--------|--------|
+| `X-ExLlamaSharp-Tools-Mode` | `prompt_parse` (system hint + post-parse) or `constrained` (LLGuidance JSON schema on the worker when `llguidance` is installed) |
+| `X-ExLlamaSharp-Structured-Output` | `prompt_only` or `constrained` when `response_format` / JSON schema is used |
+
+When LLGuidance is unavailable, tools stay in **prompt-parse** mode. `tool_choice: required` with a **mock** engine returns **400** `tools_constrained_unavailable`. Otherwise `tool_choice: required` returns **400** if the model does not emit valid `tool_calls`. Streaming does not emit incremental `tool_calls` deltas; tool calls are validated on the accumulated text.
+
+Multimodal `image_url` requires a loaded EXL3 VLM (max **8** images per request, else **413**). Text-only models return **400** `vision_not_supported`. Unsupported fields: `logit_bias`, `logprobs`, `n > 1` → **400**. A/B routing returns **409** if the chosen variant is not already loaded. Unimplemented `/v1/*` (e.g. `/v1/images/*`, `/v1/audio/*`) → **501** `not_implemented_error`. Responses include `X-ExLlamaSharp-Engine: worker|mock`.
 
 ### Generation length & context
 

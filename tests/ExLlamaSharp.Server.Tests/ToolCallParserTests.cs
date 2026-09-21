@@ -33,4 +33,31 @@ public sealed class ToolCallParserTests
         Assert.Empty(calls);
         Assert.Equal("Hello there", residual);
     }
+
+    [Fact]
+    public void Parses_json_after_leading_prose()
+    {
+        var text = """
+            Sure, here you go:
+            {"tool_calls":[{"id":"c1","type":"function","function":{"name":"search","arguments":"{}"}}]}
+            """;
+        Assert.True(ToolCallParser.TryParse(text, out var calls, out _));
+        Assert.Equal("search", calls[0].Function.Name);
+    }
+
+    [Fact]
+    public void Parses_second_fenced_json_block()
+    {
+        var text = """
+            noise
+            ```json
+            {"x":1}
+            ```
+            ```json
+            {"tool_calls":[{"id":"c1","type":"function","function":{"name":"fn","arguments":"{}"}}]}
+            ```
+            """;
+        Assert.True(ToolCallParser.TryParse(text, out var calls, out _));
+        Assert.Equal("fn", calls[0].Function.Name);
+    }
 }

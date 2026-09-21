@@ -19,6 +19,7 @@ public sealed class EmbeddingService : IDisposable
     private InferenceSession? _session;
     private string? _modelPath;
     private bool _triedLoad;
+    private string[]? _vocab;
 
     public EmbeddingService(ILogger<EmbeddingService> logger)
     {
@@ -106,7 +107,7 @@ public sealed class EmbeddingService : IDisposable
             {
                 try
                 {
-                    vector = EmbedOnnx(text, _session);
+                    vector = EmbedOnnx(text, _session, _vocab!);
                     return true;
                 }
                 catch (Exception ex)
@@ -172,6 +173,18 @@ public sealed class EmbeddingService : IDisposable
             {
                 _session = new InferenceSession(onnx);
                 _modelPath = onnx;
+                _vocab = LoadVocab(ModelDirectory);
+                if (_vocab is null)
+                {
+                    _session.Dispose();
+                    _session = null;
+                    _logger.LogWarning(
+                        "ONNX model at {Path} requires vocab.txt in {Dir} for tokenization.",
+                        onnx,
+                        ModelDirectory);
+                    return;
+                }
+
                 _logger.LogInformation("Loaded ONNX embedding model from {Path}", onnx);
             }
             catch (Exception ex)
@@ -181,7 +194,7 @@ public sealed class EmbeddingService : IDisposable
         }
     }
 
-    private static float[] EmbedOnnx(string text, InferenceSession session)
+    private static float[] EmbedOnnx(string text, InferenceSession session, string[] vocab)
     {
         // Generic path: if the model expects input_ids, use a simple whitespace hash tokenizer
         // into fixed length 128 — works with many MiniLM ONNX exports that use int64 inputs.
@@ -202,7 +215,7 @@ public sealed class EmbeddingService : IDisposable
 
         var seq = dims.Length >= 2 ? dims[^1] : 128;
         var tensor = new DenseTensor<long>(new[] { 1, seq });
-        var tokens = TokenizeRough(text, seq);
+        var tokens = TokenizeWithVocab(text, seq, vocab);
         for (var i = 0; i < seq; i++)
         {
             tensor[0, i] = tokens[i];
@@ -232,26 +245,70 @@ public sealed class EmbeddingService : IDisposable
         return L2Normalize(vector);
     }
 
-    private static long[] TokenizeRough(string text, int seq)
+    private static string[]? LoadVocab(string modelDirectory)
     {
-        var ids = new long[seq];
-        ids[0] = 101; // [CLS]-ish
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        var i = 1;
-        foreach (var p in parts)
+        var vocabPath = Path.Combine(modelDirectory, "vocab.txt");
+        if (!File.Exists(vocabPath))
         {
-            if (i >= seq - 1)
-            {
-                break;
-            }
-
-            var hash = SHA256.HashData(Encoding.UTF8.GetBytes(p.ToLowerInvariant()));
-            ids[i++] = 1000 + (BitConverter.ToUInt16(hash, 0) % 20000);
+            return null;
         }
 
-        if (i < seq)
+        return File.ReadAllLines(vocabPath)
+            .Select(l => l.Trim())
+            .Where(l => l.Length > 0)
+            .ToArray();
+    }
+
+    private static long[] TokenizeWithVocab(string text, int seq, string[] vocab)
+    {
+        var tokenToId = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var i = 0; i < vocab.Length; i++)
         {
-            ids[i] = 102; // [SEP]-ish
+            tokenToId.TryAdd(vocab[i], i);
+        }
+
+        int Lookup(string token) => tokenToId.TryGetValue(token, out var id) ? id : tokenToId.GetValueOrDefault("[UNK]", 100);
+
+        var ids = new long[seq];
+        var pos = 0;
+        ids[pos++] = tokenToId.GetValueOrDefault("[CLS]", 101);
+
+        var normalized = text.Trim().ToLowerInvariant();
+        var charIndex = 0;
+        while (charIndex < normalized.Length && pos < seq - 1)
+        {
+            var matched = false;
+            for (var len = Math.Min(32, normalized.Length - charIndex); len >= 1; len--)
+            {
+                var piece = normalized.Substring(charIndex, len);
+                var key = piece.StartsWith(' ') ? piece : (charIndex == 0 ? piece : "##" + piece);
+                if (tokenToId.ContainsKey(key))
+                {
+                    ids[pos++] = Lookup(key);
+                    charIndex += len;
+                    matched = true;
+                    break;
+                }
+
+                if (tokenToId.ContainsKey(piece))
+                {
+                    ids[pos++] = Lookup(piece);
+                    charIndex += len;
+                    matched = true;
+                    break;
+                }
+            }
+
+            if (!matched)
+            {
+                ids[pos++] = Lookup("[UNK]");
+                charIndex++;
+            }
+        }
+
+        if (pos < seq)
+        {
+            ids[pos] = tokenToId.GetValueOrDefault("[SEP]", 102);
         }
 
         return ids;

@@ -12,7 +12,7 @@ using Microsoft.Extensions.Hosting;
 
 namespace ExLlamaSharp.Server.Endpoints;
 
-public static class AdminEndpoints
+public static partial class AdminEndpoints
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -35,25 +35,7 @@ public static class AdminEndpoints
         api.MapPost("/settings", PostSettingsAsync);
         api.MapPatch("/settings", PatchSettingsAsync);
 
-        api.MapGet("/models/library", GetModelLibraryAsync);
-        api.MapGet("/models/library/search", SearchLibraryAsync);
-        api.MapPost("/models/library", PostModelLibraryAsync);
-
-        api.MapPost("/models/load", LoadModelAsync);
-        api.MapGet("/models/{id:guid}/load-profiles", GetLoadProfilesAsync);
-        api.MapGet("/models/load-status", GetLoadStatusAsync);
-        api.MapPost("/models/load-cancel", CancelLoadAsync);
-        api.MapPost("/models/unload", UnloadModelAsync);
-        api.MapPost("/models/pull", PullModelAsync);
-        api.MapPost("/models/quantize", QuantizeModelAsync);
-        api.MapPost("/models/import", ImportModelAsync);
-        api.MapPost("/models/alias", AliasModelAsync);
-        api.MapPost("/models/rename", RenameModelAsync);
-        api.MapDelete("/models/{id:guid}", DeleteModelAsync);
-
-        api.MapGet("/models/{id:guid}/modelfile", GetModelfileAsync);
-        api.MapPut("/models/{id:guid}/modelfile", PutModelfileAsync);
-        api.MapGet("/models/jobs/{job_id:guid}", GetModelJobAsync);
+        MapModelAdminRoutes(api);
 
         api.MapGet("/jobs", ListJobsAsync);
         api.MapPost("/jobs/{id:guid}/cancel", CancelJobAsync);
@@ -103,27 +85,6 @@ public static class AdminEndpoints
         api.MapPost("/conversations/{id:guid}/messages", AddConversationMessageAsync);
 
         return app;
-    }
-
-    private static async Task<IResult> HealthAsync(HealthService health, CancellationToken ct)
-    {
-        var report = await health.GetHealthAsync(ct).ConfigureAwait(false);
-        var code = report.Status == "unhealthy"
-            ? StatusCodes.Status503ServiceUnavailable
-            : StatusCodes.Status200OK;
-        return Results.Json(report, statusCode: code);
-    }
-
-    private static async Task<IResult> ReadyAsync(HealthService health, EngineHostService engine, CancellationToken ct)
-    {
-        var ready = await health.IsReadyAsync(ct).ConfigureAwait(false);
-        var body = new ReadyResponse
-        {
-            Ready = ready,
-            ModelLoaded = engine.IsLoaded,
-            EngineRunning = engine.IsRunning,
-        };
-        return Results.Json(body, JsonOptions, statusCode: ready ? StatusCodes.Status200OK : StatusCodes.Status503ServiceUnavailable);
     }
 
     private static async Task<IResult> OpenUiSessionAsync(
@@ -180,44 +141,6 @@ public static class AdminEndpoints
     private sealed class UiSessionRequest
     {
         public string? Key { get; set; }
-    }
-
-    private static IResult PrometheusMetricsAsync(EngineHostService engineHost)
-    {
-        Engine.EngineMetrics m;
-        try
-        {
-            m = engineHost.Engine.GetMetrics();
-        }
-        catch
-        {
-            m = new Engine.EngineMetrics();
-        }
-
-        var sb = new StringBuilder();
-        sb.AppendLine("# HELP exllamasharp_prompt_tokens_total Total prompt tokens processed");
-        sb.AppendLine("# TYPE exllamasharp_prompt_tokens_total counter");
-        sb.AppendLine($"exllamasharp_prompt_tokens_total {m.TotalPromptTokens}");
-        sb.AppendLine("# HELP exllamasharp_generated_tokens_total Total generated tokens");
-        sb.AppendLine("# TYPE exllamasharp_generated_tokens_total counter");
-        sb.AppendLine($"exllamasharp_generated_tokens_total {m.TotalGeneratedTokens}");
-        sb.AppendLine("# HELP exllamasharp_jobs_waiting Jobs waiting in queue");
-        sb.AppendLine("# TYPE exllamasharp_jobs_waiting gauge");
-        sb.AppendLine($"exllamasharp_jobs_waiting {m.NumJobsWaiting}");
-        sb.AppendLine("# HELP exllamasharp_jobs_running Jobs currently running");
-        sb.AppendLine("# TYPE exllamasharp_jobs_running gauge");
-        sb.AppendLine($"exllamasharp_jobs_running {m.NumJobsRunning}");
-        sb.AppendLine("# HELP exllamasharp_tokens_per_second Approximate decode throughput");
-        sb.AppendLine("# TYPE exllamasharp_tokens_per_second gauge");
-        sb.AppendLine($"exllamasharp_tokens_per_second {m.TokensPerSecond}");
-        sb.AppendLine("# HELP exllamasharp_pages_used KV pages used");
-        sb.AppendLine("# TYPE exllamasharp_pages_used gauge");
-        sb.AppendLine($"exllamasharp_pages_used {m.NumPagesUsed}");
-        sb.AppendLine("# HELP exllamasharp_is_mock Whether mock engine is active");
-        sb.AppendLine("# TYPE exllamasharp_is_mock gauge");
-        sb.AppendLine($"exllamasharp_is_mock {(m.IsMock ? 1 : 0)}");
-
-        return Results.Text(sb.ToString(), "text/plain; version=0.0.4; charset=utf-8");
     }
 
     private static async Task<IResult> GetSettingsAsync(SettingsService settings, CancellationToken ct)

@@ -38,13 +38,12 @@ public sealed class KeyCacheService
 
         if (key is not null)
         {
-            _cache.Set(
-                CacheKey(keyHash),
-                key,
-                new MemoryCacheEntryOptions
-                {
-                    AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(60),
-                });
+            var options = new MemoryCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(60),
+            };
+            _cache.Set(CacheKey(keyHash), key, options);
+            _cache.Set(IdIndexKey(key.Id), keyHash, options);
         }
 
         return key;
@@ -60,10 +59,14 @@ public sealed class KeyCacheService
 
     public void Invalidate(Guid keyId)
     {
-        // Best-effort: callers with hash should prefer Invalidate(hash).
-        // Full scan is avoided; revoke/update paths should invalidate by hash.
-        _ = keyId;
+        if (_cache.TryGetValue(IdIndexKey(keyId), out string? hash) && !string.IsNullOrWhiteSpace(hash))
+        {
+            _cache.Remove(CacheKey(hash));
+            _cache.Remove(IdIndexKey(keyId));
+        }
     }
 
     private static string CacheKey(string keyHash) => $"apikey:{keyHash}";
+
+    private static string IdIndexKey(Guid keyId) => $"apikey:id:{keyId:N}";
 }

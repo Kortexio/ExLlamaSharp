@@ -13,6 +13,8 @@ public sealed class DashboardBroadcastService : BackgroundService
     private readonly ModelJobsService _jobs;
     private readonly MetricsHistoryService _history;
     private readonly ILogger<DashboardBroadcastService> _logger;
+    private object? _cachedActiveJobs;
+    private DateTime _lastJobListUtc = DateTime.MinValue;
 
     public DashboardBroadcastService(
         IHubContext<DashboardHub> hub,
@@ -54,18 +56,22 @@ public sealed class DashboardBroadcastService : BackgroundService
 
                 _history.RecordTps(tps);
 
-                var jobList = await _jobs.ListAsync(stoppingToken).ConfigureAwait(false);
-                var active = jobList
-                    .Where(j => j.Status is "pending" or "running")
-                    .Select(j => new
-                    {
-                        job_id = j.JobId,
-                        type = j.Type,
-                        status = j.Status,
-                        progress_pct = j.ProgressPct,
-                    })
-                    .Take(20)
-                    .ToList();
+                if (DateTime.UtcNow - _lastJobListUtc > TimeSpan.FromSeconds(5))
+                {
+                    var jobList = await _jobs.ListAsync(stoppingToken).ConfigureAwait(false);
+                    _cachedActiveJobs = jobList
+                        .Where(j => j.Status is "pending" or "running")
+                        .Select(j => new
+                        {
+                            job_id = j.JobId,
+                            type = j.Type,
+                            status = j.Status,
+                            progress_pct = j.ProgressPct,
+                        })
+                        .Take(20)
+                        .ToList();
+                    _lastJobListUtc = DateTime.UtcNow;
+                }
 
                 await _hub.Clients.Group("default").SendAsync(
                     DashboardHub.MetricsMethod,
@@ -76,7 +82,7 @@ public sealed class DashboardBroadcastService : BackgroundService
                         jobs_waiting = waiting,
                         jobs_running = running,
                         model_loaded = _engine.IsLoaded,
-                        active_jobs = active,
+                        active_jobs = _cachedActiveJobs ?? Array.Empty<object>(),
                         tps_series = _history.TpsSeries,
                         latency_p50_ms = _history.LatencyP50Ms,
                         latency_p95_ms = _history.LatencyP95Ms,

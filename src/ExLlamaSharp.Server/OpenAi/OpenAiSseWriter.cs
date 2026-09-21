@@ -30,7 +30,9 @@ internal static class OpenAiSseWriter
         IAsyncEnumerable<CompletionDelta> deltas,
         CancellationToken ct,
         bool parseToolCalls = false,
-        string? preambleComment = null)
+        string? preambleComment = null,
+        HashSet<string>? allowedToolNames = null,
+        ToolCallValidator.ToolChoiceRequirement toolChoiceRequirement = default)
     {
         await using var writer = new StreamWriter(stream, new UTF8Encoding(false), leaveOpen: true);
         if (!string.IsNullOrWhiteSpace(preambleComment))
@@ -48,6 +50,7 @@ internal static class OpenAiSseWriter
         var filter = new StreamingStopFilter();
         var acc = new StreamAccumulator();
         var bufferTools = parseToolCalls && kind == OpenAiSseKind.Chat;
+        var coalescer = new SseContentCoalescer(writer, kind, id, created, model, ct);
 
         await foreach (var delta in deltas.WithCancellation(ct).ConfigureAwait(false))
         {
@@ -58,7 +61,7 @@ internal static class OpenAiSseWriter
                 acc.Text.Append(piece);
                 if (!bufferTools)
                 {
-                    await WriteContentAsync(writer, kind, id, created, model, piece, ct).ConfigureAwait(false);
+                    await coalescer.AppendAsync(piece).ConfigureAwait(false);
                 }
             }
 
@@ -74,13 +77,27 @@ internal static class OpenAiSseWriter
             acc.Text.Append(flushed);
             if (!bufferTools)
             {
-                await WriteContentAsync(writer, kind, id, created, model, flushed, ct).ConfigureAwait(false);
+                await coalescer.AppendAsync(flushed).ConfigureAwait(false);
             }
         }
+
+        await coalescer.FlushAsync().ConfigureAwait(false);
 
         var finish = acc.FinishReason;
         if (bufferTools && ToolCallParser.TryParse(acc.Text.ToString(), out var toolCalls, out var residual))
         {
+            var allowed = allowedToolNames ?? [];
+            var toolErr = ToolCallValidator.ValidateParsedCalls(toolCalls, allowed, toolChoiceRequirement);
+            if (toolErr is not null)
+            {
+                finish = "stop";
+                acc.Text.Clear();
+                acc.Text.Append(toolErr);
+                await coalescer.AppendAsync(toolErr).ConfigureAwait(false);
+                await coalescer.FlushAsync().ConfigureAwait(false);
+            }
+            else
+            {
             finish = "tool_calls";
             var deltasList = toolCalls.Select((t, i) => new ChatToolCallDelta
             {
@@ -113,12 +130,28 @@ internal static class OpenAiSseWriter
             {
                 acc.Text.Append(residual);
             }
+            }
         }
         else if (bufferTools)
         {
-            foreach (var piece in ChunkText(acc.Text.ToString(), 12))
+            var toolErr = ToolCallValidator.ValidateToolResponse(
+                acc.Text.ToString(),
+                allowedToolNames ?? [],
+                toolChoiceRequirement);
+            if (toolErr is not null)
             {
-                await WriteContentAsync(writer, kind, id, created, model, piece, ct).ConfigureAwait(false);
+                finish = "stop";
+                await coalescer.AppendAsync(toolErr).ConfigureAwait(false);
+                await coalescer.FlushAsync().ConfigureAwait(false);
+            }
+            else
+            {
+                foreach (var piece in ChunkText(acc.Text.ToString(), 12))
+                {
+                    await coalescer.AppendAsync(piece).ConfigureAwait(false);
+                }
+
+                await coalescer.FlushAsync().ConfigureAwait(false);
             }
         }
 
@@ -289,6 +322,61 @@ internal static class OpenAiSseWriter
             }
 
             yield return piece;
+        }
+    }
+
+    private sealed class SseContentCoalescer
+    {
+        private readonly StreamWriter _writer;
+        private readonly OpenAiSseKind _kind;
+        private readonly string _id;
+        private readonly long _created;
+        private readonly string _model;
+        private readonly CancellationToken _ct;
+        private readonly StringBuilder _buffer = new();
+        private DateTime _lastFlushUtc = DateTime.UtcNow;
+
+        public SseContentCoalescer(
+            StreamWriter writer,
+            OpenAiSseKind kind,
+            string id,
+            long created,
+            string model,
+            CancellationToken ct)
+        {
+            _writer = writer;
+            _kind = kind;
+            _id = id;
+            _created = created;
+            _model = model;
+            _ct = ct;
+        }
+
+        public async Task AppendAsync(string piece)
+        {
+            if (string.IsNullOrEmpty(piece))
+            {
+                return;
+            }
+
+            _buffer.Append(piece);
+            if (_buffer.Length >= 256 || (DateTime.UtcNow - _lastFlushUtc).TotalMilliseconds >= 15)
+            {
+                await FlushAsync().ConfigureAwait(false);
+            }
+        }
+
+        public async Task FlushAsync()
+        {
+            if (_buffer.Length == 0)
+            {
+                return;
+            }
+
+            var text = _buffer.ToString();
+            _buffer.Clear();
+            _lastFlushUtc = DateTime.UtcNow;
+            await WriteContentAsync(_writer, _kind, _id, _created, _model, text, _ct).ConfigureAwait(false);
         }
     }
 

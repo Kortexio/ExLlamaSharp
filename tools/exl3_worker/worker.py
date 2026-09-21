@@ -138,6 +138,24 @@ class _StreamSanitizer:
         return emit
 
 
+def _probe_capabilities() -> dict[str, Any]:
+    version: str | None = None
+    llg = False
+    try:
+        import exllamav3
+
+        version = getattr(exllamav3, "__version__", None)
+    except Exception:
+        pass
+    try:
+        from exllamav3.generator.filter.llguidance import LLGuidanceFilter  # noqa: F401
+
+        llg = True
+    except Exception:
+        llg = False
+    return {"llguidance": llg, "exllamav3_version": version}
+
+
 class WorkerState:
     def __init__(self) -> None:
         self.config = None
@@ -165,6 +183,7 @@ class WorkerState:
         self.vision_model = None
         self.vision_capable: bool = False
         self.parallelism_mode: str = "none"
+        self.capabilities: dict[str, Any] = _probe_capabilities()
 
     @property
     def loaded(self) -> bool:
@@ -1084,6 +1103,22 @@ def _page_size() -> int:
     return 256
 
 
+def _make_filter(msg: dict[str, Any]) -> Any | None:
+    c = msg.get("constraint")
+    if not isinstance(c, dict) or c.get("type") != "json_schema":
+        return None
+    if not STATE.capabilities.get("llguidance"):
+        raise RuntimeError("constraint_backend_unavailable: llguidance is not installed")
+    schema = c.get("schema")
+    if schema is None:
+        return None
+    if STATE.tokenizer is None:
+        raise RuntimeError("No tokenizer loaded for constrained generation")
+    from exllamav3.generator.filter.llguidance import LLGuidanceFilter
+
+    return LLGuidanceFilter(STATE.tokenizer, json_schema=schema)
+
+
 def _enqueue(req_id: Any, prompt: str, msg: dict[str, Any]) -> None:
     from exllamav3 import Job
 
@@ -1160,6 +1195,9 @@ def _enqueue(req_id: Any, prompt: str, msg: dict[str, Any]) -> None:
     )
     if image_embeddings:
         kwargs["embeddings"] = image_embeddings
+    filt = _make_filter(msg)
+    if filt is not None:
+        kwargs["filters"] = [filt]
     try:
         job = Job(**kwargs, stop_on_loop=(16, 3))
     except TypeError:
@@ -1182,11 +1220,12 @@ def _enqueue(req_id: Any, prompt: str, msg: dict[str, Any]) -> None:
     t_eq = time.perf_counter()
     STATE.generator.enqueue(job)
     st = _stats()
-    _log(
-        f"enqueue id={req_id} prompt_tokens={n_prompt} max_new={kwargs['max_new_tokens']} "
-        f"pending={st.get('pending')} active={st.get('active')} free_pages={st.get('free_pages')} "
-        f"enqueue_ms={int((time.perf_counter()-t_eq)*1000)}"
-    )
+    if hash(str(req_id)) % 25 == 0:
+        _log(
+            f"enqueue id={req_id} prompt_tokens={n_prompt} max_new={kwargs['max_new_tokens']} "
+            f"pending={st.get('pending')} active={st.get('active')} free_pages={st.get('free_pages')} "
+            f"enqueue_ms={int((time.perf_counter()-t_eq)*1000)}"
+        )
 
 
 def _cancel_job(req_id: Any) -> bool:
@@ -1334,6 +1373,14 @@ def handle(msg: dict[str, Any]) -> None:
             _ok(req_id, pong=True, loaded=STATE.loaded, model_path=STATE.model_path)
             return
 
+        if cmd in ("runtime_info", "runtime-info"):
+            _ok(
+                req_id,
+                exllamav3_version=STATE.capabilities.get("exllamav3_version"),
+                capabilities={"llguidance": bool(STATE.capabilities.get("llguidance"))},
+            )
+            return
+
         if cmd == "metrics":
             st = _stats()
             _ok(
@@ -1349,6 +1396,8 @@ def handle(msg: dict[str, Any]) -> None:
                 load_ts=STATE.load_ts,
                 is_mock=False,
                 vision_capable=bool(STATE.vision_capable),
+                exllamav3_version=STATE.capabilities.get("exllamav3_version"),
+                capabilities={"llguidance": bool(STATE.capabilities.get("llguidance"))},
                 **st,
             )
             return
@@ -1690,7 +1739,14 @@ def main() -> None:
         raise SystemExit(2)
 
     _log(f"ready repo={_REPO_ROOT} exl3={_EXL3_ROOT.is_dir()}")
-    _ok(ready=True, protocol="jsonl-v2")
+    caps = _probe_capabilities()
+    STATE.capabilities = caps
+    _ok(
+        ready=True,
+        protocol="jsonl-v2",
+        exllamav3_version=caps.get("exllamav3_version"),
+        capabilities={"llguidance": bool(caps.get("llguidance"))},
+    )
     serve()
 
 

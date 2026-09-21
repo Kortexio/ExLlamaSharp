@@ -1,3 +1,4 @@
+using System.Text.Json;
 using ExLlamaSharp.Chat;
 
 namespace ExLlamaSharp.Engine.Worker;
@@ -8,6 +9,7 @@ internal static class WorkerSubmitPayload
     {
         var stops = BuildStopList(request);
         var toolsHint = BuildToolsHint(request);
+        var constraint = BuildConstraint(request);
         if (request.Messages is { Count: > 0 })
         {
             var messages = request.Messages.Select(m => new
@@ -38,6 +40,7 @@ internal static class WorkerSubmitPayload
                 adapter_path = request.AdapterPath,
                 adapter_scaling = request.AdapterScaling,
                 images = request.ImageDataUrls,
+                constraint,
             };
         }
 
@@ -63,6 +66,24 @@ internal static class WorkerSubmitPayload
             adapter_path = request.AdapterPath,
             adapter_scaling = request.AdapterScaling,
             images = request.ImageDataUrls,
+            constraint,
+        };
+    }
+
+    private static object? BuildConstraint(CompletionRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.ConstraintType)
+            || string.IsNullOrWhiteSpace(request.ConstraintSchemaJson))
+        {
+            return null;
+        }
+
+        using var doc = JsonDocument.Parse(request.ConstraintSchemaJson);
+        return new
+        {
+            type = request.ConstraintType,
+            schema = doc.RootElement.Clone(),
+            backend = request.ConstraintBackend ?? "llguidance",
         };
     }
 
@@ -99,7 +120,7 @@ internal static class WorkerSubmitPayload
             sb.AppendLine(request.ToolsJson);
         }
 
-        if (!string.IsNullOrWhiteSpace(request.JsonSchema))
+        if (!string.IsNullOrWhiteSpace(request.JsonSchema) && !request.SuppressPromptJsonSchema)
         {
             sb.AppendLine("Respond with JSON only matching this schema:");
             sb.AppendLine(request.JsonSchema);

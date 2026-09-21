@@ -34,6 +34,9 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
     private long _finished;
     private double _lastTps;
     private bool _visionCapable;
+    private WorkerRuntimeCapabilities? _runtimeCapabilities;
+
+    public WorkerRuntimeCapabilities? RuntimeCapabilities => _runtimeCapabilities;
 
     public ExLlamaV3WorkerEngine(ILogger? logger = null, WorkerEngineOptions? options = null)
     {
@@ -381,7 +384,7 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
     /// <summary>True when the JSONL worker process is still running.</summary>
     public bool IsWorkerAlive => _client.IsAlive;
 
-    public int[] Tokenize(string text)
+    public async Task<int[]> TokenizeAsync(string text, CancellationToken cancellationToken = default)
     {
         if (!_loaded || !_client.IsAlive)
         {
@@ -390,9 +393,8 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
 
         try
         {
-            var resp = _client.SendControlAsync(new { cmd = "tokenize", text }, CancellationToken.None)
-                .GetAwaiter()
-                .GetResult();
+            var resp = await _client.SendControlAsync(new { cmd = "tokenize", text }, cancellationToken)
+                .ConfigureAwait(false);
             if (resp.GetProperty("ok").GetBoolean())
             {
                 return WorkerEvent.ReadIntArray(resp, "tokens");
@@ -411,7 +413,9 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
         }
     }
 
-    public string Detokenize(ReadOnlySpan<int> tokens)
+    public int[] Tokenize(string text) => TokenizeAsync(text, CancellationToken.None).GetAwaiter().GetResult();
+
+    public async Task<string> DetokenizeAsync(int[] tokens, CancellationToken cancellationToken = default)
     {
         if (!_loaded || !_client.IsAlive)
         {
@@ -420,9 +424,8 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
 
         try
         {
-            var resp = _client.SendControlAsync(new { cmd = "detokenize", tokens = tokens.ToArray() }, CancellationToken.None)
-                .GetAwaiter()
-                .GetResult();
+            var resp = await _client.SendControlAsync(new { cmd = "detokenize", tokens = tokens.ToArray() }, cancellationToken)
+                .ConfigureAwait(false);
             if (resp.GetProperty("ok").GetBoolean() && resp.TryGetProperty("text", out var t))
             {
                 return t.GetString() ?? "";
@@ -440,6 +443,9 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
             throw new InvalidOperationException($"Worker detokenize failed: {ex.Message}", ex);
         }
     }
+
+    public string Detokenize(ReadOnlySpan<int> tokens) =>
+        DetokenizeAsync(tokens.ToArray(), CancellationToken.None).GetAwaiter().GetResult();
 
     public async Task LoadAdapterAsync(
         string path,
@@ -483,6 +489,38 @@ public sealed class ExLlamaV3WorkerEngine : IInferenceEngine
             var err = resp.TryGetProperty("error", out var e) ? e.GetString() : "unload_adapter failed";
             throw new InvalidOperationException(err);
         }
+    }
+
+    public async Task EnsureRuntimeInfoAsync(CancellationToken cancellationToken = default)
+    {
+        if (_runtimeCapabilities is not null)
+        {
+            return;
+        }
+
+        await _client.EnsureStartedAsync(cancellationToken).ConfigureAwait(false);
+        var resp = await _client.SendControlAsync(new { cmd = "runtime_info" }, cancellationToken)
+            .ConfigureAwait(false);
+        if (!resp.GetProperty("ok").GetBoolean())
+        {
+            _runtimeCapabilities = new WorkerRuntimeCapabilities();
+            return;
+        }
+
+        var llg = resp.TryGetProperty("capabilities", out var caps)
+                  && caps.TryGetProperty("llguidance", out var llgEl)
+                  && llgEl.ValueKind == JsonValueKind.True;
+        string? version = null;
+        if (resp.TryGetProperty("exllamav3_version", out var ver) && ver.ValueKind == JsonValueKind.String)
+        {
+            version = ver.GetString();
+        }
+
+        _runtimeCapabilities = new WorkerRuntimeCapabilities
+        {
+            Llguidance = llg,
+            ExLlamaV3Version = version,
+        };
     }
 
     public void Dispose()

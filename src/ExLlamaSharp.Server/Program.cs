@@ -48,35 +48,7 @@ var dbPath = Path.Combine(dataRoot, "app.db");
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlite($"Data Source={dbPath};Cache=Shared"));
 
-builder.Services.AddMemoryCache();
-builder.Services.AddHttpClient();
-
-builder.Services.AddSingleton<LiveLogBuffer>();
-builder.Services.AddSingleton<KeyCacheService>();
-builder.Services.AddSingleton<RateLimiter>();
-builder.Services.AddSingleton<SettingsService>();
-builder.Services.AddSingleton<AbTestRouter>();
-builder.Services.AddSingleton<TenantResolver>();
-builder.Services.AddSingleton<ContentModerationService>();
-builder.Services.AddSingleton<MetricsHistoryService>();
-builder.Services.AddSingleton<EmbeddingService>();
-builder.Services.AddSingleton<AboutService>();
-builder.Services.AddHttpClient("github", c => c.Timeout = TimeSpan.FromSeconds(15));
-builder.Services.AddSingleton<UpdateCheckService>();
-builder.Services.AddSingleton<HealthService>();
-builder.Services.AddSingleton<WebhookService>();
-builder.Services.AddSingleton<ModelJobsService>();
-builder.Services.AddSingleton<BackupService>();
-builder.Services.AddSingleton<MultiGpuPlanner>();
-builder.Services.AddSingleton<ArchitectureDetector>();
-builder.Services.AddSingleton<LoraAdapterService>();
-builder.Services.AddSingleton<PythonModelTools>();
-builder.Services.AddSingleton<EngineHostService>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<EngineHostService>());
-builder.Services.AddSingleton<AuditService>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<AuditService>());
-builder.Services.AddHostedService(sp => sp.GetRequiredService<BackupService>());
-builder.Services.AddHostedService<DashboardBroadcastService>();
+builder.Services.AddExLlamaSharpCore();
 
 builder.Services.AddExLlamaSharpUi();
 
@@ -88,7 +60,14 @@ builder.Services.AddSingleton<ILoggerProvider, FileLogLoggerProvider>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
-    c.SwaggerDoc("v1", new() { Title = "ExLlamaSharp API", Version = "v1" });
+    c.SwaggerDoc("v1", new()
+    {
+        Title = "ExLlamaSharp API",
+        Version = "v1",
+        Description =
+            "OpenAI-compatible /v1/chat/completions. Unimplemented /v1/* (images, audio, etc.) returns 501. "
+            + "Ignored chat fields (logit_bias, logprobs, n>1) return 400. See docs/api-reference.md.",
+    });
 });
 
 var dbListen = ReadListenSettingsFromDatabase(dataRoot);

@@ -385,7 +385,7 @@ Write-Step "Installing ExLlamaV3 CUDA wheel"
 $pyVer = (& $pyVenv -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')").Trim()
 $torchFull = (& $pyVenv -c "import torch; print(torch.__version__.split('+')[0])").Trim()
 $mm = ($torchFull -split '\.')[0..1] -join '.'
-$wheelName = "exllamav3-1.4.2+cu128.torch${mm}.0-cp$pyVer-cp$pyVer-win_amd64.whl"
+$wheelName = "exllamav3-1.5.1+cu128.torch${mm}.0-cp$pyVer-cp$pyVer-win_amd64.whl"
 $wheelOk = $false
 
 if ($offline) {
@@ -401,7 +401,7 @@ if ($offline) {
 }
 
 if (-not $wheelOk) {
-    $wheelUrl = "https://github.com/turboderp-org/exllamav3/releases/download/v1.4.2/exllamav3-1.4.2%2Bcu128.torch${mm}.0-cp$pyVer-cp$pyVer-win_amd64.whl"
+    $wheelUrl = "https://github.com/turboderp-org/exllamav3/releases/download/v1.5.1/exllamav3-1.5.1%2Bcu128.torch${mm}.0-cp$pyVer-cp$pyVer-win_amd64.whl"
     $wheelFile = Join-Path $env:TEMP $wheelName
     Write-Host "Wheel: $wheelName"
     $dlOk = Invoke-WebDownloadWithProgress -Uri $wheelUrl -OutFile $wheelFile -Title "Downloading ExLlamaV3 CUDA wheel"
@@ -420,11 +420,11 @@ if (-not $wheelOk) {
 if (-not $wheelOk) {
     Write-Step "Trying py3-none-any + note (may need local compile)"
     try {
-        & $pyVenv -m pip install "exllamav3==1.4.2"
+        & $pyVenv -m pip install "exllamav3==1.5.1"
         $pyd = & $pyVenv -c "import importlib.util; s=importlib.util.find_spec('exllamav3_ext'); print(s.origin if s and s.origin else '')"
         $wheelOk = ($LASTEXITCODE -eq 0) -and ($pyd -match '\.(pyd|so)$')
         if (-not $wheelOk) {
-            Write-Warning "PyPI exllamav3==1.4.2 has no prebuilt CUDA extension. Do not use this for inference."
+            Write-Warning "PyPI exllamav3==1.5.1 has no prebuilt CUDA extension. Do not use this for inference."
         }
     }
     catch { }

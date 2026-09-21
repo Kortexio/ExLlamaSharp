@@ -18,6 +18,12 @@ internal sealed class OpenAiRunContext
     public Guid? AbTestId { get; init; }
     public string? AbVariant { get; init; }
     public bool ParseToolCalls { get; init; }
+    public HashSet<string>? AllowedToolNames { get; init; }
+    public ToolCallValidator.ToolChoiceRequirement ToolChoiceRequirement { get; init; }
+
+    public string? ToolsMode { get; init; }
+
+    public string? StructuredOutputMode { get; init; }
 
     public string? NumCtxWarning { get; init; }
 }
@@ -39,6 +45,20 @@ internal static class OpenAiCompletionRunner
         var ct = timeoutCts.Token;
         var created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         http.Response.Headers["X-ExLlamaSharp-Engine"] = engine.IsMock ? "mock" : "worker";
+        if (!string.IsNullOrWhiteSpace(run.ToolsMode))
+        {
+            http.Response.Headers[ToolCallValidator.ToolsModeHeader] = run.ToolsMode;
+        }
+        else if (run.ParseToolCalls)
+        {
+            http.Response.Headers[ToolCallValidator.ToolsModeHeader] = ToolCallValidator.ToolsModePromptParse;
+        }
+
+        if (!string.IsNullOrWhiteSpace(run.StructuredOutputMode))
+        {
+            http.Response.Headers[ToolCallValidator.StructuredOutputHeader] = run.StructuredOutputMode;
+        }
+
         if (!string.IsNullOrWhiteSpace(run.NumCtxWarning))
         {
             http.Response.Headers["X-ExLlamaSharp-NumCtx"] = run.NumCtxWarning;
@@ -65,7 +85,9 @@ internal static class OpenAiCompletionRunner
                                     engine.SubmitStreamAsync(run.EngineRequest, ct),
                                     ct,
                                     run.ParseToolCalls,
-                                    run.NumCtxWarning)
+                                    run.NumCtxWarning,
+                                    run.AllowedToolNames,
+                                    run.ToolChoiceRequirement)
                                 .ConfigureAwait(false);
                         }
                         else
@@ -149,6 +171,21 @@ internal static class OpenAiCompletionRunner
                 return JsonError(completed.Error ?? "Inference failed.", "server_error", "inference_failed", StatusCodes.Status502BadGateway);
             }
 
+            if (run.ParseToolCalls)
+            {
+                var toolErr = ValidateToolCompletion(completed.Text, run);
+                if (toolErr is not null)
+                {
+                    await RecordUsageAsync(http, rateLimiter, audit, run, completed, started, webhooks, settings)
+                        .ConfigureAwait(false);
+                    var status = run.ToolChoiceRequirement.RequiresTool
+                        ? StatusCodes.Status400BadRequest
+                        : StatusCodes.Status502BadGateway;
+                    var code = run.ToolChoiceRequirement.RequiresTool ? "tool_choice_failed" : "tool_parse_failed";
+                    return JsonError(toolErr, "invalid_request_error", code, status);
+                }
+            }
+
             await RecordUsageAsync(http, rateLimiter, audit, run, completed, started, webhooks, settings)
                 .ConfigureAwait(false);
             return Results.Json(run.ToJson(completed, created), OpenAiSseWriter.JsonOptions);
@@ -161,6 +198,19 @@ internal static class OpenAiCompletionRunner
 
     public static IResult JsonError(string message, string type, string code, int status) =>
         Results.Json(ErrorResponse.Create(message, type, code), statusCode: status);
+
+    internal static string? ValidateToolCompletion(string? text, OpenAiRunContext run)
+    {
+        if (!run.ParseToolCalls)
+        {
+            return null;
+        }
+
+        return ToolCallValidator.ValidateToolResponse(
+            text,
+            run.AllowedToolNames ?? [],
+            run.ToolChoiceRequirement);
+    }
 
     private static async Task RecordUsageAsync(
         HttpContext http,

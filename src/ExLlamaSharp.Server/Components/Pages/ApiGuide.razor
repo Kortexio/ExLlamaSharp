@@ -24,6 +24,11 @@
                 </tbody>
             </table>
         </div>
+        <p class="mb-0 mt-2 small text-muted">
+            Tools: response headers <code>X-ExLlamaSharp-Tools-Mode</code> (<code>prompt_parse</code> or <code>constrained</code> with LLGuidance)
+            and <code>X-ExLlamaSharp-Structured-Output</code> (<code>prompt_only</code> / <code>constrained</code>).
+            Streaming emits <code>tool_calls</code> only after the full assistant text is buffered and parsed.
+        </p>
         <p class="mb-0 mt-3 small text-muted">
             Ollama-style extras under <code>options</code>
             (<span class="kx-chip-row" style="display:inline-flex;margin:0 0.25rem">

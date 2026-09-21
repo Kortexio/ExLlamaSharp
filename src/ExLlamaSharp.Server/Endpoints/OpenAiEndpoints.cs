@@ -76,6 +76,13 @@ public static class OpenAiEndpoints
         }
 
         var visionParts = CollectVisionParts(request.Messages);
+        if (visionParts.Count > 8)
+        {
+            return Results.Json(
+                ErrorResponse.Create("At most 8 image_url parts per request.", "invalid_request_error", "too_many_images"),
+                statusCode: StatusCodes.Status413PayloadTooLarge);
+        }
+
         if (visionParts.Count > 0 && !engineHost.SupportsVision)
         {
             return Results.Json(
@@ -96,6 +103,12 @@ public static class OpenAiEndpoints
             (modelId, abTestId, abVariant) = await ResolveModelWithAbAsync(
                     request.Model, jobId.ToString("N"), http, engineHost, abRouter, db, settingsService, http.RequestAborted)
                 .ConfigureAwait(false);
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("A/B variant", StringComparison.Ordinal))
+        {
+            return Results.Json(
+                ErrorResponse.Create(ex.Message, "invalid_request_error", "ab_model_not_loaded"),
+                statusCode: StatusCodes.Status409Conflict);
         }
         catch (InvalidOperationException ex)
         {
@@ -130,8 +143,13 @@ public static class OpenAiEndpoints
             }
         }
 
+        var hasTools = request.Tools is { Count: > 0 };
+        var toolChoiceRequirement = ToolCallValidator.ParseToolChoiceRequirement(request.ToolChoice, hasTools);
+        var allowedToolNames = ToolCallValidator.CollectToolFunctionNames(request.Tools);
+        var parseTools = hasTools && !IsToolChoiceNone(request.ToolChoice);
+
         string? toolsJson = null;
-        if (request.Tools is { Count: > 0 })
+        if (hasTools)
         {
             toolsJson = JsonSerializer.Serialize(request.Tools, JsonOptions);
         }
@@ -159,9 +177,43 @@ public static class OpenAiEndpoints
             adapterPath = adapter?.Path;
         }
 
-        var timeoutCts = await CreateTimeoutCtsAsync(settingsService, http.RequestAborted).ConfigureAwait(false);
-        var numCtxWarning = await NoteNumCtxAsync(request.Options?.NumCtx, settingsService).ConfigureAwait(false);
         var appSettings = await settingsService.GetAsync(http.RequestAborted).ConfigureAwait(false);
+        var timeoutCts = CreateTimeoutCts(appSettings, http.RequestAborted);
+        var numCtxWarning = NoteNumCtx(request.Options?.NumCtx, appSettings);
+        var started = DateTime.UtcNow;
+        try
+        {
+            EnsureEngineReady(engineHost);
+        }
+        catch (InvalidOperationException ex)
+        {
+            timeoutCts.Dispose();
+            return OpenAiCompletionRunner.JsonError(ex.Message, "server_error", "engine_not_ready", StatusCodes.Status503ServiceUnavailable);
+        }
+
+        if (parseTools && toolChoiceRequirement.RequiresTool && engineHost.Engine.IsMock)
+        {
+            timeoutCts.Dispose();
+            return OpenAiCompletionRunner.JsonError(
+                "tool_choice required but constrained tool calling is unavailable (mock engine). Use the EXL3 worker or set tool_choice to auto.",
+                "invalid_request_error",
+                "tools_constrained_unavailable",
+                StatusCodes.Status400BadRequest);
+        }
+
+        var hasResponseFormat = request.ResponseFormat is not null
+            && (!string.IsNullOrWhiteSpace(jsonSchema)
+                || string.Equals(request.ResponseFormat.Type, "json_object", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(request.ResponseFormat.Type, "json_schema", StringComparison.OrdinalIgnoreCase));
+        var constraintPlan = await OpenAiConstraintResolver.ResolveAsync(
+            engineHost.Engine,
+            parseTools,
+            toolChoiceRequirement,
+            allowedToolNames,
+            jsonSchema,
+            hasResponseFormat,
+            http.RequestAborted).ConfigureAwait(false);
+
         var engineRequest = new CompletionRequest
         {
             Prompt = prompt,
@@ -183,20 +235,13 @@ public static class OpenAiEndpoints
             ToolsJson = toolsJson,
             ToolChoiceHint = toolChoiceHint,
             JsonSchema = jsonSchema,
+            SuppressPromptJsonSchema = constraintPlan.SuppressPromptJsonSchema,
+            ConstraintType = constraintPlan.ConstraintType,
+            ConstraintSchemaJson = constraintPlan.ConstraintSchemaJson,
+            ConstraintBackend = constraintPlan.ConstraintBackend,
             AdapterPath = adapterPath,
             ImageDataUrls = visionParts.Count > 0 ? visionParts : null,
         };
-
-        var started = DateTime.UtcNow;
-        try
-        {
-            EnsureEngineReady(engineHost);
-        }
-        catch (InvalidOperationException ex)
-        {
-            timeoutCts.Dispose();
-            return OpenAiCompletionRunner.JsonError(ex.Message, "server_error", "engine_not_ready", StatusCodes.Status503ServiceUnavailable);
-        }
 
         return await OpenAiCompletionRunner.RunAsync(
             http,
@@ -211,11 +256,15 @@ public static class OpenAiEndpoints
                 SseKind = OpenAiSseKind.Chat,
                 AbTestId = abTestId,
                 AbVariant = abVariant,
-                ParseToolCalls = request.Tools is { Count: > 0 },
+                ParseToolCalls = parseTools,
+                AllowedToolNames = allowedToolNames,
+                ToolChoiceRequirement = toolChoiceRequirement,
+                ToolsMode = constraintPlan.ToolsMode,
+                StructuredOutputMode = constraintPlan.StructuredOutputMode,
                 NumCtxWarning = numCtxWarning,
                 ToJson = (completed, created) =>
                 {
-                    var json = BuildChatCompletionJson(completed, created, modelId, request.Tools is { Count: > 0 });
+                    var json = BuildChatCompletionJson(completed, created, modelId, parseTools);
                     json.Warning = numCtxWarning;
                     return json;
                 },
@@ -292,6 +341,17 @@ public static class OpenAiEndpoints
         }
 
         return null;
+    }
+
+    private static bool IsToolChoiceNone(JsonElement? toolChoice)
+    {
+        if (toolChoice is null || toolChoice.Value.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+        {
+            return false;
+        }
+
+        return toolChoice.Value.ValueKind == JsonValueKind.String
+               && string.Equals(toolChoice.Value.GetString(), "none", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? FormatToolChoice(JsonElement? toolChoice)
@@ -397,6 +457,12 @@ public static class OpenAiEndpoints
                     request.Model, jobId.ToString("N"), http, engineHost, abRouter, db, settingsService, http.RequestAborted)
                 .ConfigureAwait(false);
         }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("A/B variant", StringComparison.Ordinal))
+        {
+            return Results.Json(
+                ErrorResponse.Create(ex.Message, "invalid_request_error", "ab_model_not_loaded"),
+                statusCode: StatusCodes.Status409Conflict);
+        }
         catch (InvalidOperationException ex)
         {
             return Results.Json(
@@ -404,9 +470,9 @@ public static class OpenAiEndpoints
                 statusCode: StatusCodes.Status503ServiceUnavailable);
         }
 
-        var timeoutCts = await CreateTimeoutCtsAsync(settingsService, http.RequestAborted).ConfigureAwait(false);
-        var numCtxWarning = await NoteNumCtxAsync(request.Options?.NumCtx, settingsService).ConfigureAwait(false);
         var appSettings = await settingsService.GetAsync(http.RequestAborted).ConfigureAwait(false);
+        var timeoutCts = CreateTimeoutCts(appSettings, http.RequestAborted);
+        var numCtxWarning = NoteNumCtx(request.Options?.NumCtx, appSettings);
         var engineRequest = new CompletionRequest
         {
             Prompt = prompt,
@@ -604,48 +670,48 @@ public static class OpenAiEndpoints
         }, JsonOptions);
     }
 
-    private static Task<IResult> TokenizeAsync(
+    private static async Task<IResult> TokenizeAsync(
         TokenizeRequest request,
         EngineHostService engineHost)
     {
         if (string.IsNullOrEmpty(request.Prompt))
         {
-            return Task.FromResult<IResult>(Results.Json(
+            return Results.Json(
                 ErrorResponse.Create("prompt is required", code: "invalid_prompt"),
-                statusCode: StatusCodes.Status400BadRequest));
+                statusCode: StatusCodes.Status400BadRequest);
         }
 
         try
         {
-            var tokens = engineHost.Engine.Tokenize(request.Prompt);
-            return Task.FromResult<IResult>(Results.Json(new TokenizeResponse
+            var tokens = await engineHost.Engine.TokenizeAsync(request.Prompt, CancellationToken.None).ConfigureAwait(false);
+            return Results.Json(new TokenizeResponse
             {
                 Tokens = tokens,
                 Count = tokens.Length,
-            }, JsonOptions));
+            }, JsonOptions);
         }
         catch (Exception ex)
         {
-            return Task.FromResult<IResult>(Results.Json(
+            return Results.Json(
                 ErrorResponse.Create(ex.Message, "server_error"),
-                statusCode: StatusCodes.Status503ServiceUnavailable));
+                statusCode: StatusCodes.Status503ServiceUnavailable);
         }
     }
 
-    private static Task<IResult> DetokenizeAsync(
+    private static async Task<IResult> DetokenizeAsync(
         DetokenizeRequest request,
         EngineHostService engineHost)
     {
         try
         {
-            var text = engineHost.Engine.Detokenize(request.Tokens);
-            return Task.FromResult<IResult>(Results.Json(new DetokenizeResponse { Text = text }, JsonOptions));
+            var text = await engineHost.Engine.DetokenizeAsync(request.Tokens, CancellationToken.None).ConfigureAwait(false);
+            return Results.Json(new DetokenizeResponse { Text = text }, JsonOptions);
         }
         catch (Exception ex)
         {
-            return Task.FromResult<IResult>(Results.Json(
+            return Results.Json(
                 ErrorResponse.Create(ex.Message, "server_error"),
-                statusCode: StatusCodes.Status503ServiceUnavailable));
+                statusCode: StatusCodes.Status503ServiceUnavailable);
         }
     }
 
@@ -727,14 +793,10 @@ public static class OpenAiEndpoints
                     throw new InvalidOperationException("A/B model is not visible to this tenant.");
                 }
 
-                try
-                {
-                    await engineHost.EnsureModelIdLoadedAsync(route.ModelId, ct).ConfigureAwait(false);
-                }
-                catch (Exception ex)
+                if (engineHost.LoadedModelId != route.ModelId || !engineHost.IsLoaded)
                 {
                     throw new InvalidOperationException(
-                        $"A/B variant {route.Variant} model could not be loaded: {ex.Message}", ex);
+                        $"A/B variant '{route.Variant}' is not loaded. Load model {route.ModelId} in Admin → Models first (mid-request swap disabled).");
                 }
 
                 var name = abRecord?.Alias
@@ -930,28 +992,23 @@ public static class OpenAiEndpoints
     /// Ollama <c>num_ctx</c> is the KV/context size. In ExLlamaSharp that is fixed at model load
     /// (Settings → Max batched tokens). Per-request num_ctx cannot resize the live cache.
     /// </summary>
-    private static async Task<string?> NoteNumCtxAsync(int? numCtx, SettingsService settingsService)
+    private static string? NoteNumCtx(int? numCtx, AppSettings settings)
     {
         if (numCtx is null or <= 0)
         {
             return null;
         }
 
-        var settings = await settingsService.GetAsync(CancellationToken.None).ConfigureAwait(false);
         if (numCtx.Value == settings.MaxBatchedTokens)
         {
             return null;
         }
 
-        // Intentionally not throwing: clients often send num_ctx with every Ollama-style request.
         return $"ignored; loaded={settings.MaxBatchedTokens} requested={numCtx.Value}";
     }
 
-    private static async Task<CancellationTokenSource> CreateTimeoutCtsAsync(
-        SettingsService settingsService,
-        CancellationToken requestAborted)
+    private static CancellationTokenSource CreateTimeoutCts(AppSettings settings, CancellationToken requestAborted)
     {
-        var settings = await settingsService.GetAsync(requestAborted).ConfigureAwait(false);
         var seconds = Math.Clamp(settings.RequestTimeoutSeconds, 1, 3600);
         var cts = CancellationTokenSource.CreateLinkedTokenSource(requestAborted);
         cts.CancelAfter(TimeSpan.FromSeconds(seconds));

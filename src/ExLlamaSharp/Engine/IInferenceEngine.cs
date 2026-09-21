@@ -60,4 +60,10 @@ public interface IInferenceEngine : IAsyncDisposable, IDisposable
     int[] Tokenize(string text);
 
     string Detokenize(ReadOnlySpan<int> tokens);
+
+    Task<int[]> TokenizeAsync(string text, CancellationToken cancellationToken = default) =>
+        Task.FromResult(Tokenize(text));
+
+    Task<string> DetokenizeAsync(int[] tokens, CancellationToken cancellationToken = default) =>
+        Task.FromResult(Detokenize(tokens));
 }

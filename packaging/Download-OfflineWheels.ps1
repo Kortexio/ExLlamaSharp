@@ -18,7 +18,7 @@ param(
     [ValidateSet("312", "311", "313")]
     [string]$PythonTag = "312",
 
-    [string]$ExLlamaV3Version = "1.4.2",
+    [string]$ExLlamaV3Version = "1.5.1",
 
     [string]$PythonInstallerVersion = "3.12.10",
 

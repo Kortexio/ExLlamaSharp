@@ -54,6 +54,18 @@ public sealed class CompletionRequest
     /// <summary>When set, instruct the model to emit JSON matching this schema.</summary>
     public string? JsonSchema { get; init; }
 
+    /// <summary>Worker constraint type (e.g. json_schema) for LLGuidance.</summary>
+    public string? ConstraintType { get; init; }
+
+    /// <summary>JSON Schema string sent as worker constraint.</summary>
+    public string? ConstraintSchemaJson { get; init; }
+
+    /// <summary>Constraint backend (llguidance).</summary>
+    public string? ConstraintBackend { get; init; }
+
+    /// <summary>When true, omit duplicate JSON schema from the system tools hint.</summary>
+    public bool SuppressPromptJsonSchema { get; init; }
+
     /// <summary>OpenAI tool_choice hint (none|auto|required:name).</summary>
     public string? ToolChoiceHint { get; init; }
 

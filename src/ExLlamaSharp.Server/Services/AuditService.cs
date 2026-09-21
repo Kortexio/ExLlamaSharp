@@ -9,17 +9,21 @@ namespace ExLlamaSharp.Server.Services;
 
 public sealed class AuditService : BackgroundService
 {
-    private readonly Channel<AuditLog> _channel = Channel.CreateUnbounded<AuditLog>(
-        new UnboundedChannelOptions
+    private const int ChannelCapacity = 4096;
+
+    private readonly Channel<AuditLog> _channel = Channel.CreateBounded<AuditLog>(
+        new BoundedChannelOptions(ChannelCapacity)
         {
             SingleReader = true,
             SingleWriter = false,
             AllowSynchronousContinuations = false,
+            FullMode = BoundedChannelFullMode.DropWrite,
         });
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<AuditService> _logger;
     private readonly MetricsHistoryService _metrics;
+    private long _droppedEntries;
 
     public AuditService(
         IServiceScopeFactory scopeFactory,
@@ -41,9 +45,19 @@ public sealed class AuditService : BackgroundService
 
         if (!_channel.Writer.TryWrite(entry))
         {
-            _logger.LogWarning("Failed to enqueue audit entry for {Endpoint}", entry.Endpoint);
+            var dropped = Interlocked.Increment(ref _droppedEntries);
+            if (dropped == 1 || dropped % 100 == 0)
+            {
+                _logger.LogWarning(
+                    "Audit queue full (capacity {Capacity}); dropped {Dropped} entries (latest endpoint {Endpoint})",
+                    ChannelCapacity,
+                    dropped,
+                    entry.Endpoint);
+            }
         }
     }
+
+    public long DroppedEntryCount => Interlocked.Read(ref _droppedEntries);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {

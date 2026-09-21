@@ -96,20 +96,33 @@ def _handle(msg: dict) -> None:
         _JOBS.clear()
         _reply({"ok": True, "id": req_id, "unloaded": True})
         return
-    if cmd in ("submit", "generate", "chat"):
-        if req_id is None:
-            _reply({"ok": False, "error": "id required"})
-            return
-        _JOBS[int(req_id)] = _TOKENS_PER_JOB
-        _reply({"ok": True, "id": req_id, "accepted": True, "streaming": True})
-        return
     if cmd == "cancel":
         if req_id is not None:
             _JOBS.pop(int(req_id), None)
         _reply({"ok": True, "id": req_id, "cancelled": True})
         return
+    if cmd in ("runtime_info", "runtime-info"):
+        _reply(
+            {
+                "ok": True,
+                "id": req_id,
+                "exllamav3_version": "0.0-fake",
+                "capabilities": {"llguidance": False},
+            }
+        )
+        return
     if cmd == "metrics":
         _reply({"ok": True, "id": req_id, **_stats(), "loaded": True})
+        return
+    if cmd in ("submit", "generate", "chat"):
+        if req_id is None:
+            _reply({"ok": False, "error": "id required"})
+            return
+        if msg.get("constraint"):
+            _reply({"ok": True, "id": req_id, "accepted": True, "constraint": True, "streaming": True})
+        else:
+            _JOBS[int(req_id)] = _TOKENS_PER_JOB
+            _reply({"ok": True, "id": req_id, "accepted": True, "streaming": True})
         return
     _reply({"ok": False, "id": req_id, "error": f"unknown cmd: {cmd}"})
 
